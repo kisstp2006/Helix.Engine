@@ -1,0 +1,24 @@
+[submodule "External/Helix.CMake"]
+	path = External/Helix.CMake
+	url = https://github.com/kisstp2006/Helix.CMake
+[submodule "External/Helix.Testing"]
+	path = External/Helix.Testing
+	url = https://github.com/kisstp2006/Helix.Testing
+[submodule "External/Helix.Core"]
+	path = External/Helix.Core
+	url = https://github.com/kisstp2006/Helix.Core
+[submodule "External/Helix.Math"]
+	path = External/Helix.Math
+	url = https://github.com/kisstp2006/Helix.Math
+[submodule "External/Helix.Platform"]
+	path = External/Helix.Platform
+	url = https://github.com/kisstp2006/Helix.Platform
+[submodule "External/Helix.Profiler"]
+	path = External/Helix.Profiler
+	url = https://github.com/kisstp2006/Helix.Profiler
+[submodule "External/Helix.Jobs"]
+	path = External/Helix.Jobs
+	url = https://github.com/kisstp2006/Helix.Jobs
+[submodule "External/Helix.Serialization"]
+	path = External/Helix.Serialization
+	url = https://github.com/kisstp2006/Helix.Serialization

@@ -1,0 +1,321 @@
+#pragma once
+
+#include <Helix/Core/Basics/Span.h>
+#include <Helix/Core/Containers/HashMap.h>
+#include <Helix/Core/Strings/String.h>
+#include <Helix/Engine/Object/Class.h>
+#include <Helix/Engine/Object/EntityId.h>
+
+#include <type_traits>
+
+// Object, the base of everything the engine manages, and the object table: every live object has a slot that its
+// EntityId names, and each class keeps a dense list of its objects. The object model runs on the main thread.
+namespace helix::engine
+{
+    enum class HideFlags : u32
+    {
+        None = 0,
+        HideInHierarchy = 1,
+        HideInInspector = 2,
+        DontSaveInEditor = 4,
+        NotEditable = 8,
+        DontSaveInBuild = 16,
+        DontUnloadUnusedAsset = 32,
+        DontSave = 52,
+        HideAndDontSave = 61,
+    };
+
+    constexpr HideFlags operator|(HideFlags a, HideFlags b) { return HideFlags(u32(a) | u32(b)); }
+    constexpr HideFlags operator&(HideFlags a, HideFlags b) { return HideFlags(u32(a) & u32(b)); }
+    constexpr bool Has(HideFlags flags, HideFlags all) { return (u32(flags) & u32(all)) == u32(all); }
+
+    namespace detail
+    {
+        template <class T>
+        Object* Create(void* memory)
+        {
+            return new (memory) T();
+        }
+        template <class T>
+        Object* Clone(void* memory, const Object& o)
+        {
+            return new (memory) T(static_cast<const T&>(o));
+        }
+        template <class T>
+        void Remap(Object& o, ReferenceRemap& r);
+
+        template <class T, u32 flags>
+        u32 Register(StringView name, i32 id)
+        {
+            ClassInfo info;
+            info.classId = id;
+            info.name = name;
+            info.size = u32(sizeof(T));
+            info.alignment = u32(alignof(T));
+            if constexpr (!std::is_same_v<typename T::Base, void>)
+                info.base = T::Base::StaticClass();
+            info.flags = flags | (info.base != kNoClass ? GetClass(info.base).flags & (ClassComponent | ClassBehaviour) : 0u);
+            if constexpr ((flags & ClassAbstract) == 0)
+                info.create = &Create<T>, info.clone = &Clone<T>;
+            info.remap = &Remap<T>;
+            if constexpr (requires(T& t) { t.OnDestroyNative(); })
+                info.onDestroy = [](Object& o) { static_cast<T&>(o).OnDestroyNative(); };
+            if constexpr (requires(T& t) { t.OnEnableNative(); })
+                info.onEnable = [](Object& o) { static_cast<T&>(o).OnEnableNative(); };
+            if constexpr (requires(T& t) { t.OnDisableNative(); })
+                info.onDisable = [](Object& o) { static_cast<T&>(o).OnDisableNative(); };
+            if constexpr (requires(Array<u32>& out) { T::Requires(out); })
+                T::Requires(info.required);
+            return RegisterClass(Move(info));
+        }
+    }
+
+// Declares an engine class: its base, its class ID and its flags. Classes register on first use, on the
+// main thread (the object model's thread); the index is a plain static, so asking for it costs a load and a compare.
+#define HX_ENGINE_CLASS(Type, BaseType, Id, Flags)                                                 \
+public:                                                                                             \
+    using Base = BaseType;                                                                          \
+    [[maybe_unused]] static constexpr ::helix::StringView kTypeName = #Type;                        \
+    [[maybe_unused]] static constexpr ::helix::i32 kClassId = Id;                                   \
+    static ::helix::u32 StaticClass()                                                               \
+    {                                                                                               \
+        static ::helix::u32 index = ::helix::engine::kNoClass;                                      \
+        if (index == ::helix::engine::kNoClass) [[unlikely]]                                        \
+            index = ::helix::engine::detail::Register<Type, Flags>(#Type, Id);                      \
+        return index;                                                                               \
+    }
+
+    class Object
+    {
+        HX_ENGINE_CLASS(Object, void, ClassId::Object, ClassAbstract)
+
+    public:
+        virtual ~Object() = default;
+
+        EntityId GetEntityId() const { return id_; }
+        u32 ClassIndex() const { return classIndex_; }
+        const ClassInfo& Class() const { return GetClass(classIndex_); }
+        // The class the object was made as (the registry index).
+        u32 ClassIndexFast() const { return classIndex_; }
+        template <class T>
+        bool Is() const
+        {
+            return IsDerivedFrom(classIndex_, ClassOf<T>());
+        }
+
+        // Components forward their name to their GameObject.
+        virtual StringView Name() const { return name_; }
+        virtual void SetName(StringView name) { name_ = name; }
+
+        HideFlags hideFlags = HideFlags::None;
+
+        // Assets (loaded or created as assets) as opposed to objects of scenes.
+        bool IsPersistent() const { return persistent_; }
+        void SetPersistent(bool persistent) { persistent_ = persistent; }
+        bool IsDontDestroyOnLoad() const { return dontDestroyOnLoad_; }
+
+        template <class V>
+        void Transfer(V& v)
+        {
+            u32 flags = u32(hideFlags);
+            v.Field("m_ObjectHideFlags", flags);
+            hideFlags = HideFlags(flags);
+        }
+
+    protected:
+        Object() = default;
+        // Fields only: a copy has no identity until the table gives it one.
+        Object(const Object& other) : hideFlags(other.hideFlags), name_(other.name_) {}
+        Object& operator=(const Object&) = delete;
+
+        String name_;
+
+    private:
+        friend struct ObjectAccess;
+        friend void DeleteObject(Object*);
+        EntityId id_;
+        u32 classIndex_ = kNoClass;
+        u32 listPosition_ = 0;
+        bool persistent_ = false;
+        bool dontDestroyOnLoad_ = false;
+        bool destroying_ = false;
+        // Made in its class's pool (not by `new`).
+        bool pooled_ = false;
+    };
+
+    namespace detail
+    {
+        struct Slot
+        {
+            Object* object = nullptr;
+            u32 generation = 1;
+            u32 nextFree = 0;
+        };
+        // The object table's slots, for the inline lookup below (refreshed whenever the table grows).
+        struct ObjectTables
+        {
+            const Slot* slots = nullptr;
+            u32 count = 0;
+            // The objects made as each class (by class index), dense.
+            const Array<Object*>* perClass = nullptr;
+        };
+        extern ObjectTables gObjectTables;
+    }
+
+    // Calls f(Object*) for every object of the class and its subclasses until it returns false.
+    template <class F>
+    void ForEachObjectOfClass(u32 klass, F&& f)
+    {
+        const detail::ClassTables& c = detail::gClassTables;
+        if (klass >= c.count)
+            return;
+        for (u32 o = c.orders[klass], end = o + c.sizes[klass]; o < end; o++)
+            for (Object* object : detail::gObjectTables.perClass[c.byOrder[o]])
+                if (!f(object))
+                    return;
+    }
+
+    // One array access and a generation compare; null for None, ids of destroyed objects and out of range slots.
+    inline Object* EntityIdToObject(EntityId id)
+    {
+        const detail::ObjectTables& t = detail::gObjectTables;
+        u32 slot = id.Slot();
+        if (slot == 0 || slot >= t.count)
+            return nullptr;
+        const detail::Slot& s = t.slots[slot];
+        return s.generation == id.Generation() ? s.object : nullptr;
+    }
+
+    // A new object of a registered class, made in the class's pool; null for abstract classes.
+    Object* NewObjectOfClass(u32 klass);
+    template <class T>
+    T* NewObject()
+    {
+        return static_cast<T*>(NewObjectOfClass(ClassOf<T>()));
+    }
+    // A copy of the object's fields as a new object of its class (no references remapped: see Instantiate).
+    Object* CloneObject(const Object& original);
+    // Adds an object made by `new` to the table (as an object of `klass`); returns it.
+    Object* AddObject(Object* object, u32 klass);
+    // Takes the object out of the table and frees it (no callbacks: see Lifecycle for the destroy rules).
+    void DeleteObject(Object* object);
+
+    template <class T>
+    T* EntityIdToObject(EntityId id)
+    {
+        Object* o = EntityIdToObject(id);
+        return o && o->Is<T>() ? static_cast<T*>(o) : nullptr;
+    }
+    bool EntityIdIsValid(EntityId id);
+    // One entry per id, null where nothing matches.
+    void EntityIdsToObjectList(Span<const EntityId> ids, Array<Object*>& out);
+    // The ids that resolve, in order.
+    void EntityIdsToValidArray(Span<const EntityId> ids, Array<EntityId>& out);
+    u32 ObjectCount();
+
+    enum class FindObjectsInactive : u8
+    {
+        Exclude,
+        Include,
+    };
+
+    // Loaded objects of the class or a subclass, unsorted: no assets, no objects with DontSave, objects on inactive
+    // GameObjects only with Include.
+    void FindObjectsByType(u32 klass, FindObjectsInactive inactive, Array<Object*>& out);
+    Object* FindAnyObjectByType(u32 klass, FindObjectsInactive inactive = FindObjectsInactive::Exclude);
+    // Every object of the class or a subclass: assets and hidden objects too.
+    void FindObjectsOfTypeAll(u32 klass, Array<Object*>& out);
+
+    // What FindObjectsByType returns: no assets, no DontSave, objects on inactive GameObjects only when asked.
+    bool IsFindable(const Object* object, bool includeInactive);
+
+    template <class T>
+    void FindObjectsByType(Array<T*>& out, FindObjectsInactive inactive = FindObjectsInactive::Exclude)
+    {
+        out.Clear();
+        bool include = inactive == FindObjectsInactive::Include;
+        ForEachObjectOfClass(ClassOf<T>(), [&](Object* o) {
+            if (IsFindable(o, include))
+                out.Push(static_cast<T*>(o));
+            return true;
+        });
+    }
+    template <class T>
+    T* FindAnyObjectByType(FindObjectsInactive inactive = FindObjectsInactive::Exclude)
+    {
+        return static_cast<T*>(FindAnyObjectByType(ClassOf<T>(), inactive));
+    }
+
+    // Visits the object references of objects: a clone's references to objects of the original turn into references
+    // to their clones. Classes name their references with PPtr fields in Transfer.
+    class ReferenceRemap
+    {
+    public:
+        static constexpr bool kReading = false;
+        static constexpr bool kText = false;
+        i32 Version() const { return 1; }
+
+        HashMap<EntityId, EntityId> map;
+
+        template <class T>
+        void Field(StringView, T& value)
+        {
+            if constexpr (requires { value.Transfer(*this); })
+                value.Transfer(*this);
+            else if constexpr (!std::is_same_v<T, String> && requires { value.Data(); value.Size(); value.begin(); })
+            {
+                for (auto& item : value)
+                    Field(StringView(), item);
+            }
+        }
+
+        void Reference(EntityId& id)
+        {
+            if (const EntityId* to = map.Find(id))
+                id = *to;
+        }
+    };
+
+    template <class T>
+    void detail::Remap(Object& o, ReferenceRemap& r)
+    {
+        static_cast<T&>(o).Transfer(r);
+    }
+
+    // A reference to an object: its EntityId, so a reference to a destroyed object reads null.
+    template <class T>
+    class PPtr
+    {
+    public:
+        static constexpr StringView kTypeName = "PPtr";
+        static constexpr bool kFlow = true;
+
+        PPtr() = default;
+        PPtr(T* object) : id_(object ? object->GetEntityId() : EntityId()) {}
+        explicit PPtr(EntityId id) : id_(id) {}
+
+        EntityId Id() const { return id_; }
+        T* Get() const { return EntityIdToObject<T>(id_); }
+        T* operator->() const { return Get(); }
+        explicit operator bool() const { return Get() != nullptr; }
+        bool operator==(const PPtr& o) const { return id_ == o.id_; }
+
+        // Visitors that know about references (the remap here, the scene files of step 3) take the id; others see the
+        // raw value.
+        template <class V>
+        void Transfer(V& v)
+        {
+            if constexpr (requires { v.Reference(id_); })
+                v.Reference(id_);
+            else
+            {
+                u64 raw = id_.value;
+                v.Field("m_Id", raw);
+                id_.value = raw;
+            }
+        }
+
+    private:
+        EntityId id_;
+    };
+}

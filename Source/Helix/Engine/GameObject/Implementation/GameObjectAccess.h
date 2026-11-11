@@ -9,8 +9,6 @@ namespace helix::engine
     {
         static SmallArray<GameObject::ComponentEntry, 4>& Components(GameObject& g) { return g.components_; }
         static void SetGameObject(Component& c, GameObject* g) { c.gameObject_ = PPtr<GameObject>(g); }
-        static PPtr<Transform>& Parent(Transform& t) { return t.parent_; }
-        static SmallArray<PPtr<Transform>, 4>& Children(Transform& t) { return t.children_; }
         static bool& ActiveInHierarchy(GameObject& g) { return g.activeInHierarchy_; }
         static bool& EnableCalled(Behaviour& b) { return b.enableCalled_; }
 
@@ -19,7 +17,5 @@ namespace helix::engine
         static void UpdateActive(GameObject* g);
         // Runs a component's enable or disable hook if whether it takes part changed.
         static void Notify(Component* c);
-        // Out of its parent's children list.
-        static void Detach(Transform* t);
     };
 }

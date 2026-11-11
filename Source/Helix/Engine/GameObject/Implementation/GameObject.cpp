@@ -1,5 +1,6 @@
 #include <Helix/Engine/GameObject/Implementation/GameObjectAccess.h>
 #include <Helix/Engine/Object/Implementation/ObjectAccess.h>
+#include <Helix/Engine/Transform/Implementation/TransformAccess.h>
 
 #include <Helix/Core/Logging/Log.h>
 
@@ -51,38 +52,56 @@ namespace helix::engine
             info.onDisable(*c);
     }
 
+    namespace
+    {
+        // Brings one GameObject in line with its parent; true if its activeInHierarchy changed.
+        bool UpdateOne(GameObject* g)
+        {
+            Transform* t = g->transform();
+            GameObject* parent = t ? GameObjectOf(t->parent()) : nullptr;
+            bool now = g->activeSelf() && (!parent || parent->activeInHierarchy());
+            bool& current = GameObjectAccess::ActiveInHierarchy(*g);
+            if (now == current)
+                return false;
+            current = now;
+            for (const GameObject::ComponentEntry& e : g->Components())
+                if (Component* c = e.component.Get())
+                    GameObjectAccess::Notify(c);
+            return true;
+        }
+    }
+
     void GameObjectAccess::UpdateActive(GameObject* g)
     {
         Transform* t = g->transform();
-        GameObject* parent = t ? GameObjectOf(t->parent()) : nullptr;
-        bool now = g->activeSelf_ && (!parent || parent->activeInHierarchy_);
-        if (now == g->activeInHierarchy_)
-            return;
-        g->activeInHierarchy_ = now;
-        // This GameObject's components first, then the children's (parents before children both ways).
-        for (const GameObject::ComponentEntry& e : g->components_)
-            if (Component* c = e.component.Get())
-                Notify(c);
-        if (t)
-            for (u32 i = 0; i < t->children_.Size(); i++)
-                if (GameObject* child = GameObjectOf(t->children_[i].Get()))
-                    UpdateActive(child);
-    }
-
-    void GameObjectAccess::Detach(Transform* t)
-    {
-        Transform* parent = t->parent_.Get();
-        if (parent)
+        if (!t)
         {
-            SmallArray<PPtr<Transform>, 4>& list = parent->children_;
-            for (u32 i = 0; i < list.Size(); i++)
-                if (list[i].Id() == t->GetEntityId())
-                {
-                    list.RemoveAt(i);
-                    break;
-                }
+            UpdateOne(g);
+            return;
         }
-        t->parent_ = PPtr<Transform>();
+        // Nothing below changes unless this one does.
+        TransformHierarchy& h = t->Hierarchy();
+        u32 first = t->NodeIndex(), end = first + h.size[first];
+        if (end == first + 1)
+        {
+            UpdateOne(g);
+            return;
+        }
+        GameObject* parent = GameObjectOf(t->parent());
+        if ((g->activeSelf_ && (!parent || parent->activeInHierarchy_)) == g->activeInHierarchy_)
+            return;
+        // The subtree's GameObjects in node order (parents first), held by id: the hooks may destroy objects.
+        SmallArray<EntityId, 16> ids;
+        for (u32 j = first; j < end; j++)
+            if (Transform* x = h.transforms[j])
+                if (GameObject* xg = x->gameObject())
+                    ids.Push(xg->GetEntityId());
+        u32& activating = TransformAccess::Activating();
+        activating++;
+        for (EntityId id : ids)
+            if (GameObject* x = EntityIdToObject<GameObject>(id))
+                UpdateOne(x);
+        activating--;
     }
 
     bool IsFindable(const Object* o, bool includeInactive) { return ObjectAccess::Findable(o, includeInactive); }
@@ -233,23 +252,39 @@ namespace helix::engine
 
     namespace
     {
+        // Self first, then the descendants in node order (depth first); inactive subtrees skipped unless asked.
         void InChildren(const GameObject* g, const Range& r, bool includeInactive, bool all, Array<Component*>& out)
         {
-            if (!includeInactive && !g->activeInHierarchy())
-                return;
-            for (const GameObject::ComponentEntry& e : g->Components())
-                if (r.Has(e.klass))
-                {
-                    out.Push(e.component.Get());
-                    if (!all)
-                        return;
-                }
+            auto visit = [&](const GameObject* x) {
+                for (const GameObject::ComponentEntry& e : x->Components())
+                    if (r.Has(e.klass))
+                    {
+                        out.Push(e.component.Get());
+                        if (!all)
+                            return true;
+                    }
+                return false;
+            };
             Transform* t = g->transform();
-            for (u32 i = 0; t && i < t->childCount(); i++)
+            if (!t)
             {
-                InChildren(t->GetChild(i)->gameObject(), r, includeInactive, all, out);
-                if (!all && !out.Empty())
+                if (includeInactive || g->activeInHierarchy())
+                    visit(g);
+                return;
+            }
+            const TransformHierarchy& h = t->Hierarchy();
+            for (u32 j = t->NodeIndex(), end = j + h.size[j]; j < end;)
+            {
+                const Transform* x = h.transforms[j];
+                const GameObject* xg = x ? x->gameObject() : nullptr;
+                if (!xg || (!includeInactive && !xg->activeInHierarchy()))
+                {
+                    j += h.size[j];
+                    continue;
+                }
+                if (visit(xg))
                     return;
+                j++;
             }
         }
 
@@ -417,74 +452,5 @@ namespace helix::engine
             return;
         enabled_ = value;
         GameObjectAccess::Notify(this);
-    }
-
-    // ------------------------------------------------------------------------------------------------ Transform
-
-    Transform* Transform::root() const
-    {
-        const Transform* t = this;
-        while (Transform* p = t->parent())
-            t = p;
-        return const_cast<Transform*>(t);
-    }
-
-    bool Transform::IsChildOf(const Transform* parent) const
-    {
-        for (const Transform* t = this; t; t = t->parent())
-            if (t == parent)
-                return true;
-        return false;
-    }
-
-    bool Transform::SetParent(Transform* parent)
-    {
-        if (parent && parent->IsChildOf(this))
-        {
-            HX_LOG_ERROR(EngineLog, "SetParent: {} cannot become a child of its own child {}.", Name(), parent->Name());
-            return false;
-        }
-        if (parent == this->parent())
-            return true;
-        GameObjectAccess::Detach(this);
-        if (parent)
-        {
-            parent_ = PPtr<Transform>(parent);
-            parent->children_.Push(PPtr<Transform>(this));
-        }
-        if (GameObject* g = gameObject())
-            GameObjectAccess::UpdateActive(g);
-        return true;
-    }
-
-    i32 Transform::GetSiblingIndex() const
-    {
-        Transform* p = parent();
-        if (!p)
-            return 0;
-        for (u32 i = 0; i < p->children_.Size(); i++)
-            if (p->children_[i].Id() == GetEntityId())
-                return i32(i);
-        return -1;
-    }
-
-    Transform* Transform::Find(StringView path) const
-    {
-        const Transform* t = this;
-        while (t && !path.Empty())
-        {
-            usize slash = path.Find('/');
-            StringView name = slash == StringView::npos ? path : path.Substr(0, slash);
-            path = slash == StringView::npos ? StringView() : path.Substr(slash + 1);
-            const Transform* found = nullptr;
-            for (u32 i = 0; i < t->children_.Size() && !found; i++)
-            {
-                Transform* c = t->children_[i].Get();
-                if (c && c->Name() == name)
-                    found = c;
-            }
-            t = found;
-        }
-        return const_cast<Transform*>(t);
     }
 }

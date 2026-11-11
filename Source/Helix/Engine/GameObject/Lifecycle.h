@@ -8,7 +8,8 @@ namespace helix::engine
     struct InstantiateParameters
     {
         Transform* parent = nullptr;
-        // Keep the world placement under the new parent (the world math comes with the hierarchy storage).
+        // Under a parent: true keeps the original's world placement, false its local values. Without a parent the
+        // clone always takes the original's world placement.
         bool worldSpace = false;
         // The original does not change while the clone is made (lets the clone be made off the main thread later).
         bool originalImmutable = false;
@@ -18,11 +19,23 @@ namespace helix::engine
     // point into the clone, others stay), any other object by itself. The clone of the root is named "<name>(Clone)"
     // and returned for the original passed (the clone of a component is that component's clone).
     Object* Instantiate(Object* original, const InstantiateParameters& parameters = {});
-    Object* Instantiate(Object* original, Transform* parent, bool worldPositionStays = false);
+    Object* Instantiate(Object* original, Transform* parent, bool instantiateInWorldSpace = false);
+    // At a world position and rotation (also under a parent).
+    Object* Instantiate(Object* original, Vector3 position, Quaternion rotation, Transform* parent = nullptr);
     template <class T>
     T* Instantiate(T* original, const InstantiateParameters& parameters = {})
     {
         return static_cast<T*>(Instantiate(static_cast<Object*>(original), parameters));
+    }
+    template <class T>
+    T* Instantiate(T* original, Transform* parent, bool instantiateInWorldSpace = false)
+    {
+        return static_cast<T*>(Instantiate(static_cast<Object*>(original), parent, instantiateInWorldSpace));
+    }
+    template <class T>
+    T* Instantiate(T* original, Vector3 position, Quaternion rotation, Transform* parent = nullptr)
+    {
+        return static_cast<T*>(Instantiate(static_cast<Object*>(original), position, rotation, parent));
     }
     // `count` clones of a GameObject; ids and transformIds (count entries each) receive the clones and their Transforms.
     bool InstantiateGameObjects(EntityId source, u32 count, Span<EntityId> ids, Span<EntityId> transformIds);

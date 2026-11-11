@@ -300,7 +300,7 @@ public:                                                                         
         explicit operator bool() const { return Get() != nullptr; }
         bool operator==(const PPtr& o) const { return id_ == o.id_; }
 
-        // Visitors that know about references (the remap here, the scene files of step 3) take the id; others see the
+        // Visitors that know about references (the remap here, scene files) take the id; others see the
         // raw value.
         template <class V>
         void Transfer(V& v)

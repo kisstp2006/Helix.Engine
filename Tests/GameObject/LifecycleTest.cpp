@@ -95,7 +95,7 @@ HX_TEST(Lifecycle, InstantiateClonesTheHierarchyAndRemapsReferences)
     GameObject* root = GameObject::Create("enemy");
     GameObject* gun = GameObject::Create("gun");
     gun->transform()->SetParent(root->transform());
-    gun->transform()->localPosition = Vector3(1, 2, 3);
+    gun->transform()->SetLocalPosition(Vector3(1, 2, 3));
     Linker* link = root->AddComponent<Linker>();
     link->target = PPtr<GameObject>(gun);
     link->list.Push(PPtr<Object>(outside));
@@ -110,7 +110,7 @@ HX_TEST(Lifecycle, InstantiateClonesTheHierarchyAndRemapsReferences)
     Transform* copiedGun = copy->transform()->GetChild(0);
     HX_REQUIRE(copiedGun && copiedGun != gun->transform());
     // Only the root is renamed; fields are copied.
-    HX_CHECK(copiedGun->gameObject()->Name() == StringView("gun") && copiedGun->localPosition.y == 2);
+    HX_CHECK(copiedGun->gameObject()->Name() == StringView("gun") && copiedGun->localPosition().y == 2);
     Linker* copiedLink = copy->GetComponent<Linker>();
     HX_REQUIRE(copiedLink && copiedLink != link && copiedLink->value == 7);
     // Inside the clone: to the clone; outside: kept.

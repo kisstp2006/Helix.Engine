@@ -1,6 +1,7 @@
 #include <Helix/Engine/GameObject/Implementation/GameObjectAccess.h>
 #include <Helix/Engine/GameObject/Lifecycle.h>
 #include <Helix/Engine/Object/Implementation/ObjectAccess.h>
+#include <Helix/Engine/Transform/Implementation/TransformAccess.h>
 
 #include <Helix/Core/Logging/Log.h>
 #include <Helix/Core/Strings/Format.h>
@@ -29,17 +30,35 @@ namespace helix::engine
             return q;
         }
 
-        // Every GameObject and component of a hierarchy, parents before children, each GameObject before its components.
-        void Collect(GameObject* g, Array<Object*>& out)
+        // Every GameObject and component of a hierarchy in node order (parents before children), each GameObject
+        // before its components; the Transforms in node order too.
+        void Collect(GameObject* g, Array<Object*>& out, Array<Transform*>& transforms)
         {
-            out.Push(g);
-            for (const GameObject::ComponentEntry& e : g->Components())
-                if (Component* c = e.component.Get())
-                    out.Push(c);
-            if (Transform* t = g->transform())
-                for (u32 i = 0; i < t->childCount(); i++)
-                    if (Transform* child = t->GetChild(i))
-                        Collect(child->gameObject(), out);
+            auto add = [&](GameObject* x) {
+                out.Push(x);
+                for (const GameObject::ComponentEntry& e : x->Components())
+                    if (Component* c = e.component.Get())
+                        out.Push(c);
+            };
+            Transform* t = g->transform();
+            if (!t)
+            {
+                add(g);
+                return;
+            }
+            const TransformHierarchy& h = t->Hierarchy();
+            for (u32 j = t->NodeIndex(), end = j + h.size[j]; j < end;)
+            {
+                Transform* x = h.transforms[j];
+                if (!x)
+                {
+                    j += h.size[j];
+                    continue;
+                }
+                transforms.Push(x);
+                add(x->gameObject());
+                j++;
+            }
         }
 
         // The component's disable and destroy hooks, then the object goes (its GameObject keeps no entry for it).
@@ -67,19 +86,23 @@ namespace helix::engine
             DeleteObject(c);
         }
 
-        // Children first, then the components from the last to the first (the Transform last), then the GameObject.
+        // Children first (the last first), then the components from the last to the first (the Transform last), then
+        // the GameObject. The hierarchy stays as it is while the hooks run; destroyed children's nodes are marked dead
+        // and the topmost destroyed Transform takes the whole range out at once.
         void DestroyGameObject(GameObject* g)
         {
             ObjectAccess::SetDestroying(g);
             if (Transform* t = g->transform())
-                while (t->childCount())
-                {
-                    Transform* child = t->GetChild(t->childCount() - 1);
-                    GameObjectAccess::Detach(child);
-                    DestroyGameObject(child->gameObject());
-                }
-            if (Transform* t = g->transform())
-                GameObjectAccess::Detach(t);
+            {
+                // By id: the hooks may destroy other objects.
+                SmallArray<EntityId, 8> children;
+                for (u32 i = 0, n = t->childCount(); i < n; i++)
+                    children.Push(t->GetChild(i)->GetEntityId());
+                for (u32 i = u32(children.Size()); i-- > 0;)
+                    if (Transform* child = EntityIdToObject<Transform>(children[i]))
+                        if (GameObject* cg = child->gameObject(); cg && !ObjectAccess::Destroying(cg))
+                            DestroyGameObject(cg);
+            }
             SmallArray<GameObject::ComponentEntry, 4>& list = GameObjectAccess::Components(*g);
             while (!list.Empty())
             {
@@ -118,19 +141,32 @@ namespace helix::engine
             return true;
         }
 
-        Object* CloneHierarchy(Object* original, Transform* parent)
+        // Where the clone's root goes: under `parent` (world or local placement kept), or a root with the original's
+        // world placement; `placed` puts it at a world position and rotation instead.
+        struct Placement
+        {
+            Transform* parent = nullptr;
+            bool worldSpace = false;
+            bool placed = false;
+            Vector3 position;
+            Quaternion rotation;
+        };
+
+        Object* CloneHierarchy(Object* original, const Placement& where)
         {
             GameObject* root = original->Is<GameObject>()   ? static_cast<GameObject*>(original)
                                : original->Is<Component>() ? static_cast<Component*>(original)->gameObject()
                                                            : nullptr;
             ReferenceRemap remap;
             Array<Object*> originals, clones;
+            Array<Transform*> originalTransforms, cloneTransforms;
             if (root)
-                Collect(root, originals);
+                Collect(root, originals, originalTransforms);
             else
                 originals.Push(original);
             remap.map.Reserve(originals.Size());
             clones.Reserve(originals.Size());
+            cloneTransforms.Reserve(originalTransforms.Size());
             for (Object* o : originals)
             {
                 Object* c = CloneObject(*o);
@@ -138,23 +174,33 @@ namespace helix::engine
                     return nullptr;
                 remap.map.Set(o->GetEntityId(), c->GetEntityId());
                 clones.Push(c);
+                if (c->Is<Transform>())
+                    cloneTransforms.Push(static_cast<Transform*>(c));
+            }
+            Object* top = clones[0];
+            if (root)
+            {
+                // The copy's hierarchy: the original's nodes, parents and local values in one block, a new root.
+                TransformAccess::BuildClone(Span<Transform* const>(originalTransforms.Data(), originalTransforms.Size()),
+                                            Span<Transform* const>(cloneTransforms.Data(), cloneTransforms.Size()));
+                Transform* from = originalTransforms[0];
+                Transform* t = cloneTransforms[0];
+                if (where.parent)
+                    TransformAccess::Place(t, where.parent, ~0u);
+                if (where.placed)
+                    t->SetPositionAndRotation(where.position, where.rotation);
+                else if ((!where.parent || where.worldSpace) && from->parent())
+                    TransformAccess::SetWorld(t, from->localToWorldMatrix(), from->rotation());
+                else if (where.parent)
+                    TransformAccess::MarkChanged(t->Hierarchy(), t->NodeIndex());
             }
             for (Object* c : clones)
                 c->Class().remap(*c, remap);
-            Object* top = clones[0];
             top->SetName(Format("{}(Clone)", original->Name()));
             if (root)
             {
-                // The root's parent was outside the clone: the clone hangs where it is told to, or at the root.
-                GameObject* g = static_cast<GameObject*>(top);
-                Transform* t = g->transform();
-                GameObjectAccess::Parent(*t) = PPtr<Transform>();
-                if (parent)
-                {
-                    GameObjectAccess::Parent(*t) = PPtr<Transform>(parent);
-                    GameObjectAccess::Children(*parent).Push(PPtr<Transform>(t));
-                }
                 // Copies start inactive and enable through the normal path, parents first.
+                GameObject* g = static_cast<GameObject*>(top);
                 for (Object* c : clones)
                     if (c->Is<GameObject>())
                         GameObjectAccess::ActiveInHierarchy(*static_cast<GameObject*>(c)) = false;
@@ -162,24 +208,42 @@ namespace helix::engine
             }
             return EntityIdToObject(*remap.map.Find(original->GetEntityId()));
         }
+
+        Object* Clone(Object* original, const Placement& where)
+        {
+            if (!original)
+            {
+                HX_LOG_ERROR(LifecycleLog, "Instantiate: the object to clone is null.");
+                return nullptr;
+            }
+            return CloneHierarchy(original, where);
+        }
     }
 
     Object* Instantiate(Object* original, const InstantiateParameters& parameters)
     {
-        if (!original)
-        {
-            HX_LOG_ERROR(LifecycleLog, "Instantiate: the object to clone is null.");
-            return nullptr;
-        }
-        return CloneHierarchy(original, parameters.parent);
+        Placement where;
+        where.parent = parameters.parent;
+        where.worldSpace = parameters.worldSpace;
+        return Clone(original, where);
     }
 
-    Object* Instantiate(Object* original, Transform* parent, bool worldPositionStays)
+    Object* Instantiate(Object* original, Transform* parent, bool instantiateInWorldSpace)
     {
-        InstantiateParameters p;
-        p.parent = parent;
-        p.worldSpace = worldPositionStays;
-        return Instantiate(original, p);
+        Placement where;
+        where.parent = parent;
+        where.worldSpace = instantiateInWorldSpace;
+        return Clone(original, where);
+    }
+
+    Object* Instantiate(Object* original, Vector3 position, Quaternion rotation, Transform* parent)
+    {
+        Placement where;
+        where.parent = parent;
+        where.placed = true;
+        where.position = position;
+        where.rotation = rotation;
+        return Clone(original, where);
     }
 
     bool InstantiateGameObjects(EntityId source, u32 count, Span<EntityId> ids, Span<EntityId> transformIds)
@@ -189,7 +253,7 @@ namespace helix::engine
             return false;
         for (u32 i = 0; i < count; i++)
         {
-            GameObject* c = static_cast<GameObject*>(CloneHierarchy(g, nullptr));
+            GameObject* c = static_cast<GameObject*>(CloneHierarchy(g, Placement()));
             ids[i] = c->GetEntityId();
             transformIds[i] = c->transform()->GetEntityId();
         }

@@ -3,15 +3,13 @@
 #include <Helix/Engine/GameObject/Tags.h>
 #include <Helix/Engine/Object/Object.h>
 #include <Helix/Engine/Object/SmallArray.h>
-#include <Helix/Math/Quaternion.h>
-#include <Helix/Math/Vector.h>
 
-// GameObject, Component, Behaviour and Transform. The Transform here keeps parent, children and local TRS as plain
-// fields; the hierarchy storage of step 2 replaces its insides behind the same interface.
+// GameObject, Component and Behaviour (Transform is in Transform/Transform.h).
 namespace helix::engine
 {
     class Component;
     class Transform;
+    struct TransformHandle;
 
     class GameObject final : public Object
     {
@@ -40,6 +38,7 @@ namespace helix::engine
         void SetActive(bool value);
 
         Transform* transform() const;
+        TransformHandle transformHandle() const;
 
         // AddComponent adds the classes the new one requires first; null for abstract classes, classes that are not
         // components, a second component of a DisallowMultipleComponent class or a second Transform.
@@ -134,6 +133,7 @@ namespace helix::engine
     public:
         GameObject* gameObject() const { return gameObject_.Get(); }
         Transform* transform() const;
+        TransformHandle transformHandle() const;
         StringView Name() const override;
         void SetName(StringView name) override;
         StringView TagString() const;
@@ -190,58 +190,6 @@ namespace helix::engine
         bool enabled_ = true;
         bool enableCalled_ = false;
     };
-
-    class Transform final : public Component
-    {
-        HX_ENGINE_CLASS(Transform, Component, ClassId::Transform, ClassDisallowMultiple)
-
-    public:
-        Transform* parent() const { return parent_.Get(); }
-        u32 childCount() const { return u32(children_.Size()); }
-        Transform* GetChild(u32 index) const { return index < children_.Size() ? children_[index].Get() : nullptr; }
-        Transform* root() const;
-        // Moves the transform under `parent` (null: a root) as its last child; false for cycles.
-        bool SetParent(Transform* parent);
-        bool IsChildOf(const Transform* parent) const;
-        i32 GetSiblingIndex() const;
-        // A child by name or path ("a/b").
-        Transform* Find(StringView path) const;
-
-        Vector3 localPosition = Vector3(0, 0, 0);
-        Quaternion localRotation = Quaternion::identity();
-        Vector3 localScale = Vector3(1, 1, 1);
-
-        template <class V>
-        void Transfer(V& v)
-        {
-            Base::Transfer(v);
-            Value<4> r{&localRotation.x};
-            Value<3> p{&localPosition.x}, s{&localScale.x};
-            v.Field("m_LocalRotation", r);
-            v.Field("m_LocalPosition", p);
-            v.Field("m_LocalScale", s);
-            v.Field("m_Children", children_);
-            v.Field("m_Father", parent_);
-        }
-
-    private:
-        friend struct GameObjectAccess;
-        // A vector or quaternion as scene files write it: {x: 0, y: 0, z: 0[, w: 1]}.
-        template <u32 N>
-        struct Value
-        {
-            static constexpr StringView kTypeName = N == 4 ? StringView("Quaternionf") : StringView("Vector3f");
-            static constexpr bool kFlow = true;
-            float* f;
-            template <class V>
-            void Transfer(V& v)
-            {
-                const char* names[4] = {"x", "y", "z", "w"};
-                for (u32 i = 0; i < N; i++)
-                    v.Field(names[i], f[i]);
-            }
-        };
-        PPtr<Transform> parent_;
-        SmallArray<PPtr<Transform>, 4> children_;
-    };
 }
+
+#include <Helix/Engine/Transform/Transform.h>

@@ -10,6 +10,7 @@
 // Classes are numbered depth first, so "derives from" is a range test on those numbers.
 namespace helix::serialization
 {
+    struct AssetReference;
     class ReferenceTable;
     class SerializedFile;
     class SerializedFileWriter;
@@ -74,6 +75,9 @@ namespace helix::engine
         bool (*readYaml)(Object&, const serialization::yaml::Tree&, u32 root, Array<String>& errors, serialization::ReferenceTable*) = nullptr;
         void (*writeBinary)(Object&, serialization::SerializedFileWriter&, i64 fileID, serialization::ReferenceTable*) = nullptr;
         bool (*readBinary)(Object&, const serialization::SerializedFile&, u32 index, String& error, serialization::ReferenceTable*) = nullptr;
+        // One field by its property path (prefab modifications).
+        bool (*applyProperty)(Object&, StringView path, StringView value, const serialization::AssetReference& reference,
+                              serialization::ReferenceTable*, String& error) = nullptr;
 
         // Filled by the registry: the depth first number and the end of the subtree.
         u32 order = 0, orderEnd = 0;

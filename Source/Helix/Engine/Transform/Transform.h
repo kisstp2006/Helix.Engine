@@ -198,8 +198,9 @@ namespace helix::engine
             if constexpr (V::kReading)
             {
                 SetLocal(l);
-                if (detail::gTransformLinks)
-                    detail::gTransformLinks->Push({this, father, Move(children)});
+                if constexpr (!requires { V::kPartial; })
+                    if (detail::gTransformLinks)
+                        detail::gTransformLinks->Push({this, father, Move(children)});
             }
         }
 

@@ -47,6 +47,69 @@ namespace helix::engine
     {
         return static_cast<T*>(Instantiate(static_cast<Object*>(original), scene));
     }
+    // A clone made over frames: copies integrate on the main thread in ProcessAsyncInstantiations, as many per frame as
+    // the integration time allows (each copy enabled when it is made). A handle: an operation finished long ago reads
+    // as done.
+    struct AsyncInstantiateOperation
+    {
+        u32 id = 0;
+
+        bool IsValid() const { return id != 0; }
+        bool isDone() const;
+        // Copies made / count (0.9 while waiting for allowSceneActivation with nothing made).
+        f32 progress() const;
+        i32 priority() const;
+        void SetPriority(i32 value) const;
+        bool allowSceneActivation() const;
+        void SetAllowSceneActivation(bool value) const;
+        // Held by allowSceneActivation with everything else done.
+        bool IsWaitingForSceneActivation() const;
+        // Makes every copy now (whatever allowSceneActivation says).
+        void WaitForCompletion() const;
+        // Destroys the copies made so far; the operation is done with no result.
+        void Cancel() const;
+        // The copies (count of them once done), in order.
+        void Result(Array<Object*>& out) const;
+        // Called when done; at once when it already is.
+        void AddCompleted(void (*callback)(void* user, AsyncInstantiateOperation op), void* user = nullptr) const;
+
+        // The time per frame for making copies, in milliseconds (2 by default).
+        static void SetIntegrationTimeMS(f32 milliseconds);
+        static f32 GetIntegrationTimeMS();
+    };
+
+    // `count` copies; with positions (and rotations) copy i goes to positions[i % size] in world space; the parent and
+    // scene of the parameters as for Instantiate.
+    AsyncInstantiateOperation InstantiateAsync(Object* original, u32 count, Span<const Vector3> positions, Span<const Quaternion> rotations,
+                                               const InstantiateParameters& parameters = {});
+    inline AsyncInstantiateOperation InstantiateAsync(Object* original, const InstantiateParameters& parameters = {})
+    {
+        return InstantiateAsync(original, 1, {}, {}, parameters);
+    }
+    inline AsyncInstantiateOperation InstantiateAsync(Object* original, u32 count, const InstantiateParameters& parameters = {})
+    {
+        return InstantiateAsync(original, count, {}, {}, parameters);
+    }
+    inline AsyncInstantiateOperation InstantiateAsync(Object* original, u32 count, Transform* parent)
+    {
+        InstantiateParameters p;
+        p.parent = parent;
+        return InstantiateAsync(original, count, {}, {}, p);
+    }
+    inline AsyncInstantiateOperation InstantiateAsync(Object* original, Transform* parent) { return InstantiateAsync(original, 1, parent); }
+    inline AsyncInstantiateOperation InstantiateAsync(Object* original, u32 count, Vector3 position, Quaternion rotation, Transform* parent = nullptr)
+    {
+        InstantiateParameters p;
+        p.parent = parent;
+        return InstantiateAsync(original, count, Span<const Vector3>(&position, 1), Span<const Quaternion>(&rotation, 1), p);
+    }
+    inline AsyncInstantiateOperation InstantiateAsync(Object* original, Vector3 position, Quaternion rotation, Transform* parent = nullptr)
+    {
+        return InstantiateAsync(original, 1, position, rotation, parent);
+    }
+    // Makes the copies that are due within the integration time; the player loop calls it once a frame.
+    void ProcessAsyncInstantiations();
+
     // `count` clones of a GameObject as roots of `scene` (invalid: the active scene); ids and transformIds (count entries
     // each) receive the clones and their Transforms.
     bool InstantiateGameObjects(EntityId source, u32 count, Span<EntityId> ids, Span<EntityId> transformIds, Scene scene = Scene());

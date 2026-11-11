@@ -26,6 +26,88 @@ namespace helix::engine
         }
     };
 
+    // A prefab instance as a file keeps it: the source prefab and what is changed in this copy of it. References point
+    // at objects of the source by their fileIDs there (target, removed objects) or at objects of this file.
+    struct PropertyModification
+    {
+        static constexpr StringView kTypeName = "PropertyModification";
+        serialization::AssetReference target;
+        String propertyPath;
+        String value;
+        serialization::AssetReference objectReference;
+
+        template <class V>
+        void Transfer(V& v)
+        {
+            v.Field("target", target);
+            v.Field("propertyPath", propertyPath);
+            v.Field("value", value);
+            v.Field("objectReference", objectReference);
+        }
+    };
+
+    // An object of this file added to an object of the instance (a child GameObject or a component).
+    struct AddedObject
+    {
+        static constexpr StringView kTypeName = "AddedObject";
+        serialization::AssetReference targetCorrespondingSourceObject;
+        i32 insertIndex = -1;
+        serialization::AssetReference addedObject;
+
+        template <class V>
+        void Transfer(V& v)
+        {
+            v.Field("targetCorrespondingSourceObject", targetCorrespondingSourceObject);
+            v.Field("insertIndex", insertIndex);
+            v.Field("addedObject", addedObject);
+        }
+    };
+
+    struct PrefabModification
+    {
+        static constexpr StringView kTypeName = "PrefabModification";
+        static constexpr i32 kVersion = 3;
+        serialization::AssetReference m_TransformParent;
+        Array<PropertyModification> m_Modifications = Array<PropertyModification>();
+        Array<serialization::AssetReference> m_RemovedComponents = Array<serialization::AssetReference>();
+        Array<serialization::AssetReference> m_RemovedGameObjects = Array<serialization::AssetReference>();
+        Array<AddedObject> m_AddedGameObjects = Array<AddedObject>();
+        Array<AddedObject> m_AddedComponents = Array<AddedObject>();
+
+        template <class V>
+        void Transfer(V& v)
+        {
+            v.Field("m_TransformParent", m_TransformParent);
+            v.Field("m_Modifications", m_Modifications);
+            v.Field("m_RemovedComponents", m_RemovedComponents);
+            v.Field("m_RemovedGameObjects", m_RemovedGameObjects);
+            v.Field("m_AddedGameObjects", m_AddedGameObjects);
+            v.Field("m_AddedComponents", m_AddedComponents);
+        }
+    };
+
+    struct PrefabInstanceData
+    {
+        static constexpr StringView kTypeName = "PrefabInstance";
+        static constexpr i32 kVersion = 2;
+        u32 m_ObjectHideFlags = 0;
+        PrefabModification m_Modification;
+        serialization::AssetReference m_SourcePrefab;
+
+        template <class V>
+        void Transfer(V& v)
+        {
+            v.Field("m_ObjectHideFlags", m_ObjectHideFlags);
+            v.Field("m_Modification", m_Modification);
+            v.Field("m_SourcePrefab", m_SourcePrefab);
+        }
+    };
+
+    inline constexpr i32 kPrefabInstanceClassId = 1001;
+
+    // The fileID of an object of a prefab instance: (instance XOR source object) without the sign bit.
+    constexpr i64 InstanceObjectFileId(i64 instance, i64 source) { return (instance ^ source) & 0x7FFFFFFFFFFFFFFF; }
+
     class SceneBuilder
     {
     public:
@@ -38,6 +120,11 @@ namespace helix::engine
         // Maps the file's fileIDs to the created objects; pass it to the class's read function.
         virtual serialization::ReferenceTable& References() = 0;
         virtual void SetRoots(SceneRoots& roots) = 0;
+        // A placeholder (`stripped`) for an object of a prefab instance that other objects of the file refer to.
+        virtual void AddStripped(i64 fileId, const serialization::AssetReference& source, i64 instanceFileId) = 0;
+        virtual void AddPrefabInstance(i64 fileId, PrefabInstanceData& instance, u32 line) = 0;
+        // Makes the copies of the prefab instances (after every object was created, before their fields are read).
+        virtual void ResolvePrefabInstances() = 0;
         virtual void Error(StringView message) = 0;
         virtual void Warning(StringView message) = 0;
     };

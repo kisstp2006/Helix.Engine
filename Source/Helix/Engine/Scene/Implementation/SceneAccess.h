@@ -5,6 +5,16 @@
 
 namespace helix::engine
 {
+    // The slot of the objects of prefab assets: in no scene.
+    inline constexpr u32 kAssetSlot = 1023;
+
+    struct SceneBuildOptions
+    {
+        // Assets: persistent objects, not enabled.
+        bool persistent = false;
+        bool enable = true;
+    };
+
     // What the scene files reach inside the SceneManager.
     struct SceneAccess
     {
@@ -15,6 +25,7 @@ namespace helix::engine
 
         // Creates, reads, checks, links and enables the objects of a parsed file in the scene; false when something in
         // it was wrong (`errors` say what).
-        static bool Build(const SceneFormat& format, ParsedScene& parsed, u32 slot, Array<String>& errors);
+        static bool Build(const SceneFormat& format, ParsedScene& parsed, u32 slot, Array<String>& errors,
+                          const SceneBuildOptions& options = {}, Array<EntityId>* roots = nullptr);
     };
 }

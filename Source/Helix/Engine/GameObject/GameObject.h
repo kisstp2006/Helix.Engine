@@ -15,6 +15,20 @@ namespace helix::engine
     // The scene culling mask of objects in the main stage, seen in game and scene views.
     inline constexpr u64 kDefaultSceneCullingMask = 0xE000000000000000ull;
 
+    // The links of an object of a prefab instance to its source, as text files write them: null in objects the loader
+    // resolved (players keep no links); binary files leave them out.
+    template <class V>
+    void TransferPrefabLinks(V& v)
+    {
+        if constexpr (V::kText)
+        {
+            serialization::AssetReference link;
+            v.Field("m_CorrespondingSourceObject", link);
+            v.Field("m_PrefabInstance", link);
+            v.Field("m_PrefabAsset", link);
+        }
+    }
+
     class GameObject final : public Object
     {
         HX_ENGINE_CLASS(GameObject, Object, ClassId::GameObject, ClassNone)
@@ -94,6 +108,7 @@ namespace helix::engine
         void Transfer(V& v)
         {
             Base::Transfer(v);
+            TransferPrefabLinks(v);
             // Visitors take arrays: the list goes through one and back (the remap changes the references in it).
             Array<ComponentEntry> list;
             list.Reserve(components_.Size());
@@ -166,6 +181,7 @@ namespace helix::engine
         void Transfer(V& v)
         {
             Base::Transfer(v);
+            TransferPrefabLinks(v);
             v.Field("m_GameObject", gameObject_);
         }
 

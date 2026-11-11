@@ -6,6 +6,7 @@
 #include <Helix/Engine/Object/Class.h>
 #include <Helix/Engine/Object/EntityId.h>
 #include <Helix/Serialization/SerializedFile/SerializedFile.h>
+#include <Helix/Serialization/Transfer/Property.h>
 #include <Helix/Serialization/Transfer/Yaml.h>
 
 #include <type_traits>
@@ -204,6 +205,8 @@ public:                                                                         
     Object* AddObject(Object* object, u32 klass);
     // Takes the object out of the table and frees it (no callbacks: see Lifecycle for the destroy rules).
     void DeleteObject(Object* object);
+    // Room in the object table for `count` more objects (batches make their objects without regrowing it).
+    void ReserveObjects(u32 count);
 
     template <class T>
     T* EntityIdToObject(EntityId id)
@@ -261,6 +264,9 @@ public:                                                                         
         i32 Version() const { return 1; }
 
         HashMap<EntityId, EntityId> map;
+        // Instead of the map: originals to their places (built once per prefab) and the clones' ids at those places.
+        const HashMap<EntityId, u32>* index = nullptr;
+        const EntityId* ids = nullptr;
 
         template <class T>
         void Field(StringView, T& value)
@@ -276,7 +282,12 @@ public:                                                                         
 
         void Reference(EntityId& id)
         {
-            if (const EntityId* to = map.Find(id))
+            if (index)
+            {
+                if (const u32* k = index->Find(id))
+                    id = ids[*k];
+            }
+            else if (const EntityId* to = map.Find(id))
                 id = *to;
         }
     };
@@ -300,6 +311,9 @@ public:                                                                         
         };
         info.readBinary = [](Object& o, const SerializedFile& f, u32 index, String& error, ReferenceTable* refs) {
             return f.Read(index, static_cast<T&>(o), error, refs);
+        };
+        info.applyProperty = [](Object& o, StringView path, StringView value, const AssetReference& reference, ReferenceTable* refs, String& error) {
+            return ApplyProperty(static_cast<T&>(o), path, value, reference, refs, error);
         };
     }
 

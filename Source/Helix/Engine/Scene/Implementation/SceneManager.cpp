@@ -74,6 +74,8 @@ namespace helix::engine
             Array<u32> order;
             u32 active = 1;
             Array<String> buildScenes;
+            // The fileIDs of prefab assets' objects in their files.
+            HashMap<EntityId, i64> assetFileIds;
             FileSceneSource files;
             SceneSource* source = nullptr;
             Array<Request*> queue;
@@ -161,7 +163,8 @@ namespace helix::engine
                 }
             if (index == kMaxSlots)
             {
-                if (gState.slots.Size() == kMaxSlots)
+                // The last slot is the assets'.
+                if (gState.slots.Size() == kAssetSlot)
                     return kMaxSlots;
                 index = u32(gState.slots.Size());
                 gState.slots.Emplace();
@@ -429,7 +432,12 @@ namespace helix::engine
 
     // ---------------------------------------------------------------------------------------------- SceneAccess
 
-    HashMap<EntityId, i64>* SceneAccess::FileIds(u32 slot) { return slot < gState.slots.Size() && gState.slots[slot].used ? &gState.slots[slot].fileIds : nullptr; }
+    HashMap<EntityId, i64>* SceneAccess::FileIds(u32 slot)
+    {
+        if (slot == kAssetSlot)
+            return &gState.assetFileIds;
+        return slot < gState.slots.Size() && gState.slots[slot].used ? &gState.slots[slot].fileIds : nullptr;
+    }
 
     i64 SceneAccess::NewFileId(u32 slot, const HashMap<i64, EntityId>& used)
     {

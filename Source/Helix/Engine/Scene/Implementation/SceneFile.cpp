@@ -1,4 +1,6 @@
+#include <Helix/Engine/GameObject/Implementation/CloneAccess.h>
 #include <Helix/Engine/GameObject/Implementation/GameObjectAccess.h>
+#include <Helix/Engine/Prefab/Prefab.h>
 #include <Helix/Engine/GameObject/Lifecycle.h>
 #include <Helix/Engine/Object/Implementation/ObjectAccess.h>
 #include <Helix/Engine/Scene/Implementation/SceneAccess.h>
@@ -136,7 +138,8 @@ namespace helix::engine
         class Builder final : public SceneBuilder
         {
         public:
-            Builder(u32 slot, Array<String>& errors) : slot_(slot), errors_(errors), scene_(TransformAccess::NewRootScene())
+            Builder(u32 slot, Array<String>& errors, const SceneBuildOptions& options)
+                : slot_(slot), errors_(errors), scene_(TransformAccess::NewRootScene()), options_(options)
             {
                 // Every root made from now on comes after this one.
                 for (TransformHierarchy* h = FirstRootHierarchy(slot); h; h = h->nextRoot)
@@ -173,6 +176,8 @@ namespace helix::engine
                     return nullptr;
                 }
                 Object* o = NewObjectOfClass(klass);
+                if (options_.persistent)
+                    o->SetPersistent(true);
                 table_.objects.Set(fileId, o->GetEntityId());
                 fileIds_.Push(fileId);
                 created_.Push(o->GetEntityId());
@@ -188,6 +193,107 @@ namespace helix::engine
                 links_.Reserve(objects / 2);
             }
             void SetRoots(SceneRoots& roots) override { roots_ = Move(roots.m_Roots); }
+
+            void AddStripped(i64 fileId, const AssetReference& source, i64 instanceFileId) override
+            {
+                stripped_.Push({fileId, source, instanceFileId});
+            }
+
+            void AddPrefabInstance(i64 fileId, PrefabInstanceData& instance, u32 line) override
+            {
+                Instance& in = instances_.Emplace();
+                in.fileId = fileId;
+                in.line = line;
+                in.data = Move(instance);
+            }
+
+            void ResolvePrefabInstances() override
+            {
+                HashMap<EntityId, i64>* assetIds = SceneAccess::FileIds(kAssetSlot);
+                // The copies: their objects get fileIDs by the instance rule (stripped placeholders name them too).
+                for (Instance& in : instances_)
+                {
+                    GameObject* source = FindPrefab(in.data.m_SourcePrefab.guid);
+                    char guid[33];
+                    in.data.m_SourcePrefab.guid.ToChars(guid);
+                    if (!source)
+                    {
+                        Error(Format("line {}: the prefab {} of a prefab instance is not loaded", in.line, StringView(guid, 32)));
+                        continue;
+                    }
+                    Array<Object*> originals, clones;
+                    if (!CloneAccess::Copy(source, slot_, originals, clones))
+                    {
+                        Error(Format("line {}: the prefab {} could not be copied", in.line, StringView(guid, 32)));
+                        continue;
+                    }
+                    in.resolved = true;
+                    in.bySource.Reserve(originals.Size());
+                    for (u32 k = 0; k < clones.Size(); k++)
+                    {
+                        Object* c = clones[k];
+                        if (options_.persistent)
+                            c->SetPersistent(true);
+                        if (c->ClassIndex() == ClassOf<GameObject>())
+                            GameObjectAccess::ActiveInHierarchy(*static_cast<GameObject*>(c)) = false;
+                        const i64* f = assetIds->Find(originals[k]->GetEntityId());
+                        if (!f)
+                            continue;
+                        in.bySource.Set(*f, c->GetEntityId());
+                        i64 id = InstanceObjectFileId(in.fileId, *f);
+                        if (!table_.objects.Find(id))
+                            table_.objects.Set(id, c->GetEntityId());
+                        created_.Push(c->GetEntityId());
+                        fileIds_.Push(id);
+                    }
+                    in.root = static_cast<GameObject*>(clones[0])->transform()->GetEntityId();
+                }
+                for (const Stripped& s : stripped_)
+                {
+                    Instance* in = FindInstance(s.instance);
+                    const EntityId* id = in ? in->bySource.Find(s.source.fileID) : nullptr;
+                    if (id)
+                        table_.objects.Set(s.fileId, *id);
+                    else
+                        table_.skipped.Set(s.fileId, u8(1));
+                }
+                // Then the changes, when every copy exists (modifications may refer to objects of other instances).
+                for (Instance& in : instances_)
+                {
+                    if (!in.resolved)
+                        continue;
+                    PrefabModification& m = in.data.m_Modification;
+                    for (const PropertyModification& p : m.m_Modifications)
+                    {
+                        Object* o = SourceObject(in, p.target);
+                        if (!o)
+                        {
+                            Warning(Format("line {}: a modification of {} is for fileID {}, which the prefab does not have", in.line, p.propertyPath, p.target.fileID));
+                            continue;
+                        }
+                        String error;
+                        if (!o->Class().applyProperty(*o, p.propertyPath, p.value, p.objectReference, &table_, error))
+                            Warning(Format("line {}: {}", in.line, error));
+                    }
+                    for (const AssetReference& r : m.m_RemovedComponents)
+                        if (Object* o = SourceObject(in, r); o && (o->Class().flags & ClassComponent) && !o->Is<Transform>())
+                            DestroyImmediate(o, true);
+                    for (const AssetReference& r : m.m_RemovedGameObjects)
+                    {
+                        Object* o = SourceObject(in, r);
+                        if (o && o->Is<Transform>())
+                            o = static_cast<Transform*>(o)->gameObject();
+                        if (o && o->ClassIndex() == ClassOf<GameObject>())
+                            DestroyImmediate(o, true);
+                    }
+                    for (const AddedObject& a : m.m_AddedComponents)
+                        added_.Push({a.addedObject.fileID, SourceId(in, a.targetCorrespondingSourceObject), a.insertIndex, false});
+                    for (const AddedObject& a : m.m_AddedGameObjects)
+                        added_.Push({a.addedObject.fileID, SourceId(in, a.targetCorrespondingSourceObject), a.insertIndex, true});
+                }
+            }
+
+            void Roots(Array<EntityId>& out) const { out = newRoots_; }
             void Error(StringView message) override { errors_.Push(String(message)); }
             void Warning(StringView message) override { HX_LOG_WARNING(SceneFileLog, "Scene file: {}", message); }
 
@@ -195,13 +301,165 @@ namespace helix::engine
             void Finish()
             {
                 detail::gTransformLinks = nullptr;
+                AttachAddedComponents();
                 CheckGameObjects();
                 Link();
+                PlaceInstances();
+                OrderRoots();
                 Remember();
                 Enable();
             }
 
         private:
+            struct Stripped
+            {
+                i64 fileId;
+                AssetReference source;
+                i64 instance;
+            };
+
+            struct Instance
+            {
+                i64 fileId = 0;
+                u32 line = 0;
+                PrefabInstanceData data;
+                // fileIDs of the source prefab's objects to their copies.
+                HashMap<i64, EntityId> bySource = HashMap<i64, EntityId>();
+                EntityId root;
+                bool resolved = false;
+            };
+
+            // An object of the file added to an object of an instance (a component, or a GameObject as a child).
+            struct Added
+            {
+                i64 fileId;
+                EntityId target;
+                i32 insertIndex;
+                bool gameObject;
+            };
+
+            Instance* FindInstance(i64 fileId)
+            {
+                for (Instance& in : instances_)
+                    if (in.fileId == fileId)
+                        return &in;
+                return nullptr;
+            }
+
+            EntityId SourceId(Instance& in, const AssetReference& r)
+            {
+                const EntityId* id = in.bySource.Find(r.fileID);
+                return id ? *id : EntityId();
+            }
+
+            Object* SourceObject(Instance& in, const AssetReference& r) { return EntityIdToObject(SourceId(in, r)); }
+
+            Object* FileObject(i64 fileId)
+            {
+                const EntityId* id = table_.objects.Find(fileId);
+                return id ? EntityIdToObject(*id) : nullptr;
+            }
+
+            static Transform* TransformOf(Object* o)
+            {
+                if (!o)
+                    return nullptr;
+                if (o->Is<Transform>())
+                    return static_cast<Transform*>(o);
+                return o->ClassIndex() == ClassOf<GameObject>() ? static_cast<GameObject*>(o)->transform() : nullptr;
+            }
+
+            // Components added to objects of instances, at their places (never before the Transform).
+            void AttachAddedComponents()
+            {
+                for (const Added& a : added_)
+                {
+                    if (a.gameObject)
+                        continue;
+                    Object* o = FileObject(a.fileId);
+                    GameObject* g = EntityIdToObject<GameObject>(a.target);
+                    if (!o || !g || !(o->Class().flags & ClassComponent))
+                        continue;
+                    Component* c = static_cast<Component*>(o);
+                    if (c->gameObject() != g || g->GetComponentIndex(c) >= 0)
+                        continue;
+                    SmallArray<GameObject::ComponentEntry, 4>& list = GameObjectAccess::Components(*g);
+                    u32 at = a.insertIndex < 1 || u32(a.insertIndex) > list.Size() ? list.Size() : u32(a.insertIndex);
+                    list.Insert(at, {PPtr<Component>(c), c->ClassIndex()});
+                }
+            }
+
+            // Instance roots under their m_TransformParent; then the children of the file's parents in the order their
+            // m_Children give.
+            void PlaceInstances()
+            {
+                Array<EntityId> parents;
+                for (Instance& in : instances_)
+                {
+                    Transform* root = EntityIdToObject<Transform>(in.root);
+                    i64 parentId = in.data.m_Modification.m_TransformParent.fileID;
+                    if (!root || parentId == 0)
+                        continue;
+                    Transform* parent = TransformOf(FileObject(parentId));
+                    if (!parent || parent->IsChildOf(root))
+                    {
+                        Error(Format("line {}: the parent of a prefab instance (fileID {}) is not in the file", in.line, parentId));
+                        continue;
+                    }
+                    TransformAccess::Place(root, parent, ~0u);
+                    TransformAccess::MarkChanged(root->Hierarchy(), root->NodeIndex());
+                    parents.Push(parent->GetEntityId());
+                }
+                if (parents.Empty())
+                    return;
+                for (const TransformLinks& l : links_)
+                {
+                    bool wanted = false;
+                    for (EntityId p : parents)
+                        wanted = wanted || p == l.transform->GetEntityId();
+                    if (!wanted)
+                        continue;
+                    i32 k = 0;
+                    for (const PPtr<Transform>& c : l.children)
+                        if (Transform* child = c.Get(); child && child->parent() == l.transform)
+                            child->SetSiblingIndex(k++);
+                }
+            }
+
+            // The roots made here, those SceneRoots names first in its order, then the others as they came.
+            void OrderRoots()
+            {
+                Array<TransformHierarchy*> mine;
+                for (TransformHierarchy* h = lastRoot_ ? lastRoot_->nextRoot : FirstRootHierarchy(slot_); h; h = h->nextRoot)
+                    mine.Push(h);
+                HashMap<TransformHierarchy*, u8> taken;
+                Array<TransformHierarchy*> order;
+                for (const PPtr<Transform>& r : roots_)
+                    if (Transform* t = r.Get(); t && !t->parent())
+                    {
+                        TransformHierarchy* h = &t->Hierarchy();
+                        bool isMine = false;
+                        for (TransformHierarchy* m : mine)
+                            isMine = isMine || m == h;
+                        if (isMine && !taken.Find(h))
+                        {
+                            taken.Set(h, u8(1));
+                            order.Push(h);
+                        }
+                    }
+                for (TransformHierarchy* h : mine)
+                    if (!taken.Find(h))
+                        order.Push(h);
+                if (!roots_.Empty())
+                    for (TransformHierarchy* h : order)
+                        TransformAccess::MoveToScene(*h, slot_);
+                newRoots_.Clear();
+                for (TransformHierarchy* h : order)
+                    if (Transform* t = h->transforms[0])
+                        if (GameObject* g = t->gameObject())
+                            newRoots_.Push(g->GetEntityId());
+            }
+
             void CheckGameObjects()
             {
                 u32 transformClass = ClassOf<Transform>();
@@ -268,6 +526,12 @@ namespace helix::engine
                     GameObject* g = c->gameObject();
                     if (g && g->GetComponentIndex(c) >= 0)
                         continue;
+                    // A component of an object of a prefab instance that m_AddedComponents does not name.
+                    if (g && !o->Is<Transform>())
+                    {
+                        GameObjectAccess::Components(*g).Push({PPtr<Component>(c), c->ClassIndex()});
+                        continue;
+                    }
                     Error(Format("a {} belongs to no GameObject that lists it; it is removed", o->Class().name));
                     if (o->Is<Transform>())
                     {
@@ -301,12 +565,19 @@ namespace helix::engine
                             roots.Push(*i);
                             visited[*i] = 1;
                         }
+                Array<u32> attached;
                 for (u32 i = 0; i < links_.Size(); i++)
-                    if (!visited[i] && !links_[i].father.Get())
-                    {
-                        roots.Push(i);
-                        visited[i] = 1;
-                    }
+                {
+                    if (visited[i])
+                        continue;
+                    Transform* father = links_[i].father.Get();
+                    if (father && index.Find(father->GetEntityId()))
+                        continue;
+                    roots.Push(i);
+                    visited[i] = 1;
+                    if (father)
+                        attached.Push(i);
+                }
                 Array<Transform*> nodes;
                 Array<i32> parents;
                 struct Item
@@ -347,6 +618,19 @@ namespace helix::engine
                     }
                     TransformAccess::BuildLoaded(Span<Transform* const>(nodes.Data(), nodes.Size()), Span<const i32>(parents.Data(), parents.Size()), slot_);
                 }
+                for (u32 i : attached)
+                {
+                    Transform* t = links_[i].transform;
+                    Transform* father = links_[i].father.Get();
+                    if (!father || father->IsChildOf(t))
+                        continue;
+                    u32 at = ~0u;
+                    for (const Added& a : added_)
+                        if (a.gameObject && TransformOf(FileObject(a.fileId)) == t && a.insertIndex >= 0)
+                            at = u32(a.insertIndex);
+                    TransformAccess::Place(t, father, at);
+                    TransformAccess::MarkChanged(t->Hierarchy(), t->NodeIndex());
+                }
                 // Transforms no root reaches (parents that name them not, or cycles) stay roots of their own.
                 for (u32 i = 0; i < links_.Size(); i++)
                     if (!visited[i])
@@ -372,6 +656,9 @@ namespace helix::engine
                 for (EntityId id : created_)
                     if (Object* o = EntityIdToObject(id); o && o->ClassIndex() == gameObjectClass)
                         GameObjectAccess::ActiveInHierarchy(*static_cast<GameObject*>(o)) = false;
+                // Assets are never enabled.
+                if (!options_.enable)
+                    return;
                 Array<EntityId> roots;
                 for (TransformHierarchy* h = lastRoot_ ? lastRoot_->nextRoot : FirstRootHierarchy(slot_); h; h = h->nextRoot)
                     if (Transform* t = h->transforms[0])
@@ -392,9 +679,28 @@ namespace helix::engine
             Array<PPtr<Transform>> roots_;
             Array<EntityId> created_;
             Array<i64> fileIds_;
+            SceneBuildOptions options_;
+            Array<Stripped> stripped_;
+            Array<Instance> instances_;
+            Array<Added> added_;
+            Array<EntityId> newRoots_;
         };
 
         // ------------------------------------------------------------------------------------------------ YAML
+
+        // The links of a stripped placeholder: the source object and the instance it belongs to.
+        struct StrippedLinks
+        {
+            [[maybe_unused]] static constexpr StringView kTypeName = "Stripped";
+            AssetReference m_CorrespondingSourceObject;
+            AssetReference m_PrefabInstance;
+            template <class V>
+            void Transfer(V& v)
+            {
+                v.Field("m_CorrespondingSourceObject", m_CorrespondingSourceObject);
+                v.Field("m_PrefabInstance", m_PrefabInstance);
+            }
+        };
 
         class ParsedYaml final : public ParsedScene
         {
@@ -448,7 +754,23 @@ namespace helix::engine
                     }
                     if (d.stripped)
                     {
-                        builder.Warning(Format("line {}: stripped objects come with prefab instances; skipped", d.line));
+                        StrippedLinks links;
+                        if (tree.IsMapping(d.root) && tree.Count(d.root) == 1)
+                        {
+                            YamlRead r(tree);
+                            r.Value(tree.Value(d.root, 0), "stripped", links);
+                        }
+                        builder.AddStripped(d.fileID, links.m_CorrespondingSourceObject, links.m_PrefabInstance.fileID);
+                        continue;
+                    }
+                    if (d.classID == kPrefabInstanceClassId)
+                    {
+                        PrefabInstanceData instance;
+                        Array<String> errors;
+                        if (ReadYaml(tree, d.root, instance, errors))
+                            builder.AddPrefabInstance(d.fileID, instance, d.line);
+                        for (const String& e : errors)
+                            builder.Error(e);
                         continue;
                     }
                     if (d.classID < 0 || d.classID > 0x7fffffff)
@@ -459,6 +781,7 @@ namespace helix::engine
                     if (Object* o = builder.Create(i32(d.classID), d.fileID, d.line))
                         made.Push({o, d.root});
                 }
+                builder.ResolvePrefabInstances();
                 Array<String> errors;
                 for (const Made& m : made)
                     m.object->Class().readYaml(*m.object, tree, m.root, errors, &builder.References());
@@ -521,6 +844,7 @@ namespace helix::engine
                         at.Push(i);
                     }
                 }
+                builder.ResolvePrefabInstances();
                 for (u32 k = 0; k < made.Size(); k++)
                 {
                     String error;
@@ -563,13 +887,16 @@ namespace helix::engine
         return nullptr;
     }
 
-    bool SceneAccess::Build(const SceneFormat& format, ParsedScene& parsed, u32 slot, Array<String>& errors)
+    bool SceneAccess::Build(const SceneFormat& format, ParsedScene& parsed, u32 slot, Array<String>& errors, const SceneBuildOptions& options,
+                            Array<EntityId>* roots)
     {
         usize before = errors.Size();
         {
-            Builder b(slot, errors);
+            Builder b(slot, errors, options);
             format.Build(parsed, b);
             b.Finish();
+            if (roots)
+                b.Roots(*roots);
         }
         return errors.Size() == before;
     }

@@ -150,6 +150,13 @@ namespace helix::engine
 
     Object* AddObject(Object* object, u32 klass) { return ObjectAccess::Add(object, klass); }
 
+    void ReserveObjects(u32 count)
+    {
+        Table& t = Objects();
+        t.slots.Reserve(t.slots.Size() + count);
+        PublishSlots(t);
+    }
+
     Object* ObjectAccess::Add(Object* object, u32 klass)
     {
         Table& t = Objects();

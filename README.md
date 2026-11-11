@@ -1,7 +1,7 @@
 # Helix.Engine
 
 The runtime of the Helix engine: the object model, GameObjects and components, tags and layers, the lifecycle of
-objects (instantiate and destroy), the transform hierarchy, scenes and scene files.
+objects (instantiate, InstantiateAsync, destroy), the transform hierarchy, scenes and scene files, prefabs and pools.
 
 ## Contents
 
@@ -21,6 +21,8 @@ objects (instantiate and destroy), the transform hierarchy, scenes and scene fil
 | `Source/Helix/Engine/Scene/SceneManager.h` | `SceneManager`, `AsyncOperation`, `SceneEvent`, `SceneSource` (`FileSceneSource`, `MemorySceneSource`) |
 | `Source/Helix/Engine/Scene/SceneFile.h` | `WriteSceneYaml`, `WriteSceneBinary`, `ReadSceneFile` |
 | `Source/Helix/Engine/Scene/SceneFormat.h` | `SceneFormat`, `SceneBuilder`, `RegisterSceneFormat`: scene file formats as plug ins |
+| `Source/Helix/Engine/Prefab/Prefab.h` | `LoadPrefab`, `UnloadPrefab`, `FindPrefab`, `RegisterPrefab`, `PrefabSource` |
+| `Source/Helix/Engine/Pool/ObjectPool.h` | `ObjectPool<T>`, `LinkedPool<T>`, `PoolCallbacks<T>` |
 | `Tests/`, `Benchmarks/` | Ids, the class tree, components, hierarchies, enable and destroy order, clones, world math, change dispatch, scenes and scene files; throughput |
 
 ## Design
@@ -56,6 +58,17 @@ objects (instantiate and destroy), the transform hierarchy, scenes and scene fil
   Then it checks GameObjects and components, builds each root's transform block in one go from the parents and children
   the Transforms read, and enables the objects parents first. Formats are plug ins (`RegisterSceneFormat`); YAML and
   binary come registered. Objects read from a file keep their fileIDs when the scene is written again.
+- Prefab assets are GameObjects outside every scene (persistent, never enabled), loaded from prefab files through the
+  scene formats and found by guid (`PrefabSource` is the hook for an asset system). PrefabInstance documents in scene
+  and prefab files copy their source, give the copy's objects the fileIDs (instance XOR source object) & 0x7FFF...
+  that stripped placeholders and added objects use, apply the property modifications (paths such as
+  `m_LocalPosition.x`, `list.Array.data[2]`), drop removed components and GameObjects and attach added ones; nested
+  prefabs and variants are instances inside prefab files. Players keep no prefab links.
+- Copies of a prefab asset go through a template built once (its objects in order and an index for remapping), so a
+  copy is copy construction into the class pools, one hierarchy block and remapping by index. `InstantiateAsync` makes
+  copies on the main thread within `SetIntegrationTimeMS` per frame (`ProcessAsyncInstantiations`), each enabled when
+  made; `allowSceneActivation` holds it, `WaitForCompletion` finishes it, `Cancel` undoes it. Destroying stays immediate: its
+  hooks and the table removal are the cost, not releasing memory (measured), and pools reuse copies instead.
 - `LoadScene` loads in the next `ProcessSceneLoads`; `LoadSceneAsync` parses on Helix.Jobs and waits at 0.9 while
   `allowSceneActivation` is off; a `LoadScene` makes the pending async loads finish first. Single unloads the other
   scenes first, then the new scene becomes active, its objects are enabled, then `sceneLoaded` is raised. Scene bytes
@@ -115,6 +128,28 @@ String text, error;
 WriteSceneYaml(SceneManager::GetActiveScene(), text, error);
 ```
 
+Prefabs and pools:
+
+```cpp
+GameObject* crate = LoadPrefab(text, errors, crateGuid);   // scene files with instances of crateGuid load after this
+GameObject* one = Instantiate(crate, Vector3(0, 0, 5), Quaternion::identity());
+
+AsyncInstantiateOperation::SetIntegrationTimeMS(2.0f);
+AsyncInstantiateOperation op = InstantiateAsync(crate, 500, Span<const Vector3>(spawnPoints, n), {});
+// Each frame:
+ProcessAsyncInstantiations();
+
+PoolCallbacks<GameObject*> cb;
+cb.user = crate;
+cb.create = [](void* p) { return Instantiate(static_cast<GameObject*>(p)); };
+cb.onGet = [](void*, GameObject*& g) { g->SetActive(true); };
+cb.onRelease = [](void*, GameObject*& g) { g->SetActive(false); };
+cb.onDestroy = [](void*, GameObject*& g) { DestroyImmediate(g); };
+ObjectPool<GameObject*> pool(cb);
+GameObject* bullet = pool.Get();
+pool.Release(bullet);
+```
+
 Systems that keep their own copy of transform data (renderers, physics) follow changes like this:
 
 ```cpp
@@ -155,6 +190,16 @@ under the same load; reading includes destroying the objects again, which alone 
 | `ReadSceneFile` from YAML: parse, create, read, link, enable | 15 us per GameObject |
 | `WriteSceneBinary` (4.0 MB, no type trees) | 4.1 us per GameObject |
 | `ReadSceneFile` from the binary file | 8.0 us per GameObject |
+
+Prefabs of 100 objects (a root and 32 children, each with a Transform and a behaviour with a reference), 1000 copies,
+under the same load at normal priority:
+
+| Benchmark | Result |
+|---|---|
+| `Instantiate` of the prefab asset (template), then `DestroyImmediate` | 300 ns and 150 ns per object |
+| The same from a scene object (no template) | 8 % slower |
+| `InstantiateAsync` of 1000 copies with a 2 ms budget | worst frame 2.1 to 3.7 ms (the machine's other load), 18 to 70 frames |
+| `ObjectPool` Get and Release of a pooled copy (33 behaviours enabled and disabled) | 2.6 to 3.6 times cheaper than a new copy and its destroy |
 
 ## Build
 

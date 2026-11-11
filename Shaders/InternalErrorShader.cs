@@ -15,7 +15,7 @@ public sealed class InternalErrorShader : ShaderDefinition
     public static class Error
     {
         [VertexShader]
-        public static Varyings Vertex([Location(0)] float3 position)
+        public static Varyings Vertex([Location(VertexInputs.Position)] float3 position)
         {
             Varyings o;
             o.position = ShaderVariables.ObjectToClip(position);

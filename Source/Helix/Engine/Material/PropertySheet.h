@@ -44,6 +44,10 @@ namespace helix::engine
         EntityId texture;
     };
 
+    class PropertySheet;
+    // One value copied from a sheet into another, whatever its kind.
+    void CopyPropertyValue(PropertySheet& to, const PropertySheet& from, const PropertyValue& value);
+
     class PropertySheet
     {
     public:

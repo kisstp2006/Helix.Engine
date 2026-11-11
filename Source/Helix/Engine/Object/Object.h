@@ -72,6 +72,8 @@ namespace helix::engine
                 info.onEnable = [](Object& o) { static_cast<T&>(o).OnEnableNative(); };
             if constexpr (requires(T& t) { t.OnDisableNative(); })
                 info.onDisable = [](Object& o) { static_cast<T&>(o).OnDisableNative(); };
+            if constexpr (requires(T& t) { t.OnLayerChangedNative(); })
+                info.onLayerChanged = [](Object& o) { static_cast<T&>(o).OnLayerChangedNative(); };
             if constexpr (requires(T& t) { t.UnloadDataNative(); })
                 info.unloadData = [](Object& o) { static_cast<T&>(o).UnloadDataNative(); };
             if constexpr (requires(Array<u32>& out) { T::Requires(out); })

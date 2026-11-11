@@ -1,0 +1,195 @@
+#pragma once
+
+#include <Helix/Engine/GameObject/GameObject.h>
+#include <Helix/Engine/Material/Material.h>
+#include <Helix/Engine/Mesh/Mesh.h>
+
+// MeshFilter, Renderer and MeshRenderer. The components are thin: what drawing needs lives in the renderer manager's
+// dense arrays (world matrix, bounds, mesh, layer, flags), which follow the Transform system and are copied for the
+// render side at the end of the frame.
+namespace helix::engine
+{
+    enum class ShadowCastingMode : i32
+    {
+        Off = 0,
+        On = 1,
+        TwoSided = 2,
+        ShadowsOnly = 3,
+    };
+
+    class MeshFilter final : public Component
+    {
+        HX_ENGINE_CLASS(MeshFilter, Component, ClassId::MeshFilter, ClassDisallowMultiple)
+
+    public:
+        MeshFilter() = default;
+        MeshFilter(const MeshFilter& other) : Component(other), mesh_(other.mesh_) {}
+
+        Mesh* sharedMesh() const { return mesh_.Get(); }
+        void SetSharedMesh(Mesh* mesh);
+        // The filter's own copy of the shared mesh, made on first access (later accesses give the same copy).
+        Mesh* mesh();
+        void SetMesh(Mesh* mesh) { SetSharedMesh(mesh); }
+
+        void OnDestroyNative();
+
+        template <class V>
+        void Transfer(V& v)
+        {
+            Base::Transfer(v);
+            v.Field("m_Mesh", mesh_);
+        }
+
+    private:
+        PPtr<Mesh> mesh_;
+        // The copy `mesh()` made; destroyed with the filter.
+        PPtr<Mesh> owned_;
+    };
+
+    class Renderer : public Component
+    {
+        HX_ENGINE_CLASS(Renderer, Component, ClassId::Renderer, ClassAbstract | ClassDisallowMultiple)
+
+    public:
+        bool enabled() const { return enabled_; }
+        void SetEnabled(bool value);
+        // Some camera drew it in the last rendered frame.
+        bool isVisible() const;
+
+        // World bounds; an override set by SetBounds stays until ResetBounds.
+        Bounds bounds() const;
+        void SetBounds(const Bounds& value);
+        void ResetBounds();
+        // Bounds in the GameObject's space (the mesh's by default).
+        Bounds localBounds() const;
+        void SetLocalBounds(const Bounds& value);
+        void ResetLocalBounds();
+        Matrix4x4 localToWorldMatrix() const;
+        Matrix4x4 worldToLocalMatrix() const;
+
+        Material* sharedMaterial() const { return materials_.Empty() ? nullptr : materials_[0].Get(); }
+        void SetSharedMaterial(Material* material);
+        void GetSharedMaterials(Array<Material*>& out) const;
+        void SetSharedMaterials(Span<Material* const> materials);
+        i32 sharedMaterialCount() const { return i32(materials_.Size()); }
+        // The renderer's own copies of its materials, made on first access.
+        Material* material();
+        void SetMaterial(Material* material) { SetSharedMaterial(material); }
+        void GetMaterials(Array<Material*>& out);
+        void SetMaterials(Span<Material* const> materials) { SetSharedMaterials(materials); }
+
+        // Values on top of the materials; with a material index for that material only.
+        void SetPropertyBlock(const MaterialPropertyBlock* block);
+        void SetPropertyBlock(const MaterialPropertyBlock* block, i32 materialIndex);
+        void GetPropertyBlock(MaterialPropertyBlock& out) const;
+        void GetPropertyBlock(MaterialPropertyBlock& out, i32 materialIndex) const;
+        bool HasPropertyBlock() const;
+
+        ShadowCastingMode shadowCastingMode() const { return shadowCasting_; }
+        void SetShadowCastingMode(ShadowCastingMode value) { shadowCasting_ = value; }
+        bool receiveShadows() const { return receiveShadows_; }
+        void SetReceiveShadows(bool value) { receiveShadows_ = value; }
+        bool staticShadowCaster() const { return staticShadowCaster_; }
+        void SetStaticShadowCaster(bool value) { staticShadowCaster_ = value; }
+        u32 renderingLayerMask() const { return renderingLayerMask_; }
+        void SetRenderingLayerMask(u32 value) { renderingLayerMask_ = value; }
+        i32 rendererPriority() const { return rendererPriority_; }
+        void SetRendererPriority(i32 value) { rendererPriority_ = value; }
+        i32 sortingLayerID() const { return sortingLayerID_; }
+        void SetSortingLayerID(i32 value) { sortingLayerID_ = value; }
+        i32 sortingOrder() const { return sortingOrder_; }
+        void SetSortingOrder(i32 value);
+        bool forceRenderingOff() const { return forceRenderingOff_; }
+        void SetForceRenderingOff(bool value);
+        bool allowOcclusionWhenDynamic() const { return allowOcclusionWhenDynamic_; }
+        void SetAllowOcclusionWhenDynamic(bool value) { allowOcclusionWhenDynamic_ = value; }
+
+        // ---------------------------------------------------------------------------------------------- native
+        // The mesh this renderer draws (MeshRenderer: the MeshFilter's).
+        virtual Mesh* RenderedMesh() const = 0;
+        Span<const PPtr<Material>> Materials() const { return Span<const PPtr<Material>>(materials_.Data(), materials_.Size()); }
+        // The values of the property blocks for one material (the block of the index over the general one).
+        const PropertySheet* PropertyBlock(i32 materialIndex) const;
+        // The index of the renderer in the manager's arrays, ~0u while it is not taking part.
+        u32 ManagerIndex() const { return managerIndex_; }
+
+        void OnEnableNative();
+        void OnDisableNative();
+        void OnDestroyNative();
+        void OnLayerChangedNative();
+
+        template <class V>
+        void Transfer(V& v)
+        {
+            Base::Transfer(v);
+            u8 e = enabled_;
+            v.Field("m_Enabled", e);
+            enabled_ = e != 0;
+            v.Field("m_CastShadows", shadowCasting_);
+            v.Field("m_ReceiveShadows", receiveShadows_);
+            v.Field("m_StaticShadowCaster", staticShadowCaster_);
+            v.Field("m_AllowOcclusionWhenDynamic", allowOcclusionWhenDynamic_);
+            v.Field("m_RenderingLayerMask", renderingLayerMask_);
+            v.Field("m_RendererPriority", rendererPriority_);
+            v.Field("m_Materials", materials_);
+            v.Field("m_SortingLayerID", sortingLayerID_);
+            v.Field("m_SortingOrder", sortingOrder_);
+        }
+
+    protected:
+        Renderer() = default;
+        Renderer(const Renderer& other);
+
+        // Something drawing depends on changed (materials, mesh, flags): the manager copies it again.
+        void Touch();
+
+    private:
+        friend struct RendererAccess;
+        Array<PPtr<Material>> materials_ = Array<PPtr<Material>>();
+        // Copies `material()` made, by material index (null where the shared one is used).
+        Array<PPtr<Material>> owned_ = Array<PPtr<Material>>();
+        PropertySheet block_;
+        Array<PropertySheet> materialBlocks_ = Array<PropertySheet>();
+        Bounds localBounds_;
+        Bounds worldBounds_;
+        bool hasLocalBounds_ = false;
+        bool hasWorldBounds_ = false;
+        bool enabled_ = true;
+        bool receiveShadows_ = true;
+        bool staticShadowCaster_ = false;
+        bool allowOcclusionWhenDynamic_ = true;
+        bool forceRenderingOff_ = false;
+        ShadowCastingMode shadowCasting_ = ShadowCastingMode::On;
+        u32 renderingLayerMask_ = 1;
+        i32 rendererPriority_ = 0;
+        i32 sortingLayerID_ = 0;
+        i32 sortingOrder_ = 0;
+        u32 managerIndex_ = ~0u;
+    };
+
+    class MeshRenderer final : public Renderer
+    {
+        HX_ENGINE_CLASS(MeshRenderer, Renderer, ClassId::MeshRenderer, ClassDisallowMultiple)
+
+    public:
+        MeshRenderer() = default;
+        MeshRenderer(const MeshRenderer& other) : Renderer(other), additionalVertexStreams_(other.additionalVertexStreams_) {}
+
+        Mesh* additionalVertexStreams() const { return additionalVertexStreams_.Get(); }
+        void SetAdditionalVertexStreams(Mesh* mesh) { additionalVertexStreams_ = PPtr<Mesh>(mesh); }
+        // Static batching combines meshes; without it the first submesh is 0.
+        i32 subMeshStartIndex() const { return 0; }
+
+        Mesh* RenderedMesh() const override;
+
+        template <class V>
+        void Transfer(V& v)
+        {
+            Base::Transfer(v);
+            v.Field("m_AdditionalVertexStreams", additionalVertexStreams_);
+        }
+
+    private:
+        PPtr<Mesh> additionalVertexStreams_;
+    };
+}

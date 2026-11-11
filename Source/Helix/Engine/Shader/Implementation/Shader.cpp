@@ -690,6 +690,8 @@ namespace helix::engine
         else
         {
             v = new ShaderVariant();
+            static u32 serials = 0;
+            v->serial = ++serials;
             v->pass = pass;
             v->description = d;
             v->target = target;

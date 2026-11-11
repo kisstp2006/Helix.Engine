@@ -2,8 +2,8 @@
 
 The runtime of the Helix engine: the object model, GameObjects and components, tags and layers, the lifecycle of
 objects (instantiate, InstantiateAsync, destroy), the transform hierarchy, scenes and scene files, prefabs and pools,
-time, the player loop, the application and settings assets, the asset runtime with meshes and textures, and shaders
-and materials.
+time, the player loop, the application and settings assets, the asset runtime with meshes and textures, shaders and
+materials, and the rendering components with a placeholder renderer on Helix.RHI.
 
 ## Contents
 
@@ -39,7 +39,11 @@ and materials.
 | `Source/Helix/Engine/Shader/Shader.h` | `Shader`, `ShaderVariant`, `ShaderPropertyType`, `ShaderPropertyFlags`: shaders of C# assemblies, variants on demand, global keywords and properties |
 | `Source/Helix/Engine/Material/Material.h` | `Material`, `MaterialPropertyBlock`, `MaterialPassData` (block bytes and textures per pass and variant) |
 | `Source/Helix/Engine/Material/PropertySheet.h` | `PropertyToID`, `PropertySheet`: property values by id |
-| `Shaders/` | The built in shaders in C# (`Hidden/InternalErrorShader`, the engine's shader variables), built with the .NET SDK and embedded |
+| `Source/Helix/Engine/Rendering/Renderer.h` | `MeshFilter`, `Renderer`, `MeshRenderer`, `ShadowCastingMode` |
+| `Source/Helix/Engine/Rendering/Camera.h` | `Camera`, `CameraClearFlags`, `CameraType`, `GeometryUtility` |
+| `Source/Helix/Engine/Rendering/Light.h` | `Light`, `LightType`, `LightShadows`, `LightRenderMode` |
+| `Source/Helix/Engine/Rendering/Graphics.h` | `Graphics` (device, target, `RenderFrame`), `RenderTarget`, `RenderStats`: the placeholder renderer |
+| `Shaders/` | The built in shaders in C# (`Hidden/InternalErrorShader`, `Hidden/InternalClear`, the engine's shader variables and vertex input locations), built with the .NET SDK and embedded |
 | `Tests/Shaders/` | C# test shaders, embedded into the tests |
 | `Tests/`, `Benchmarks/` | Ids, the class tree, components, hierarchies, enable and destroy order, clones, world math, change dispatch, scenes and scene files, assets, meshes and textures; throughput |
 
@@ -135,7 +139,7 @@ and materials.
   from next to it, its PDB gives file:line in errors. A variant compiles on demand for a pass, the keyword values and a
   target (translation, linking, reflection, property binding, both backends through one ShaderCache). A variant that
   does not compile logs its errors once and draws with Hidden/InternalErrorShader (magenta); nothing asserts. The
-  engine's blocks sit at uniform slots 12 (camera) and 13 (draw), the dynamic keywords at 11, materials below.
+  engine's blocks sit at uniform slots 9 (camera) and 10 (draw), the dynamic keywords at 11, materials at 0 to 8.
 - A Material holds its values in one PropertySheet (an entry per property id, numbers in one pool, textures with their
   tiling), the shader's defaults filled in, values of properties the shader lacks kept. For the renderer it keeps per
   pass and variant the bytes of the uniform blocks its properties go to (laid out by std140, so float and vector arrays
@@ -143,6 +147,21 @@ and materials.
   none), written again only when a value or a global changed; the variant itself is looked up again only when the
   shader or a keyword changed. Members of material blocks that are no properties take the material's value by name,
   else the global one. .mat files are YAML documents with the reference's fields (saved properties as pairs).
+- Renderers are thin components: a manager keeps every renderer that takes part (enabled component on an active
+  GameObject) in dense arrays (world matrix, local and world bounds, mesh, layer mask, sorting order, flags), follows
+  the Transform system through its interest bit and reads the component only when something of it changes. At the end
+  of the frame it copies what changed into a render side in structure of arrays, which culling and drawing read.
+  MeshFilter.mesh and Renderer.material(s) make copies owned by the component on first access.
+- Cameras keep the reference's matrices (camera space looks along -z, clip depth -1 to 1); the renderer gives the GPU
+  the projection with depth 0 to 1. Vertex inputs are [Location(n)] for VertexAttribute n; the engine's blocks take
+  slots 9 (camera: view, projection, position, the main light, ambient) and 10 (draw: object to world and back).
+- The placeholder renderer (until the pipelines): the host sets a device and a target; each frame every enabled
+  camera by depth culls by frustum (on jobs) and culling mask, sorts opaque queues by variant and front to back and
+  transparent ones back to front, and draws each submesh with the first pass of its material that is no shadow, depth
+  or meta pass (the error shader for missing materials). A camera with a viewport smaller than the target clears it by
+  drawing (Hidden/InternalClear). GPU meshes (formats the GPU lacks widened to float, missing attributes read zero),
+  textures, samplers, shaders and pipelines are cached by the versions of their sources; meshes and textures that are
+  not readable drop their CPU copy once uploaded.
 - `Destroy` is queued with a delay in scaled time and runs at `ProcessDestroyQueue`, after the update loop and before
   rendering; `DestroyImmediate` destroys at once. Children go first, then components from the last to the first, then
   the GameObject; behaviours get their disable hook before their destroy hook.
@@ -314,6 +333,14 @@ Materials of the C# test shader Tests/Surface (Direct3D target):
 | `GetPassData` of a material that did not change (what a draw asks) | 12 ns |
 | `SetFloat`, then `GetPassData` writing the blocks again | 0.47 us |
 | A variant compiled for the first time: translation, reflection, binding, backend | 0.25 ms |
+
+10000 renderers (16 materials), D3D11 on the GTX 1660 Ti:
+
+| Benchmark | Result |
+|---|---|
+| Every renderer moved: the manager's bounds and the copy for the render side (after 58 ns to set and 42 ns for world matrices) | 106 ns per renderer |
+| Nothing moved: the manager's frame | 3.8 ns per renderer |
+| A frame of 5100 visible quads: culling, sorting, recording, submitting, waiting for the GPU | 6.0 ms |
 
 The player loop: an empty frame of the engine's loop (its own systems run with nothing to do) takes about 170 ns;
 walking the same tree instead of the compiled list takes 2.8 times as long.

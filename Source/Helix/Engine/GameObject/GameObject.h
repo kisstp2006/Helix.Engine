@@ -40,7 +40,8 @@ namespace helix::engine
         static GameObject* Create(StringView name, Span<const u32> components);
 
         u32 layer() const { return layer_; }
-        void SetLayer(u32 layer) { layer_ = u8(layer < kLayerCount ? layer : 0); }
+        // Components with a layer hook (renderers) hear of the change.
+        void SetLayer(u32 layer);
         TagHandle tag() const { return tag_; }
         StringView TagString() const { return TagName(tag_); }
         // False (tag unchanged) when the tag is not defined.

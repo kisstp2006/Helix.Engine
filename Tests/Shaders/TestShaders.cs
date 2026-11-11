@@ -62,7 +62,7 @@ public sealed class Surface : ShaderDefinition
         [Sampler(1)] public static SamplerState maskSampler;
 
         [VertexShader]
-        public static Varyings Vertex([Location(0)] float3 position, [Location(1)] float2 uv)
+        public static Varyings Vertex([Location(VertexInputs.Position)] float3 position, [Location(VertexInputs.TexCoord0)] float2 uv)
         {
             Varyings o;
             o.position = ShaderVariables.ObjectToClip(position);
@@ -90,7 +90,7 @@ public sealed class Surface : ShaderDefinition
     public static class Shadow
     {
         [VertexShader]
-        public static Varyings Vertex([Location(0)] float3 position) => new Varyings { position = ShaderVariables.ObjectToClip(position) };
+        public static Varyings Vertex([Location(VertexInputs.Position)] float3 position) => new Varyings { position = ShaderVariables.ObjectToClip(position) };
 
         [FragmentShader]
         [return: Target(0)]
@@ -122,7 +122,7 @@ public sealed class Plain : ShaderDefinition
     public static class Forward
     {
         [VertexShader]
-        public static Varyings Vertex([Location(0)] float3 position) => new Varyings { position = ShaderVariables.ObjectToClip(position) };
+        public static Varyings Vertex([Location(VertexInputs.Position)] float3 position) => new Varyings { position = ShaderVariables.ObjectToClip(position) };
 
         [FragmentShader]
         [return: Target(0)]
@@ -145,10 +145,167 @@ public sealed class Broken : ShaderDefinition
     public static class Forward
     {
         [VertexShader]
-        public static Varyings Vertex([Location(0)] float3 position) => new Varyings { position = ShaderVariables.ObjectToClip(position) };
+        public static Varyings Vertex([Location(VertexInputs.Position)] float3 position) => new Varyings { position = ShaderVariables.ObjectToClip(position) };
 
         [FragmentShader]
         [return: Target(0)]
         public static float4 Fragment(Varyings input) => new float4(Depth(input.position.x));
+    }
+}
+
+/// <summary>One color.</summary>
+[Shader("Tests/Unlit")]
+public sealed class Unlit : ShaderDefinition
+{
+    [Property("Color"), MainColor, Default(1.0f, 1.0f, 1.0f, 1.0f)] public float4 color;
+
+    public struct MaterialData
+    {
+        public float4 color;
+    }
+
+    public struct Varyings
+    {
+        [Position] public float4 position;
+    }
+
+    [Pass("Forward")]
+    public static class Forward
+    {
+        [Uniform(0)] public static MaterialData material;
+
+        [VertexShader]
+        public static Varyings Vertex([Location(VertexInputs.Position)] float3 position) => new Varyings { position = ShaderVariables.ObjectToClip(position) };
+
+        [FragmentShader]
+        [return: Target(0)]
+        public static float4 Fragment(Varyings input) => material.color;
+    }
+}
+
+/// <summary>A texture times a color, with tiling.</summary>
+[Shader("Tests/Textured")]
+public sealed class Textured : ShaderDefinition
+{
+    [Property("Base Map"), MainTexture, DefaultTexture("white")] public Texture2D<float4> baseMap;
+    [Property("Color"), MainColor, Default(1.0f, 1.0f, 1.0f, 1.0f)] public float4 color;
+
+    public struct MaterialData
+    {
+        public float4 color;
+        public float4 baseMap_ST;
+    }
+
+    public struct Varyings
+    {
+        [Position] public float4 position;
+        [Location(0)] public float2 uv;
+    }
+
+    [Pass("Forward")]
+    public static class Forward
+    {
+        [Uniform(0)] public static MaterialData material;
+        [Texture(0)] public static Texture2D<float4> baseMap;
+        [Sampler(0)] public static SamplerState baseSampler;
+
+        [VertexShader]
+        public static Varyings Vertex([Location(VertexInputs.Position)] float3 position, [Location(VertexInputs.TexCoord0)] float2 uv)
+        {
+            Varyings o;
+            o.position = ShaderVariables.ObjectToClip(position);
+            o.uv = uv * material.baseMap_ST.xy + material.baseMap_ST.zw;
+            return o;
+        }
+
+        [FragmentShader]
+        [return: Target(0)]
+        public static float4 Fragment(Varyings input) => baseMap.Sample(baseSampler, input.uv) * material.color;
+    }
+}
+
+/// <summary>Alpha blended, in the transparent queue, without depth writes.</summary>
+[Shader("Tests/Transparent")]
+[Tag("Queue", "Transparent")]
+public sealed class Transparent : ShaderDefinition
+{
+    [Property("Color"), MainColor, Default(1.0f, 1.0f, 1.0f, 0.5f)] public float4 color;
+
+    public struct MaterialData
+    {
+        public float4 color;
+    }
+
+    public struct Varyings
+    {
+        [Position] public float4 position;
+    }
+
+    [Pass("Forward", ZWrite = false)]
+    [Blend(BlendFactor.SrcAlpha, BlendFactor.OneMinusSrcAlpha)]
+    public static class Forward
+    {
+        [Uniform(0)] public static MaterialData material;
+
+        [VertexShader]
+        public static Varyings Vertex([Location(VertexInputs.Position)] float3 position) => new Varyings { position = ShaderVariables.ObjectToClip(position) };
+
+        [FragmentShader]
+        [return: Target(0)]
+        public static float4 Fragment(Varyings input) => material.color;
+    }
+}
+
+/// <summary>Lambert lighting from the main light of the camera block, with the ambient light.</summary>
+[Shader("Tests/Lambert")]
+public sealed class Lambert : ShaderDefinition
+{
+    [Property("Color"), MainColor, Default(1.0f, 1.0f, 1.0f, 1.0f)] public float4 color;
+
+    public struct MaterialData
+    {
+        public float4 color;
+    }
+
+    public struct Varyings
+    {
+        [Position] public float4 position;
+        [Location(0)] public float3 normal;
+    }
+
+    [Pass("Forward", LightMode = "ForwardBase")]
+    public static class Forward
+    {
+        [Uniform(0)] public static MaterialData material;
+
+        [VertexShader]
+        public static Varyings Vertex([Location(VertexInputs.Position)] float3 position, [Location(VertexInputs.Normal)] float3 normal)
+        {
+            Varyings o;
+            o.position = ShaderVariables.ObjectToClip(position);
+            o.normal = ShaderVariables.ObjectToWorldNormal(normal);
+            return o;
+        }
+
+        [FragmentShader]
+        [return: Target(0)]
+        public static float4 Fragment(Varyings input)
+        {
+            float3 n = Normalize(input.normal);
+            float light = Saturate(Dot(n, ShaderVariables.camera.helix_MainLightDirection.xyz));
+            float3 lit = material.color.xyz * (ShaderVariables.camera.helix_MainLightColor.xyz * light + ShaderVariables.camera.helix_AmbientColor.xyz);
+            return new float4(lit, 1.0f);
+        }
+    }
+
+    [Pass("ShadowCaster", LightMode = "ShadowCaster")]
+    public static class ShadowCaster
+    {
+        [VertexShader]
+        public static Varyings Vertex([Location(VertexInputs.Position)] float3 position) => new Varyings { position = ShaderVariables.ObjectToClip(position) };
+
+        [FragmentShader]
+        [return: Target(0)]
+        public static float4 Fragment(Varyings input) => new float4(0.0f, 1.0f, 0.0f, 1.0f);
     }
 }

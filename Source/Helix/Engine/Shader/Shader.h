@@ -46,6 +46,8 @@ namespace helix::engine
     struct ShaderVariant
     {
         bool ok = false;
+        // Unique for the run of the program (GPU caches key on it; addresses may come back).
+        u32 serial = 0;
         // What went wrong (file:line first when the assembly has debug information).
         String error;
         u32 pass = 0;

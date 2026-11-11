@@ -14,7 +14,8 @@ helix_require(Serialization)
 helix_require(Image)
 helix_require(Model)
 helix_require(ShaderCompiler)
-helix_add_library(helix_engine ALIAS Engine PUBLIC_DEPS Helix::Core Helix::Math Helix::Serialization Helix::Image Helix::ShaderCompiler
+helix_require(RHI)
+helix_add_library(helix_engine ALIAS Engine PUBLIC_DEPS Helix::Core Helix::Math Helix::Serialization Helix::Image Helix::ShaderCompiler Helix::RHI
                   PRIVATE_DEPS Helix::Jobs Helix::Platform Helix::Model)
 
 # The built in shaders are C#: built with the .NET SDK and embedded with the shader library they call into.
@@ -79,6 +80,7 @@ if(TARGET helix_engine_tests OR TARGET helix_engine_bench)
     foreach(suite helix_engine_tests helix_engine_bench)
         if(TARGET ${suite})
             target_sources(${suite} PRIVATE ${test_embedded})
+            target_compile_definitions(${suite} PRIVATE "HELIX_ENGINE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/Tests/Golden\"")
             target_include_directories(${suite} PRIVATE "${engine_generated}")
         endif()
     endforeach()

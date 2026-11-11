@@ -446,6 +446,18 @@ namespace helix::engine
         return g ? g->GetComponentIndex(this) : -1;
     }
 
+    void GameObject::SetLayer(u32 layer)
+    {
+        u8 now = u8(layer < kLayerCount ? layer : 0);
+        if (now == layer_)
+            return;
+        layer_ = now;
+        for (const ComponentEntry& e : components_)
+            if (Component* c = e.component.Get())
+                if (const ClassInfo& info = c->Class(); info.onLayerChanged)
+                    info.onLayerChanged(*c);
+    }
+
     void Behaviour::SetEnabled(bool value)
     {
         if (enabled_ == value)

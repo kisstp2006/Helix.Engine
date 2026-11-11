@@ -2,6 +2,7 @@
 #include <Helix/Engine/Asset/Asset.h>
 #include <Helix/Engine/GameObject/Lifecycle.h>
 #include <Helix/Engine/PlayerLoop/PlayerLoop.h>
+#include <Helix/Engine/Rendering/Graphics.h>
 #include <Helix/Engine/Scene/SceneManager.h>
 #include <Helix/Engine/Time/Time.h>
 #include <Helix/Engine/Transform/Hierarchy.h>
@@ -147,6 +148,8 @@ namespace helix::engine
 
         void WorldMatrices(void*) { UpdateWorldMatrices(); }
         void BeforeRender(void*) { Application::onBeforeRender().Invoke(); }
+        // Renderer data up to date, then every camera (the placeholder renderer until the pipelines).
+        void FinishRendering(void*) { Graphics::RenderFrame(); }
     }
 
     PlayerLoopSystem PlayerLoop::GetDefaultPlayerLoop()
@@ -187,7 +190,7 @@ namespace helix::engine
             // After the update loop, before rendering.
             System("DestroyQueue", &DestroyQueue), System("PlayerSendFrameStarted"), System("DirectorLateUpdate"),
             System("UpdateWorldMatrices", &WorldMatrices), System("PlayerUpdateCanvases"), System("UIElementsRepaintPanels"), System("UpdateAudio"),
-            System("VFXUpdate"), System("BeforeRender", &BeforeRender), System("FinishFrameRendering"), System("BatchModeUpdate"),
+            System("VFXUpdate"), System("BeforeRender", &BeforeRender), System("FinishFrameRendering", &FinishRendering), System("BatchModeUpdate"),
             System("PresentAfterDraw"), System("ProfilerEndFrame"), System("ObjectDispatcherPostLateUpdate"),
         }));
         return root;

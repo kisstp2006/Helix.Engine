@@ -46,41 +46,6 @@ namespace helix::engine
             return Texture2D::grayTexture();
         }
 
-        // One value copied from a sheet into another, whatever its kind.
-        void CopyValue(PropertySheet& to, const PropertySheet& from, const PropertyValue& v)
-        {
-            Span<const f32> n = from.Numbers(v);
-            switch (v.kind)
-            {
-            case PropertyKind::Float:
-                to.SetFloat(v.id, n[0]);
-                break;
-            case PropertyKind::Int:
-                to.SetInt(v.id, from.GetInt(v.id));
-                break;
-            case PropertyKind::Vector:
-                to.SetVector(v.id, Vector4(n[0], n[1], n[2], n[3]));
-                break;
-            case PropertyKind::Matrix:
-                to.SetMatrix(v.id, from.GetMatrix(v.id));
-                break;
-            case PropertyKind::Texture:
-                to.SetTexture(v.id, v.texture);
-                to.SetTextureScale(v.id, Vector2(n[0], n[1]));
-                to.SetTextureOffset(v.id, Vector2(n[2], n[3]));
-                break;
-            case PropertyKind::FloatArray:
-                to.SetFloatArray(v.id, n);
-                break;
-            case PropertyKind::VectorArray:
-                to.SetVectorArray(v.id, Span<const Vector4>(reinterpret_cast<const Vector4*>(n.Data()), v.count));
-                break;
-            case PropertyKind::MatrixArray:
-                to.SetMatrixArray(v.id, Span<const Matrix4x4>(reinterpret_cast<const Matrix4x4*>(n.Data()), v.count));
-                break;
-            }
-        }
-
         // `count` numbers of a value as floats (ints by their value).
         void Floats(const PropertySheet& sheet, const PropertyValue& v, u32 first, u32 count, f32* out)
         {
@@ -488,7 +453,7 @@ namespace helix::engine
             return;
         for (const ShaderProperty& p : d->properties)
             if (const PropertyValue* v = other.values_.Find(PropertyToID(p.name)))
-                CopyValue(values_, other.values_, *v);
+                CopyPropertyValue(values_, other.values_, *v);
         for (const String& k : other.keywords_)
             if (KnowsKeyword(k))
                 EnableKeyword(k);
@@ -528,16 +493,18 @@ namespace helix::engine
 
     // ---------------------------------------------------------------------------------------------- renderer data
 
-    void Material::Write(MaterialPassData& data) const
+    void Material::WriteValues(const ShaderVariant& v, const PropertySheet& values, const PropertySheet* globals, bool overlay,
+                               Array<Array<u8>>& blocks, Array<MaterialPassData::TextureSlot>& textures)
     {
-        const ShaderVariant& v = *data.variant;
         const ShaderDescription* d = v.description;
         const MaterialLayout& layout = v.layout;
-        const PropertySheet& globals = Shader::Globals();
-        data.blocks.Resize(layout.blocks.Size());
-        for (u32 i = 0; i < layout.blocks.Size(); i++)
-            data.blocks[i] = layout.blocks[i].defaults;
-        data.textures.Clear();
+        if (!overlay)
+        {
+            blocks.Resize(layout.blocks.Size());
+            for (u32 i = 0; i < layout.blocks.Size(); i++)
+                blocks[i] = layout.blocks[i].defaults;
+            textures.Clear();
+        }
         f32 numbers[16];
         // Properties where the layout puts them.
         for (u32 k = 0; k < layout.bindings.Size(); k++)
@@ -545,47 +512,67 @@ namespace helix::engine
             const PropertyBinding& binding = layout.bindings[k];
             const ShaderProperty& p = d->properties[binding.property];
             i32 id = v.bindingIds[k];
-            const PropertyValue* value = values_.Find(id);
+            const PropertyValue* value = values.Find(id);
+            if (overlay && !value)
+                continue;
             switch (binding.target)
             {
             case PropertyTarget::Member:
                 if (value && value->kind != PropertyKind::Texture)
                 {
                     u32 count = PropertySheet::Width(value->kind);
-                    Floats(values_, *value, 0, count, numbers);
-                    WritePropertyValue(p, binding, Span<const f32>(numbers, count), data.blocks[binding.block]);
+                    Floats(values, *value, 0, count, numbers);
+                    WritePropertyValue(p, binding, Span<const f32>(numbers, count), blocks[binding.block]);
                 }
                 break;
             case PropertyTarget::ScaleOffset:
             {
-                Vector4 st = values_.GetTextureScaleOffset(id);
+                if (overlay && value->kind != PropertyKind::Texture)
+                    break;
+                Vector4 st = values.GetTextureScaleOffset(id);
                 const f32 s[4] = {st.x, st.y, st.z, st.w};
-                WritePropertyValue(p, binding, Span<const f32>(s, 4), data.blocks[binding.block]);
+                WritePropertyValue(p, binding, Span<const f32>(s, 4), blocks[binding.block]);
                 break;
             }
             case PropertyTarget::Texture:
             {
-                EntityId texture = value ? value->texture : EntityId();
+                if (overlay && value->kind != PropertyKind::Texture)
+                    break;
+                EntityId texture = value && value->kind == PropertyKind::Texture ? value->texture : EntityId();
                 if (!EntityIdToObject(texture))
+                {
+                    if (overlay)
+                        break;
                     texture = Default(p.defaultTexture)->GetEntityId();
-                data.textures.Push({binding.slot, texture});
+                }
+                bool replaced = false;
+                for (MaterialPassData::TextureSlot& t : textures)
+                    if (t.slot == binding.slot)
+                        t.texture = texture, replaced = true;
+                if (!replaced)
+                    textures.Push({binding.slot, texture});
                 break;
             }
             }
         }
-        // Members of the same blocks that are no properties take values by name: the material's, else the globals.
+        // Members of the same blocks that are no properties take values by name: the sheet's, else the globals.
         for (const ShaderVariant::NamedMember& m : v.namedMembers)
         {
-            const PropertyValue* value = values_.Find(m.id);
-            const PropertySheet* sheet = &values_;
-            if (!value)
-                value = globals.Find(m.id), sheet = &globals;
+            const PropertyValue* value = values.Find(m.id);
+            const PropertySheet* sheet = &values;
+            if (!value && globals && !overlay)
+                value = globals->Find(m.id), sheet = globals;
             if (!value || value->kind == PropertyKind::Texture || m.element >= value->count)
                 continue;
             u32 width = PropertySheet::Width(value->kind);
             Floats(*sheet, *value, m.element * width, width, numbers);
-            WriteMember(*m.member, numbers, width, data.blocks[m.block]);
+            WriteMember(*m.member, numbers, width, blocks[m.block]);
         }
+    }
+
+    void Material::Write(MaterialPassData& data) const
+    {
+        WriteValues(*data.variant, values_, &Shader::Globals(), false, data.blocks, data.textures);
     }
 
     u64 Material::KeywordStamp() const

@@ -82,6 +82,7 @@ namespace helix::engine
         bool HasMatrix(StringView name) const { return sheet_.Has(PropertyToID(name), PropertyKind::Matrix); }
         bool HasTexture(StringView name) const { return sheet_.Has(PropertyToID(name), PropertyKind::Texture); }
 
+        void CopyFrom(const PropertySheet& from, const PropertyValue& value) { CopyPropertyValue(sheet_, from, value); }
         const PropertySheet& Sheet() const { return sheet_; }
 
     private:
@@ -220,6 +221,11 @@ namespace helix::engine
         const MaterialPassData* GetPassData(u32 pass, shadercompiler::ShaderTarget target);
         // Bumped by every change.
         u32 Version() const { return version_; }
+        // Writes values into a variant's blocks and texture slots. Without `overlay` the blocks start from their defaults,
+        // every texture slot is filled (defaults by name) and members no value sets take the globals; with it only the
+        // values present change what is there (property blocks over a material).
+        static void WriteValues(const ShaderVariant& variant, const PropertySheet& values, const PropertySheet* globals, bool overlay,
+                                Array<Array<u8>>& blocks, Array<MaterialPassData::TextureSlot>& textures);
 
         template <class V>
         void Transfer(V& v);

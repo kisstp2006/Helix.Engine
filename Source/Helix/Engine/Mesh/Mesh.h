@@ -281,6 +281,12 @@ namespace helix::engine
         u32 IndexCount() const { return u32(indexData_.Size() / IndexSize()); }
         // The CPU copy of a mesh that is no longer readable (the renderer, once it holds the data).
         void ReleaseCpuData();
+        // One attribute as floats, `components` per vertex (the renderer's upload; readable or not).
+        void CopyAttributeFloats(VertexAttribute attribute, f32* out, u32 components) const
+        {
+            if (HasVertexAttribute(attribute))
+                GetAttribute(attribute, out, components);
+        }
         // Takes whole blocks made elsewhere (importers): the layout, the streams one after the other, the indices and the
         // submeshes with their bounds. False with an error when the sizes do not match.
         bool SetMeshData(u32 vertexCount, Span<const VertexAttributeDescriptor> layout, Array<u8>&& vertexData, IndexFormat indexFormat,

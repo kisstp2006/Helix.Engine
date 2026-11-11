@@ -295,4 +295,38 @@ namespace helix::engine
         numbers_.Clear();
         version_++;
     }
+
+    void CopyPropertyValue(PropertySheet& to, const PropertySheet& from, const PropertyValue& v)
+    {
+        Span<const f32> n = from.Numbers(v);
+        switch (v.kind)
+        {
+        case PropertyKind::Float:
+            to.SetFloat(v.id, n[0]);
+            break;
+        case PropertyKind::Int:
+            to.SetInt(v.id, from.GetInt(v.id));
+            break;
+        case PropertyKind::Vector:
+            to.SetVector(v.id, Vector4(n[0], n[1], n[2], n[3]));
+            break;
+        case PropertyKind::Matrix:
+            to.SetMatrix(v.id, from.GetMatrix(v.id));
+            break;
+        case PropertyKind::Texture:
+            to.SetTexture(v.id, v.texture);
+            to.SetTextureScale(v.id, Vector2(n[0], n[1]));
+            to.SetTextureOffset(v.id, Vector2(n[2], n[3]));
+            break;
+        case PropertyKind::FloatArray:
+            to.SetFloatArray(v.id, n);
+            break;
+        case PropertyKind::VectorArray:
+            to.SetVectorArray(v.id, Span<const Vector4>(reinterpret_cast<const Vector4*>(n.Data()), v.count));
+            break;
+        case PropertyKind::MatrixArray:
+            to.SetMatrixArray(v.id, Span<const Matrix4x4>(reinterpret_cast<const Matrix4x4*>(n.Data()), v.count));
+            break;
+        }
+    }
 }

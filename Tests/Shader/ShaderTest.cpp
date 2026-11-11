@@ -38,7 +38,7 @@ HX_TEST(Shader, AssembliesLoadAsShaders)
     HX_REQUIRE(f.guid.IsValid());
     Array<Object*> all;
     LoadAllAssets(f.guid, all);
-    HX_CHECK(all.Size() == 3);
+    HX_CHECK(all.Size() == 7);
     Shader* s = Shader::Find("Tests/Surface");
     HX_REQUIRE(s != nullptr);
     HX_CHECK(s->isSupported() && s->IsPersistent() && s->renderQueue() == 3005 && s->passCount() == 2 && s->subshaderCount() == 1);
@@ -73,12 +73,12 @@ HX_TEST(Shader, VariantsCompileOnDemand)
         const ShaderVariant* v = s->GetVariant(forward, Span<const KeywordValue>(values.Data(), values.Size()), target);
         HX_REQUIRE(v != nullptr);
         HX_CHECK(v->ok && !v->vertex.code.Empty() && !v->fragment.code.Empty() && v->target == target);
-        // The material block and the two textures of the pass; the engine's blocks at 12 and 13.
+        // The material block and the two textures of the pass; the engine's blocks at 9 and 10.
         const shadercompiler::PropertyBinding* t = v->layout.Find(u32(s->FindPropertyIndex("tint")), shadercompiler::PropertyTarget::Member);
         HX_CHECK(t && t->offset == 0 && v->layout.blocks.Size() == 1 && !v->layout.blocks[0].propertiesOnly);
         bool camera = false, draw = false;
         for (const shadercompiler::ReflectedBlock& b : v->reflection.blocks)
-            camera |= b.slot == 12, draw |= b.slot == 13;
+            camera |= b.slot == 9, draw |= b.slot == 10;
         HX_CHECK(camera && draw);
         // The same request comes from the cache.
         HX_CHECK(s->GetVariant(forward, Span<const KeywordValue>(values.Data(), values.Size()), target) == v);

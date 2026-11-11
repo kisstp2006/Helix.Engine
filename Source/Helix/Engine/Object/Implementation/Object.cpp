@@ -33,6 +33,12 @@ namespace helix::engine
             HashMap<i32, u32> byId;
             // A pool per class that has objects.
             Array<PoolAllocator*> pools;
+
+            ~Registry()
+            {
+                for (PoolAllocator* p : pools)
+                    delete p;
+            }
         };
 
         Registry& Classes()
@@ -44,9 +50,9 @@ namespace helix::engine
         // Numbers the classes depth first from the roots, children in registration order.
         void Renumber(Registry& r)
         {
-            r.byOrder.Clear();
-        r.orders.Resize(r.classes.Size());
-        r.sizes.Resize(r.classes.Size());
+                r.byOrder.Clear();
+            r.orders.Resize(r.classes.Size());
+            r.sizes.Resize(r.classes.Size());
             u32 n = u32(r.classes.Size());
             Array<u32> stack;
             for (u32 root = n; root-- > 0;)
@@ -117,7 +123,7 @@ namespace helix::engine
         u32 index = u32(r.classes.Size());
         r.byId.Set(info.classId, index);
         // 64 objects a block: small classes share cache lines and pages with their kind.
-        r.pools.Push(info.create ? new PoolAllocator(info.size, info.alignment, 64) : nullptr);
+        r.pools.Push(HX_OBJECT_POOLS && info.create ? new PoolAllocator(info.size, info.alignment, 64) : nullptr);
         r.classes.Push(Move(info));
         Renumber(r);
         Publish(r);

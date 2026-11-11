@@ -74,7 +74,7 @@ namespace helix::engine
     {
         AssetLoader l;
         l.name = "Serialized";
-        for (StringView e : {StringView("asset"), StringView("prefab")})
+        for (StringView e : {StringView("asset"), StringView("prefab"), StringView("mat")})
             l.extensions.Push(String(e));
         l.referenceType = kAssetTypeSerialized;
         l.decode = &Decode;

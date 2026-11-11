@@ -2,7 +2,8 @@
 
 The runtime of the Helix engine: the object model, GameObjects and components, tags and layers, the lifecycle of
 objects (instantiate, InstantiateAsync, destroy), the transform hierarchy, scenes and scene files, prefabs and pools,
-time, the player loop, the application and settings assets, and the asset runtime with meshes and textures.
+time, the player loop, the application and settings assets, the asset runtime with meshes and textures, and shaders
+and materials.
 
 ## Contents
 
@@ -35,6 +36,11 @@ time, the player loop, the application and settings assets, and the asset runtim
 | `Source/Helix/Engine/Asset/Resources.h` | `Resources`: `Load`, `LoadAll`, `LoadAsync`, `UnloadAsset`, `UnloadUnusedAssets` |
 | `Source/Helix/Engine/Mesh/Mesh.h` | `Mesh`, `VertexAttributeDescriptor`, `SubMeshDescriptor`, `VertexAttribute`, `VertexAttributeFormat`, `IndexFormat`, `MeshTopology` |
 | `Source/Helix/Engine/Texture/Texture.h` | `Texture`, `Texture2D`, `TextureFormat`, `FilterMode`, `TextureWrapMode` |
+| `Source/Helix/Engine/Shader/Shader.h` | `Shader`, `ShaderVariant`, `ShaderPropertyType`, `ShaderPropertyFlags`: shaders of C# assemblies, variants on demand, global keywords and properties |
+| `Source/Helix/Engine/Material/Material.h` | `Material`, `MaterialPropertyBlock`, `MaterialPassData` (block bytes and textures per pass and variant) |
+| `Source/Helix/Engine/Material/PropertySheet.h` | `PropertyToID`, `PropertySheet`: property values by id |
+| `Shaders/` | The built in shaders in C# (`Hidden/InternalErrorShader`, the engine's shader variables), built with the .NET SDK and embedded |
+| `Tests/Shaders/` | C# test shaders, embedded into the tests |
 | `Tests/`, `Benchmarks/` | Ids, the class tree, components, hierarchies, enable and destroy order, clones, world math, change dispatch, scenes and scene files, assets, meshes and textures; throughput |
 
 ## Design
@@ -124,6 +130,19 @@ time, the player loop, the application and settings assets, and the asset runtim
   A Texture2D is a TextureData of Helix.Image (every mip in one block, rows bottom first) with the sampling settings;
   the pixel calls convert through Helix.Image, block formats decode for reading. Both carry a version the renderer
   watches for uploads.
+- Shaders are C#: a .dll asset gives one Shader per ShaderDefinition it declares, read by Helix.ShaderCompiler; the
+  assemblies it references come from the engine's embedded HelixEngine.Shaders and HelixEngine.BuiltinShaders or
+  from next to it, its PDB gives file:line in errors. A variant compiles on demand for a pass, the keyword values and a
+  target (translation, linking, reflection, property binding, both backends through one ShaderCache). A variant that
+  does not compile logs its errors once and draws with Hidden/InternalErrorShader (magenta); nothing asserts. The
+  engine's blocks sit at uniform slots 12 (camera) and 13 (draw), the dynamic keywords at 11, materials below.
+- A Material holds its values in one PropertySheet (an entry per property id, numbers in one pool, textures with their
+  tiling), the shader's defaults filled in, values of properties the shader lacks kept. For the renderer it keeps per
+  pass and variant the bytes of the uniform blocks its properties go to (laid out by std140, so float and vector arrays
+  set by name land 16 bytes apart) and the texture of every slot (a property's default texture by name when it has
+  none), written again only when a value or a global changed; the variant itself is looked up again only when the
+  shader or a keyword changed. Members of material blocks that are no properties take the material's value by name,
+  else the global one. .mat files are YAML documents with the reference's fields (saved properties as pairs).
 - `Destroy` is queued with a delay in scaled time and runs at `ProcessDestroyQueue`, after the update loop and before
   rendering; `DestroyImmediate` destroys at once. Children go first, then components from the last to the first, then
   the GameObject; behaviours get their disable hook before their destroy hook.
@@ -288,10 +307,20 @@ machine (numbers swing up to 2 times with its clock):
 | OBJ load: read, conversion, normals, tangents, cache order, a Mesh and a prefab | 2.5 us per triangle |
 | `SetVertices`, `SetTriangles` and `RecalculateNormals` of a 65536 vertex grid | 90 ns per vertex |
 
+Materials of the C# test shader Tests/Surface (Direct3D target):
+
+| Benchmark | Result |
+|---|---|
+| `GetPassData` of a material that did not change (what a draw asks) | 12 ns |
+| `SetFloat`, then `GetPassData` writing the blocks again | 0.47 us |
+| A variant compiled for the first time: translation, reflection, binding, backend | 0.25 ms |
+
 The player loop: an empty frame of the engine's loop (its own systems run with nothing to do) takes about 170 ns;
 walking the same tree instead of the compiled list takes 2.8 times as long.
 
 ## Build
+
+The build runs the .NET SDK (`dotnet` on the path, or `HELIX_DOTNET_ROOT`) for the C# shaders.
 
 ```
 git clone https://github.com/kisstp2006/Helix.Engine

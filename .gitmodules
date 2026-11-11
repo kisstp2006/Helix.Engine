@@ -28,3 +28,9 @@
 [submodule "External/Helix.Model"]
 	path = External/Helix.Model
 	url = https://github.com/kisstp2006/Helix.Model
+[submodule "External/Helix.ShaderCompiler"]
+	path = External/Helix.ShaderCompiler
+	url = https://github.com/kisstp2006/Helix.ShaderCompiler
+[submodule "External/Helix.Shaders"]
+	path = External/Helix.Shaders
+	url = https://github.com/kisstp2006/Helix.Shaders

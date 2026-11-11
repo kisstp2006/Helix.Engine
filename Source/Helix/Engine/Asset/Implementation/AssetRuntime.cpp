@@ -173,7 +173,7 @@ namespace helix::engine
             if (s.builtins)
                 return;
             s.builtins = true;
-            for (AssetLoader l : {TextureAssetLoader(), ModelAssetLoader(), SerializedAssetLoader()})
+            for (AssetLoader l : {TextureAssetLoader(), ModelAssetLoader(), SerializedAssetLoader(), ShaderAssetLoader()})
             {
                 bool replaced = false;
                 for (const AssetLoader& e : s.loaders)

@@ -66,4 +66,5 @@ namespace helix::engine
     AssetLoader TextureAssetLoader();
     AssetLoader ModelAssetLoader();
     AssetLoader SerializedAssetLoader();
+    AssetLoader ShaderAssetLoader();
 }

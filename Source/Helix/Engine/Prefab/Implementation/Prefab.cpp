@@ -1,3 +1,4 @@
+#include <Helix/Engine/Asset/Asset.h>
 #include <Helix/Engine/GameObject/Implementation/CloneAccess.h>
 #include <Helix/Engine/GameObject/Lifecycle.h>
 #include <Helix/Engine/Prefab/Prefab.h>
@@ -80,7 +81,11 @@ namespace helix::engine
         if (const EntityId* id = r.roots.Find(guid))
             if (GameObject* g = EntityIdToObject<GameObject>(*id))
                 return g;
-        return r.source ? r.source->Find(guid) : nullptr;
+        if (r.source)
+            return r.source->Find(guid);
+        // The asset runtime: prefab and model files of the catalog.
+        Object* o = LoadAsset(guid);
+        return o && o->Is<GameObject>() ? static_cast<GameObject*>(o) : nullptr;
     }
 
     void RegisterPrefab(const Guid& guid, GameObject* root)

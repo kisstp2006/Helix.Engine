@@ -1,3 +1,4 @@
+#include <Helix/Engine/Asset/Asset.h>
 #include <Helix/Engine/GameObject/Implementation/CloneAccess.h>
 #include <Helix/Engine/GameObject/Implementation/GameObjectAccess.h>
 #include <Helix/Engine/Prefab/Prefab.h>
@@ -61,15 +62,29 @@ namespace helix::engine
         struct WriteTable final : ReferenceTable
         {
             HashMap<EntityId, i64> ids;
+            // The assets written references point at (the externals of binary files).
+            HashMap<Guid, i32> externals;
             AssetReference ToFile(u64 object) override
             {
                 AssetReference r;
-                if (const i64* f = ids.Find(EntityId::FromULong(object)))
+                EntityId id = EntityId::FromULong(object);
+                if (const i64* f = ids.Find(id))
                     r.fileID = *f;
+                else if (Object* o = EntityIdToObject(id); o && GetAssetReference(o, r.guid, r.fileID, r.type))
+                    externals.Set(r.guid, r.type);
                 return r;
             }
             u64 FromFile(const AssetReference&) override { return 0; }
         };
+
+        void AddExternals(const WriteTable& table, SerializedFileWriter& w)
+        {
+            for (auto e : table.externals)
+            {
+                const AssetEntry* entry = FindAsset(e.key);
+                w.AddExternal(e.key, e.value, entry ? StringView(entry->path) : StringView());
+            }
+        }
 
         // fileIDs for the collected objects: those the file had keep theirs; the scene remembers them all.
         bool AssignFileIds(u32 slot, const Collected& c, WriteTable& table, Array<i64>& fileIds, String& error)
@@ -124,8 +139,20 @@ namespace helix::engine
             AssetReference ToFile(u64) override { return {}; }
             u64 FromFile(const AssetReference& r) override
             {
-                if (r.guid.IsValid() || r.fileID == 0)
+                if (r.fileID == 0)
                     return 0;
+                // Objects of assets: loaded now when they are not yet (a reference to an unknown asset reads null).
+                if (r.guid.IsValid())
+                {
+                    Object* o = LoadAsset(r.guid, r.fileID);
+                    if (!o && FindAsset(r.guid) && errors)
+                    {
+                        char guid[33];
+                        r.guid.ToChars(guid);
+                        errors->Push(Format("a reference to fileID {} of asset {}, which it does not have", r.fileID, StringView(guid, 32)));
+                    }
+                    return o ? EntityId::ToULong(o->GetEntityId()) : 0;
+                }
                 if (const EntityId* id = objects.Find(r.fileID))
                     return EntityId::ToULong(*id);
                 if (skipped.Find(r.fileID))
@@ -182,6 +209,13 @@ namespace helix::engine
                 fileIds_.Push(fileId);
                 created_.Push(o->GetEntityId());
                 return o;
+            }
+
+            void Created(Array<EntityId>& objects, Array<i64>& fileIds) const
+            {
+                for (u32 i = 0; i < created_.Size(); i++)
+                    if (EntityIdIsValid(created_[i]))
+                        objects.Push(created_[i]), fileIds.Push(fileIds_[i]);
             }
 
             ReferenceTable& References() override { return table_; }
@@ -794,6 +828,25 @@ namespace helix::engine
                 for (const String& e : errors)
                     builder.Error(e);
             }
+
+            void Dependencies(const ParsedScene& parsed, Array<Guid>& out) const override
+            {
+                // Every {fileID, guid, type} of the file.
+                const yaml::Tree& tree = static_cast<const ParsedYaml&>(parsed).tree;
+                HashMap<Guid, u8> seen;
+                for (u32 n = 0; n < tree.nodes.Size(); n++)
+                {
+                    if (!tree.IsMapping(n))
+                        continue;
+                    u32 g = tree.Find(n, "guid");
+                    Guid guid;
+                    if (tree.IsScalar(g) && Guid::TryParse(tree.Text(g), guid) && guid.IsValid() && !seen.Find(guid))
+                    {
+                        seen.Set(guid, u8(1));
+                        out.Push(guid);
+                    }
+                }
+            }
         };
 
         // ------------------------------------------------------------------------------------------------ binary
@@ -861,6 +914,13 @@ namespace helix::engine
                         builder.Error(Format("SceneRoots: {}", error));
                 }
             }
+
+            void Dependencies(const ParsedScene& parsed, Array<Guid>& out) const override
+            {
+                for (const ExternalReference& e : static_cast<const ParsedBinary&>(parsed).file.Externals())
+                    if (e.guid.IsValid())
+                        out.Push(e.guid);
+            }
         };
 
         YamlFormat gYaml;
@@ -888,7 +948,7 @@ namespace helix::engine
     }
 
     bool SceneAccess::Build(const SceneFormat& format, ParsedScene& parsed, u32 slot, Array<String>& errors, const SceneBuildOptions& options,
-                            Array<EntityId>* roots)
+                            Array<EntityId>* roots, Array<EntityId>* created, Array<i64>* createdFileIds)
     {
         usize before = errors.Size();
         {
@@ -897,8 +957,46 @@ namespace helix::engine
             b.Finish();
             if (roots)
                 b.Roots(*roots);
+            if (created && createdFileIds)
+                b.Created(*created, *createdFileIds);
         }
         return errors.Size() == before;
+    }
+
+    bool SceneAccess::WriteObjects(Span<Object* const> objects, Span<const i64> fileIds, bool binary, Array<u8>& out, String& error)
+    {
+        if (objects.Size() != fileIds.Size())
+            return error = "one fileID per object", false;
+        WriteTable table;
+        table.ids.Reserve(objects.Size());
+        for (usize i = 0; i < objects.Size(); i++)
+        {
+            if (!objects[i] || !objects[i]->Class().writeYaml)
+                return error = "an object that cannot be written", false;
+            table.ids.Set(objects[i]->GetEntityId(), fileIds[i]);
+        }
+        out.Clear();
+        if (binary)
+        {
+            SerializedFileWriter w(false);
+            for (usize i = 0; i < objects.Size(); i++)
+                objects[i]->Class().writeBinary(*objects[i], w, fileIds[i], &table);
+            AddExternals(table, w);
+            return w.Finish(out, error);
+        }
+        String text;
+        yaml::Emitter e(text);
+        e.Directives();
+        for (usize i = 0; i < objects.Size(); i++)
+        {
+            Object& o = *objects[i];
+            e.BeginDocument(o.Class().classId, fileIds[i]);
+            o.Class().writeYaml(o, e, &table);
+        }
+        out.Resize(text.Size());
+        if (text.Size())
+            std::memcpy(out.Data(), text.Data(), text.Size());
+        return true;
     }
 
     bool ReadSceneFile(Span<const u8> bytes, Scene scene, Array<String>& errors)
@@ -970,6 +1068,7 @@ namespace helix::engine
         }
         SceneRoots roots = RootsOf(c);
         w.Add(kSceneRootsFileId, kSceneRootsClassId, roots, &table);
+        AddExternals(table, w);
         out.Clear();
         return w.Finish(out, error);
     }

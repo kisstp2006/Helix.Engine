@@ -22,3 +22,9 @@
 [submodule "External/Helix.Serialization"]
 	path = External/Helix.Serialization
 	url = https://github.com/kisstp2006/Helix.Serialization
+[submodule "External/Helix.Image"]
+	path = External/Helix.Image
+	url = https://github.com/kisstp2006/Helix.Image
+[submodule "External/Helix.Model"]
+	path = External/Helix.Model
+	url = https://github.com/kisstp2006/Helix.Model

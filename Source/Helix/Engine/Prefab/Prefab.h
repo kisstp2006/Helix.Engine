@@ -11,8 +11,8 @@ namespace helix::engine
     // The fileID of the prefab asset itself in references to it (m_SourcePrefab).
     inline constexpr i64 kPrefabAssetFileId = 100100000;
 
-    // Where prefabs come from by guid (extensible: the asset runtime loads them on demand). The default source is the
-    // registry of LoadPrefab.
+    // Where prefabs come from by guid when they are not registered (extensible). Without one, the asset runtime loads
+    // the prefab or model file of the guid.
     class PrefabSource
     {
     public:
@@ -33,7 +33,7 @@ namespace helix::engine
     // The prefab of a guid: the registered ones first, then the source.
     GameObject* FindPrefab(const Guid& guid);
     void RegisterPrefab(const Guid& guid, GameObject* root);
-    // Null for the registry alone.
+    // Null for the asset runtime.
     void SetPrefabSource(PrefabSource* source);
     // For tools that change a prefab asset: the copies made after this see the change.
     void InvalidatePrefabTemplate(GameObject* root);

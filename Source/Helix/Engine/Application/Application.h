@@ -28,6 +28,14 @@ namespace helix::engine
         ReachableViaLocalAreaNetwork = 2,
     };
 
+    enum class ThreadPriority : i32
+    {
+        Low = 0,
+        BelowNormal = 1,
+        Normal = 2,
+        High = 4,
+    };
+
     enum class LogType : i32
     {
         Error = 0,
@@ -54,6 +62,10 @@ namespace helix::engine
         static i32 targetFrameRate();
         static void SetTargetFrameRate(i32 framesPerSecond);
         static NetworkReachability internetReachability();
+        // The main thread time a frame gives to making the objects of background loads: Low 2 ms, BelowNormal 4 ms,
+        // Normal 10 ms, High 50 ms.
+        static ThreadPriority backgroundLoadingPriority();
+        static void SetBackgroundLoadingPriority(ThreadPriority value);
 
         // ---------------------------------------------------------------------------------------------- product
         static StringView companyName();

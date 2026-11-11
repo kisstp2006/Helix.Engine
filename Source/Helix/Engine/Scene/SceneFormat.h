@@ -146,6 +146,8 @@ namespace helix::engine
         // Thread safe; the bytes outlive the result. Null with `error` when they do not parse.
         virtual ParsedScene* Parse(Span<const u8> bytes, String& error) const = 0;
         virtual void Build(ParsedScene& parsed, SceneBuilder& builder) const = 0;
+        // Thread safe: the guids of the assets the file refers to (async loads request them before building).
+        virtual void Dependencies(const ParsedScene&, Array<Guid>&) const {}
     };
 
     // Formats are asked in the order they were registered, after the engine's own; the format stays owned by the caller.

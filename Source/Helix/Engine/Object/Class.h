@@ -68,6 +68,8 @@ namespace helix::engine
         void (*onDestroy)(Object&) = nullptr;
         void (*onEnable)(Object&) = nullptr;
         void (*onDisable)(Object&) = nullptr;
+        // Frees the object's data and keeps the object (Resources.UnloadAsset); null for classes that cannot.
+        void (*unloadData)(Object&) = nullptr;
         // Classes AddComponent adds first (RequireComponent).
         Array<u32> required = Array<u32>();
         // Scene files through the class's Transfer; null for abstract classes.

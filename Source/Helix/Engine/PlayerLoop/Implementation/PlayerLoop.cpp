@@ -1,4 +1,5 @@
 #include <Helix/Engine/Application/Application.h>
+#include <Helix/Engine/Asset/Asset.h>
 #include <Helix/Engine/GameObject/Lifecycle.h>
 #include <Helix/Engine/PlayerLoop/PlayerLoop.h>
 #include <Helix/Engine/Scene/SceneManager.h>
@@ -129,7 +130,12 @@ namespace helix::engine
         // The engine's own systems.
         void UpdateTime(void*) { Time::BeginFrame(); }
         void PaceFrame(void*) { Application::PaceFrame(); }
-        void SceneLoads(void*) { SceneManager::ProcessSceneLoads(); }
+        // Asset loads first: an async scene whose assets finish this frame builds in the same frame.
+        void Preloading(void*)
+        {
+            ProcessAssetLoads();
+            SceneManager::ProcessSceneLoads();
+        }
         void AsyncInstantiations(void*) { ProcessAsyncInstantiations(); }
         bool FixedStep(void*) { return Time::NextFixedStep(); }
 
@@ -161,7 +167,7 @@ namespace helix::engine
             System("SynchronizeInputs"), System("SynchronizeState"), System("XREarlyUpdate"),
         }));
         root.subSystemList.Push(Phase("EarlyUpdate", {
-            System("PollPlayerConnection"), System("HelixWebRequestUpdate"), System("ExecuteMainThreadJobs"), System("UpdatePreloading", &SceneLoads),
+            System("PollPlayerConnection"), System("HelixWebRequestUpdate"), System("ExecuteMainThreadJobs"), System("UpdatePreloading", &Preloading),
             System("AsyncInstantiation", &AsyncInstantiations), System("UpdateInputManager"), System("Physics2DEarlyUpdate"),
         }));
         root.subSystemList.Push(fixedUpdate);

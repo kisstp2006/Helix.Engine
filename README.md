@@ -2,7 +2,7 @@
 
 The runtime of the Helix engine: the object model, GameObjects and components, tags and layers, the lifecycle of
 objects (instantiate, InstantiateAsync, destroy), the transform hierarchy, scenes and scene files, prefabs and pools,
-time, the player loop, the application and settings assets.
+time, the player loop, the application and settings assets, and the asset runtime with meshes and textures.
 
 ## Contents
 
@@ -19,7 +19,8 @@ time, the player loop, the application and settings assets.
 | `Source/Helix/Engine/Transform/Hierarchy.h` | `TransformHierarchy` blocks, `UpdateWorldMatrices`, `RegisterTransformSystem`, `SetTransformInterest`, `DispatchTransformChanges` |
 | `Source/Helix/Engine/Transform/TransformHandle.h` | `TransformHandle` and its child enumerator |
 | `Source/Helix/Engine/Scene/Scene.h` | `Scene`, `SceneHandle`, `LoadSceneMode`, `LoadSceneParameters`, `UnloadSceneOptions` |
-| `Source/Helix/Engine/Scene/SceneManager.h` | `SceneManager`, `AsyncOperation`, `SceneEvent`, `SceneSource` (`FileSceneSource`, `MemorySceneSource`) |
+| `Source/Helix/Engine/Scene/SceneManager.h` | `SceneManager`, `SceneEvent`, `SceneSource` (`FileSceneSource`, `MemorySceneSource`) |
+| `Source/Helix/Engine/Async/AsyncOperation.h` | `AsyncOperation`, `ResourceRequest` |
 | `Source/Helix/Engine/Scene/SceneFile.h` | `WriteSceneYaml`, `WriteSceneBinary`, `ReadSceneFile` |
 | `Source/Helix/Engine/Scene/SceneFormat.h` | `SceneFormat`, `SceneBuilder`, `RegisterSceneFormat`: scene file formats as plug ins |
 | `Source/Helix/Engine/Prefab/Prefab.h` | `LoadPrefab`, `UnloadPrefab`, `FindPrefab`, `RegisterPrefab`, `PrefabSource` |
@@ -29,7 +30,12 @@ time, the player loop, the application and settings assets.
 | `Source/Helix/Engine/Application/Application.h` | `Application`, `RuntimePlatform`, `NetworkReachability`, `LogType` |
 | `Source/Helix/Engine/Settings/Settings.h` | `TimeManager`, `TagManager`, `PlayerSettings`, `RegisterSettings`, `LoadSettingsFile` |
 | `Source/Helix/Engine/Event/Event.h` | `Event<Args...>`, `Query<Args...>` |
-| `Tests/`, `Benchmarks/` | Ids, the class tree, components, hierarchies, enable and destroy order, clones, world math, change dispatch, scenes and scene files; throughput |
+| `Source/Helix/Engine/Asset/Asset.h` | The asset runtime: `AssetSource` (`FolderAssetSource`, `PlayerDataSource`), the catalog, `LoadAsset`, `LoadAssetAsync`, `UnloadUnusedAssets`, `WriteAssetFile` |
+| `Source/Helix/Engine/Asset/AssetLoader.h` | `AssetLoader`, `RegisterAssetLoader`: loaders by file extension, decode and integrate halves |
+| `Source/Helix/Engine/Asset/Resources.h` | `Resources`: `Load`, `LoadAll`, `LoadAsync`, `UnloadAsset`, `UnloadUnusedAssets` |
+| `Source/Helix/Engine/Mesh/Mesh.h` | `Mesh`, `VertexAttributeDescriptor`, `SubMeshDescriptor`, `VertexAttribute`, `VertexAttributeFormat`, `IndexFormat`, `MeshTopology` |
+| `Source/Helix/Engine/Texture/Texture.h` | `Texture`, `Texture2D`, `TextureFormat`, `FilterMode`, `TextureWrapMode` |
+| `Tests/`, `Benchmarks/` | Ids, the class tree, components, hierarchies, enable and destroy order, clones, world math, change dispatch, scenes and scene files, assets, meshes and textures; throughput |
 
 ## Design
 
@@ -90,6 +96,34 @@ time, the player loop, the application and settings assets.
   more kinds of settings register by class ID.
 - `Application::Quit` asks `wantsToQuit` (any false keeps running), then raises `quitting`, unloads every scene with
   its hooks and raises `unloading`; `RunFrame` returns false from then on.
+- Assets come from sources that register (`AddAssetSource`): a folder of source files for development (a file's guid
+  from its .meta, or from its path when it has none) and a player data folder of the engine's serialized files with
+  an index. The catalog maps guids, paths and Resources paths to entries; the loaded objects of each asset are kept by
+  (guid, fileID): the main object of a single object asset at classID * 100000, objects an importer makes at an id from
+  their type and name. Scene and prefab files write references to them as `{fileID, guid, type}` and load them when
+  read; async scene loads request their assets while parsing (binary files list them as externals) and build once
+  they are in. Prefab and model files are the prefabs of their guids.
+- Loaders register by file extension, each a decode half (any thread: bytes to data) and an integrate half (main
+  thread: objects in their class pools). Images load through every decoder Helix.Image has, with the TextureImporter
+  settings of a .meta (mips, sRGB, readable, max size, filter, wrap); glTF, GLB, FBX and OBJ through Helix.Model with
+  the importer's axis and unit conversion, triangle lists, normals and tangents where the file has none and the vertex
+  cache and fetch order, into a Mesh per model mesh (a submesh per primitive), Texture2Ds for its images (sRGB for
+  color maps) and a prefab of Transforms; the engine's .asset and .prefab files through the scene formats.
+- A load reads on one IO thread (highest priority first), decodes on Helix.Jobs and integrates in UpdatePreloading
+  within the main thread time of `Application::backgroundLoadingPriority` (2 to 50 ms); loads of one asset share one
+  request, and a synchronous load runs the steps at once and finishes a request in flight. Without threads (the Web)
+  the reads and decodes run in UpdatePreloading.
+- `UnloadAsset` drops an asset's data and keeps its object, which takes the data again when the asset loads.
+  `UnloadUnusedAssets` keeps whatever scene objects, DontDestroyOnLoad objects and DontUnloadUnusedAsset objects reach
+  through the classes' references (an asset whole when any of its objects is reached) and destroys the other assets and
+  the objects made by code outside the scenes.
+- A Mesh is one block of vertex streams in the layout of its `VertexAttributeDescriptor`s (attributes in the order of
+  `VertexAttribute` inside each of up to 4 streams), one index block of 16 or 32 bit indices, submeshes as ranges of
+  it and bounds. The simple arrays (`vertices`, `normals`, `uv`, `colors32`, `triangles`) convert to and from the
+  layout; `SetVertexBufferParams` / `SetVertexBufferData` and the index and submesh calls write the blocks as they are.
+  A Texture2D is a TextureData of Helix.Image (every mip in one block, rows bottom first) with the sampling settings;
+  the pixel calls convert through Helix.Image, block formats decode for reading. Both carry a version the renderer
+  watches for uploads.
 - `Destroy` is queued with a delay in scaled time and runs at `ProcessDestroyQueue`, after the update loop and before
   rendering; `DestroyImmediate` destroys at once. Children go first, then components from the last to the first, then
   the GameObject; behaviours get their disable hook before their destroy hook.
@@ -193,6 +227,17 @@ DispatchTransformChanges(renderer, [](TransformHierarchy& h, u32 i) {
 });
 ```
 
+Assets, from a folder of source files:
+
+```cpp
+FolderAssetSource folder("Assets");
+AddAssetSource(&folder);
+Texture2D* logo = Resources::Load<Texture2D>("ui/logo");      // Assets/.../Resources/ui/logo.png
+ResourceRequest level = Resources::LoadAsync<Mesh>("terrain"); // done in a later frame
+GameObject* ship = static_cast<GameObject*>(LoadAsset(FindAssetAtPath("Models/ship.glb")->guid));
+Instantiate(ship);
+```
+
 ## Performance (Ryzen 7 3750H, release)
 
 | Benchmark | Result |
@@ -232,6 +277,16 @@ under the same load at normal priority:
 | The same from a scene object (no template) | 8 % slower |
 | `InstantiateAsync` of 1000 copies with a 2 ms budget | worst frame 2.1 to 3.7 ms (the machine's other load), 18 to 70 frames |
 | `ObjectPool` Get and Release of a pooled copy (33 behaviours enabled and disabled) | 2.6 to 3.6 times cheaper than a new copy and its destroy |
+
+Assets from a folder of source files (64 PNGs of 256 x 256 noise, an OBJ grid of 32768 triangles), measured on a warm
+machine (numbers swing up to 2 times with its clock):
+
+| Benchmark | Result |
+|---|---|
+| Texture load on the main thread (decode 3.0 ms, mips 2.6 ms in Helix.Image) | 6.0 ms per texture |
+| `LoadAssetAsync` of the 64 on 7 workers, integrated in UpdatePreloading | 1.6 ms per texture, the longest main thread frame under 1 ms |
+| OBJ load: read, conversion, normals, tangents, cache order, a Mesh and a prefab | 2.5 us per triangle |
+| `SetVertices`, `SetTriangles` and `RecalculateNormals` of a 65536 vertex grid | 90 ns per vertex |
 
 The player loop: an empty frame of the engine's loop (its own systems run with nothing to do) takes about 170 ns;
 walking the same tree instead of the compiled list takes 2.8 times as long.

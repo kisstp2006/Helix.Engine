@@ -2,6 +2,7 @@
 
 #include <Helix/Core/Basics/Span.h>
 #include <Helix/Core/Strings/String.h>
+#include <Helix/Engine/Async/AsyncOperation.h>
 #include <Helix/Engine/Event/Event.h>
 #include <Helix/Engine/Object/EntityId.h>
 #include <Helix/Engine/Scene/Scene.h>
@@ -45,23 +46,6 @@ namespace helix::engine
     private:
         Array<String> paths_;
         Array<Array<u8>> bytes_;
-    };
-
-    // A load or unload in progress. A handle: an operation that finished long ago reads as done.
-    struct AsyncOperation
-    {
-        u32 id = 0;
-
-        bool IsValid() const { return id != 0; }
-        bool isDone() const;
-        // 0 to 1; a load waiting for allowSceneActivation stays at 0.9.
-        f32 progress() const;
-        i32 priority() const;
-        void SetPriority(i32 value) const;
-        bool allowSceneActivation() const;
-        void SetAllowSceneActivation(bool value) const;
-        // Called when the operation is done; at once when it already is.
-        void AddCompleted(void (*callback)(void* user, AsyncOperation op), void* user = nullptr) const;
     };
 
     class SceneManager

@@ -24,6 +24,7 @@ namespace helix::engine
             bool batchMode = false;
             bool runInBackground = false;
             i32 targetFrameRate = -1;
+            ThreadPriority loadingPriority = ThreadPriority::BelowNormal;
             NetworkReachability reachability = NetworkReachability::ReachableViaLocalAreaNetwork;
             String company = String("DefaultCompany");
             String product = String("Product");
@@ -169,6 +170,8 @@ namespace helix::engine
     bool Application::runInBackground() { return App().runInBackground; }
     void Application::SetRunInBackground(bool value) { App().runInBackground = value; }
     i32 Application::targetFrameRate() { return App().targetFrameRate; }
+    ThreadPriority Application::backgroundLoadingPriority() { return App().loadingPriority; }
+    void Application::SetBackgroundLoadingPriority(ThreadPriority value) { App().loadingPriority = value; }
     void Application::SetTargetFrameRate(i32 fps) { App().targetFrameRate = fps > 0 ? fps : -1; }
     NetworkReachability Application::internetReachability() { return App().reachability; }
 
@@ -301,6 +304,7 @@ namespace helix::engine
         a.batchMode = false;
         a.runInBackground = false;
         a.targetFrameRate = -1;
+        a.loadingPriority = ThreadPriority::BelowNormal;
         a.quitRequested = false;
         a.quit = false;
         a.exitCode = 0;

@@ -72,6 +72,8 @@ namespace helix::engine
                 info.onEnable = [](Object& o) { static_cast<T&>(o).OnEnableNative(); };
             if constexpr (requires(T& t) { t.OnDisableNative(); })
                 info.onDisable = [](Object& o) { static_cast<T&>(o).OnDisableNative(); };
+            if constexpr (requires(T& t) { t.UnloadDataNative(); })
+                info.unloadData = [](Object& o) { static_cast<T&>(o).UnloadDataNative(); };
             if constexpr (requires(Array<u32>& out) { T::Requires(out); })
                 T::Requires(info.required);
             return RegisterClass(Move(info));
@@ -267,6 +269,8 @@ public:                                                                         
         // Instead of the map: originals to their places (built once per prefab) and the clones' ids at those places.
         const HashMap<EntityId, u32>* index = nullptr;
         const EntityId* ids = nullptr;
+        // Instead of changing references: every one visited is added here (reachability).
+        Array<EntityId>* seen = nullptr;
 
         template <class T>
         void Field(StringView, T& value)
@@ -282,7 +286,12 @@ public:                                                                         
 
         void Reference(EntityId& id)
         {
-            if (index)
+            if (seen)
+            {
+                if (id.IsValid())
+                    seen->Push(id);
+            }
+            else if (index)
             {
                 if (const u32* k = index->Find(id))
                     id = ids[*k];

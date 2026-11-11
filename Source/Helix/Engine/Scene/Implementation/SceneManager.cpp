@@ -1,3 +1,5 @@
+#include <Helix/Engine/Asset/Asset.h>
+#include <Helix/Engine/Async/Implementation/AsyncAccess.h>
 #include <Helix/Engine/GameObject/Lifecycle.h>
 #include <Helix/Engine/Scene/Implementation/SceneAccess.h>
 #include <Helix/Engine/Scene/SceneFile.h>
@@ -52,20 +54,10 @@ namespace helix::engine
             String error;
             jobs::JobHandle job;
             bool parsing = false;
-        };
-
-        struct Operation
-        {
-            bool done = false;
-            f32 progress = 0;
-            i32 priority = 0;
-            bool allowActivation = true;
-            struct Callback
-            {
-                void (*callback)(void*, AsyncOperation);
-                void* user;
-            };
-            Array<Callback> completed;
+            // The assets the file refers to, loaded before it builds (async loads).
+            Array<Guid> dependencies;
+            Array<u32> assetLoads;
+            bool requested = false;
         };
 
         struct State
@@ -80,10 +72,6 @@ namespace helix::engine
             FileSceneSource files;
             SceneSource* source = nullptr;
             Array<Request*> queue;
-            HashMap<u32, Operation> operations;
-            // Finished operations, oldest first: only the last ones are kept.
-            Array<u32> finished;
-            u32 nextOperation = 0;
             SceneEvent<Scene, Scene> activeSceneChanged;
             SceneEvent<Scene, LoadSceneMode> sceneLoaded;
             SceneEvent<Scene> sceneUnloaded;
@@ -217,37 +205,6 @@ namespace helix::engine
             gState.activeSceneChanged.Invoke(wasValid ? previous : Scene(), MakeScene(slot));
         }
 
-        // ------------------------------------------------------------------------------------------------ operations
-
-        u32 NewOperation(bool allowActivation)
-        {
-            u32 id = ++gState.nextOperation;
-            if (id == 0)
-                id = ++gState.nextOperation;
-            Operation& op = gState.operations.Set(id, Operation());
-            op.allowActivation = allowActivation;
-            return id;
-        }
-
-        void FinishOperation(u32 id)
-        {
-            Operation* op = gState.operations.Find(id);
-            if (!op || op->done)
-                return;
-            op->done = true;
-            op->progress = 1;
-            Array<Operation::Callback> callbacks = Move(op->completed);
-            for (const Operation::Callback& c : callbacks)
-                c.callback(c.user, AsyncOperation{id});
-            gState.finished.Push(id);
-            // Long finished operations are forgotten (they read as done).
-            if (gState.finished.Size() > 256)
-            {
-                gState.operations.Remove(gState.finished[0]);
-                gState.finished.RemoveAt(0);
-            }
-        }
-
         // ------------------------------------------------------------------------------------------------ unloading
 
         // Destroys the scene's objects, raises sceneUnloaded and frees the slot.
@@ -297,6 +254,24 @@ namespace helix::engine
         void Parse(Request& r)
         {
             r.parsed = r.format->Parse(Span<const u8>(r.bytes.Data(), r.bytes.Size()), r.error);
+            if (r.parsed && r.async)
+                r.format->Dependencies(*r.parsed, r.dependencies);
+        }
+
+        // Starts the loads of the assets the parsed file needs; true once they are all done.
+        bool AssetsReady(Request& r)
+        {
+            if (!r.requested)
+            {
+                r.requested = true;
+                for (const Guid& g : r.dependencies)
+                    if (!IsAssetLoaded(g) && FindAsset(g))
+                        r.assetLoads.Push(LoadAssetAsync(g).id);
+            }
+            for (u32 op : r.assetLoads)
+                if (!AsyncOperation{op}.isDone())
+                    return false;
+            return true;
         }
 
         Request* Queue(StringView nameOrPath, i32 buildIndex, const LoadSceneParameters& p, bool async)
@@ -343,7 +318,7 @@ namespace helix::engine
             r->async = async;
             if (async)
             {
-                r->op = NewOperation(true);
+                r->op = AsyncAccess::New(true);
                 // Parsing off the main thread when the job system has workers (without them jobs run only inside
                 // Complete, so the parse happens here).
                 if (jobs::IsInitialized() && jobs::WorkerCount() > 0)
@@ -372,7 +347,7 @@ namespace helix::engine
             {
                 HX_LOG_ERROR(SceneLog, "Scene '{}' couldn't be loaded: {}", s.path, r.error);
                 FreeSlot(r.slot);
-                FinishOperation(r.op);
+                AsyncAccess::Finish(r.op);
                 return;
             }
             if (r.mode == LoadSceneMode::Single)
@@ -392,13 +367,13 @@ namespace helix::engine
                     HX_LOG_ERROR(SceneLog, "Scene '{}': {}", s.path, e);
             gState.slots[r.slot].state = SceneState::Loaded;
             gState.sceneLoaded.Invoke(MakeScene(r.slot), r.mode);
-            FinishOperation(r.op);
+            AsyncAccess::Finish(r.op);
         }
 
         void Unload(Request& r)
         {
             UnloadNow(r.slot, true);
-            FinishOperation(r.op);
+            AsyncAccess::Finish(r.op);
         }
 
         void Delete(Request* r)
@@ -426,7 +401,7 @@ namespace helix::engine
             Request* r = new Request();
             r->unload = true;
             r->slot = slot;
-            r->op = NewOperation(true);
+            r->op = AsyncAccess::New(true);
             gState.queue.Push(r);
             return AsyncOperation{r->op};
         }
@@ -530,55 +505,6 @@ namespace helix::engine
     {
         GameObject* g = EntityIdToObject<GameObject>(id);
         return g ? g->scene() : Scene();
-    }
-
-    // ---------------------------------------------------------------------------------------------- AsyncOperation
-
-    bool AsyncOperation::isDone() const
-    {
-        const Operation* op = gState.operations.Find(id);
-        return !op || op->done;
-    }
-
-    f32 AsyncOperation::progress() const
-    {
-        const Operation* op = gState.operations.Find(id);
-        return op ? op->progress : 1.0f;
-    }
-
-    i32 AsyncOperation::priority() const
-    {
-        const Operation* op = gState.operations.Find(id);
-        return op ? op->priority : 0;
-    }
-
-    void AsyncOperation::SetPriority(i32 value) const
-    {
-        if (Operation* op = gState.operations.Find(id))
-            op->priority = value;
-    }
-
-    bool AsyncOperation::allowSceneActivation() const
-    {
-        const Operation* op = gState.operations.Find(id);
-        return !op || op->allowActivation;
-    }
-
-    void AsyncOperation::SetAllowSceneActivation(bool value) const
-    {
-        if (Operation* op = gState.operations.Find(id))
-            op->allowActivation = value;
-    }
-
-    void AsyncOperation::AddCompleted(void (*callback)(void*, AsyncOperation), void* user) const
-    {
-        Operation* op = gState.operations.Find(id);
-        if (!op || op->done)
-        {
-            callback(user, *this);
-            return;
-        }
-        op->completed.Push({callback, user});
     }
 
     // ---------------------------------------------------------------------------------------------- sources
@@ -792,7 +718,14 @@ namespace helix::engine
                 // Loads activate in the order they were asked for: a waiting one holds the ones after it.
                 if (r.parsing && !jobs::IsCompleted(r.job))
                     break;
-                Operation* op = gState.operations.Find(r.op);
+                if (r.parsing)
+                {
+                    jobs::Complete(r.job);
+                    r.parsing = false;
+                }
+                if (!AssetsReady(r))
+                    break;
+                OperationState* op = AsyncAccess::Find(r.op);
                 if (op)
                     op->progress = 0.9f;
                 if (op && !op->allowActivation)

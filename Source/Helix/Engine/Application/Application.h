@@ -61,7 +61,7 @@ namespace helix::engine
         static StringView version();
         static StringView identifier();
         // The engine's version.
-        static StringView engineVersion();
+        static StringView helixVersion();
 
         // ---------------------------------------------------------------------------------------------- paths
         // The player's data folder (set by the host; next to the executable by default).

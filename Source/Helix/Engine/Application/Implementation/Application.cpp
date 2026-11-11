@@ -16,7 +16,7 @@ namespace helix::engine
 {
     namespace
     {
-        constexpr StringView kEngineVersion = "0.5.0";
+        constexpr StringView kHelixVersion = "0.5.0";
 
         struct AppState
         {
@@ -176,7 +176,7 @@ namespace helix::engine
     StringView Application::productName() { return App().product; }
     StringView Application::version() { return App().version; }
     StringView Application::identifier() { return App().identifier; }
-    StringView Application::engineVersion() { return kEngineVersion; }
+    StringView Application::helixVersion() { return kHelixVersion; }
 
     StringView Application::dataPath() { return Paths().dataPath; }
     StringView Application::streamingAssetsPath() { return Paths().streamingAssetsPath; }

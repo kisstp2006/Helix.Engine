@@ -161,7 +161,7 @@ namespace helix::engine
             System("SynchronizeInputs"), System("SynchronizeState"), System("XREarlyUpdate"),
         }));
         root.subSystemList.Push(Phase("EarlyUpdate", {
-            System("PollPlayerConnection"), System("WebRequestUpdate"), System("ExecuteMainThreadJobs"), System("UpdatePreloading", &SceneLoads),
+            System("PollPlayerConnection"), System("HelixWebRequestUpdate"), System("ExecuteMainThreadJobs"), System("UpdatePreloading", &SceneLoads),
             System("AsyncInstantiation", &AsyncInstantiations), System("UpdateInputManager"), System("Physics2DEarlyUpdate"),
         }));
         root.subSystemList.Push(fixedUpdate);

@@ -84,8 +84,9 @@ HX_TEST(Lifecycle, DontDestroyOnLoadForRoots)
     GameObject* root = GameObject::Create();
     GameObject* child = GameObject::Create();
     child->transform()->SetParent(root->transform());
-    HX_CHECK(!DontDestroyOnLoad(child) && !child->IsDontDestroyOnLoad());
-    HX_CHECK(DontDestroyOnLoad(root->transform()) && root->IsDontDestroyOnLoad());
+    HX_CHECK(!DontDestroyOnLoad(child) && child->scene() != DontDestroyOnLoadScene());
+    HX_CHECK(DontDestroyOnLoad(root->transform()) && root->scene() == DontDestroyOnLoadScene() && child->scene() == root->scene());
+    HX_CHECK(root->scene().name() == StringView("DontDestroyOnLoad") && root->scene().buildIndex() == -1);
     Cleanup();
 }
 

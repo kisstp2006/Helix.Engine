@@ -1,0 +1,20 @@
+#pragma once
+
+#include <Helix/Engine/Scene/SceneFormat.h>
+#include <Helix/Engine/Scene/SceneManager.h>
+
+namespace helix::engine
+{
+    // What the scene files reach inside the SceneManager.
+    struct SceneAccess
+    {
+        // The fileIDs of the scene's objects as its file named them (kept for the next write).
+        static HashMap<EntityId, i64>* FileIds(u32 slot);
+        // A fileID the scene has not used: deterministic per scene, never 0 or the SceneRoots fileID.
+        static i64 NewFileId(u32 slot, const HashMap<i64, EntityId>& used);
+
+        // Creates, reads, checks, links and enables the objects of a parsed file in the scene; false when something in
+        // it was wrong (`errors` say what).
+        static bool Build(const SceneFormat& format, ParsedScene& parsed, u32 slot, Array<String>& errors);
+    };
+}

@@ -86,9 +86,16 @@ namespace helix::engine
             // Most hierarchies are one GameObject: a header with room for a one node block, from a pool.
             PoolAllocator slots{kSlotSize, kBlockAlignment, 256};
 #endif
-            TransformHierarchy* firstRoot = nullptr;
-            TransformHierarchy* lastRoot = nullptr;
-            u32 rootCount = 0;
+            // The roots per scene slot.
+            struct Roots
+            {
+                TransformHierarchy* first = nullptr;
+                TransformHierarchy* last = nullptr;
+                u32 count = 0;
+            };
+            Array<Roots> roots;
+            // Slot 1 is the scene the SceneManager starts with.
+            u32 newRootScene = 1;
             Array<TransformHierarchy*> worldList;
             Array<TransformHierarchy*> changeList;
             Array<TransformHierarchy*> work;
@@ -162,33 +169,42 @@ namespace helix::engine
             }
         }
 
+        State::Roots& RootsOf(u32 scene)
+        {
+            Array<State::Roots>& roots = S().roots;
+            if (scene >= roots.Size())
+                roots.Resize(scene + 1);
+            return roots[scene];
+        }
+
+        // Before `before` (a root of the same scene; null: last).
         void LinkRoot(TransformHierarchy& h, TransformHierarchy* before)
         {
-            State& s = S();
+            State::Roots& s = RootsOf(h.scene);
             h.linked = true;
-            s.rootCount++;
+            s.count++;
             h.nextRoot = before;
-            h.previousRoot = before ? before->previousRoot : s.lastRoot;
+            h.previousRoot = before ? before->previousRoot : s.last;
             if (h.previousRoot)
                 h.previousRoot->nextRoot = &h;
             else
-                s.firstRoot = &h;
+                s.first = &h;
             if (before)
                 before->previousRoot = &h;
             else
-                s.lastRoot = &h;
+                s.last = &h;
         }
 
         void UnlinkRoot(TransformHierarchy& h)
         {
             if (!h.linked)
                 return;
-            State& s = S();
-            (h.previousRoot ? h.previousRoot->nextRoot : s.firstRoot) = h.nextRoot;
-            (h.nextRoot ? h.nextRoot->previousRoot : s.lastRoot) = h.previousRoot;
+            State::Roots& s = RootsOf(h.scene);
+            (h.previousRoot ? h.previousRoot->nextRoot : s.first) = h.nextRoot;
+            (h.nextRoot ? h.nextRoot->previousRoot : s.last) = h.previousRoot;
             h.previousRoot = h.nextRoot = nullptr;
             h.linked = false;
-            s.rootCount--;
+            s.count--;
         }
 
         void FreeHierarchy(TransformHierarchy* h)
@@ -274,6 +290,7 @@ namespace helix::engine
             }
             u32 n = h.size[i];
             TransformHierarchy* cut = NewHierarchy(n);
+            cut->scene = h.scene;
             CopyNodes(*cut, 0, h, i, n);
             cut->count = n;
             cut->parent[0] = -1;
@@ -327,11 +344,12 @@ namespace helix::engine
             return pos;
         }
 
-        TransformHierarchy* RootAt(u32 index)
+        TransformHierarchy* RootAt(u32 scene, u32 index)
         {
-            if (index >= S().rootCount)
+            State::Roots& roots = RootsOf(scene);
+            if (index >= roots.count)
                 return nullptr;
-            TransformHierarchy* r = S().firstRoot;
+            TransformHierarchy* r = roots.first;
             while (r && index--)
                 r = r->nextRoot;
             return r;
@@ -416,6 +434,7 @@ namespace helix::engine
         h->flags[0] = TransformFlags::HasChanged;
         t->hierarchy_ = h;
         t->index_ = 0;
+        h->scene = S().newRootScene;
         LinkRoot(*h, nullptr);
     }
 
@@ -465,7 +484,7 @@ namespace helix::engine
         TransformHierarchy* cut = Cut(*t->hierarchy_, t->index_);
         if (!parent)
         {
-            LinkRoot(*cut, RootAt(sibling));
+            LinkRoot(*cut, RootAt(cut->scene, sibling));
             return;
         }
         InsertUnder(*parent->hierarchy_, parent->index_, sibling, *cut);
@@ -522,7 +541,7 @@ namespace helix::engine
             NoteState(h, false, changed);
     }
 
-    void TransformAccess::BuildClone(Span<Transform* const> originals, Span<Transform* const> clones)
+    void TransformAccess::BuildClone(Span<Transform* const> originals, Span<Transform* const> clones, u32 scene)
     {
         u32 n = u32(originals.Size());
         if (!n)
@@ -557,7 +576,52 @@ namespace helix::engine
         }
         Reindex(*h, 0, n);
         NoteState(*h, true, 0);
+        h->scene = scene;
         LinkRoot(*h, nullptr);
+    }
+
+    void TransformAccess::BuildLoaded(Span<Transform* const> nodes, Span<const i32> parents, u32 scene)
+    {
+        u32 n = u32(nodes.Size());
+        if (!n)
+            return;
+        TransformHierarchy* h = NewHierarchy(n);
+        h->count = n;
+        for (u32 k = 0; k < n; k++)
+        {
+            Transform* t = nodes[k];
+            TransformHierarchy* own = t->hierarchy_;
+            h->world[k] = Matrix4x4::identity();
+            h->worldRotation[k] = Quaternion::identity();
+            h->local[k] = own->local[t->index_];
+            h->transforms[k] = t;
+            h->parent[k] = k ? parents[k] : -1;
+            h->size[k] = 1;
+            h->children[k] = 0;
+            h->interest[k] = own->interest[t->index_];
+            h->changed[k] = 0;
+            h->flags[k] = TransformFlags::WorldDirty | TransformFlags::HasChanged;
+            // Each was a root of its own since it was made.
+            FreeHierarchy(own);
+        }
+        for (u32 k = n; k-- > 1;)
+        {
+            h->size[h->parent[k]] += h->size[k];
+            h->children[h->parent[k]]++;
+        }
+        Reindex(*h, 0, n);
+        NoteState(*h, true, 0);
+        h->scene = scene;
+        LinkRoot(*h, nullptr);
+    }
+
+    u32& TransformAccess::NewRootScene() { return S().newRootScene; }
+
+    void TransformAccess::MoveToScene(TransformHierarchy& h, u32 scene)
+    {
+        UnlinkRoot(h);
+        h.scene = scene;
+        LinkRoot(h, nullptr);
     }
 
     void TransformAccess::Resize(TransformHierarchy& h, u32 capacity) { Reallocate(h, Max(capacity, Max(h.count, 1u))); }
@@ -694,6 +758,6 @@ namespace helix::engine
         }
     }
 
-    TransformHierarchy* FirstRootHierarchy() { return S().firstRoot; }
-    u32 RootHierarchyCount() { return S().rootCount; }
+    TransformHierarchy* FirstRootHierarchy(u32 scene) { return RootsOf(scene).first; }
+    u32 RootHierarchyCount(u32 scene) { return RootsOf(scene).count; }
 }

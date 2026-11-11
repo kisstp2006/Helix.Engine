@@ -10,6 +10,10 @@ namespace helix::engine
     class Component;
     class Transform;
     struct TransformHandle;
+    struct Scene;
+
+    // The scene culling mask of objects in the main stage, seen in game and scene views.
+    inline constexpr u64 kDefaultSceneCullingMask = 0xE000000000000000ull;
 
     class GameObject final : public Object
     {
@@ -39,6 +43,10 @@ namespace helix::engine
 
         Transform* transform() const;
         TransformHandle transformHandle() const;
+        // The scene of its root.
+        Scene scene() const;
+        u64 sceneCullingMask() const { return kDefaultSceneCullingMask; }
+        static Scene GetScene(EntityId id);
 
         // AddComponent adds the classes the new one requires first; null for abstract classes, classes that are not
         // components, a second component of a DisallowMultipleComponent class or a second Transform.
@@ -86,7 +94,15 @@ namespace helix::engine
         void Transfer(V& v)
         {
             Base::Transfer(v);
-            v.Field("m_Component", components_);
+            // Visitors take arrays: the list goes through one and back (the remap changes the references in it).
+            Array<ComponentEntry> list;
+            list.Reserve(components_.Size());
+            for (const ComponentEntry& e : components_)
+                list.Push(e);
+            v.Field("m_Component", list);
+            components_.Clear();
+            for (const ComponentEntry& e : list)
+                components_.Push(e);
             u32 layer = layer_;
             v.Field("m_Layer", layer);
             layer_ = u8(layer < kLayerCount ? layer : 0);
@@ -192,4 +208,5 @@ namespace helix::engine
     };
 }
 
+#include <Helix/Engine/Scene/Scene.h>
 #include <Helix/Engine/Transform/Transform.h>

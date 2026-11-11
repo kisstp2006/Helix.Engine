@@ -10,8 +10,12 @@ namespace helix::engine
         static TransformHierarchy*& Block(Transform& t) { return t.hierarchy_; }
         static u32& Index(Transform& t) { return t.index_; }
 
-        // A new root hierarchy holding only `t` (at the end of the roots).
+        // A new root hierarchy holding only `t`, at the end of the roots of the scene new roots go into.
         static void CreateRoot(Transform* t);
+        // The scene new roots go into (the active scene, or the scene being loaded).
+        static u32& NewRootScene();
+        // The hierarchy as the last root of another scene.
+        static void MoveToScene(TransformHierarchy& h, u32 scene);
         // Takes the node out: marked dead when its parent is being destroyed too (the parent's range goes later),
         // otherwise its range goes now; the hierarchy goes with its root.
         static void Release(Transform* t);
@@ -24,7 +28,10 @@ namespace helix::engine
         static void MarkChanged(TransformHierarchy& h, u32 i);
         // A hierarchy for `clones`, a copy of `originals` (whole subtrees of one hierarchy, in node order, live nodes
         // only): parents, local values and order; a new root at the end of the roots.
-        static void BuildClone(Span<Transform* const> originals, Span<Transform* const> clones);
+        static void BuildClone(Span<Transform* const> originals, Span<Transform* const> clones, u32 scene);
+        // One block for transforms read from a file, each still a root of its own: `nodes` in depth first order,
+        // `parents` their parents' places in `nodes` (-1 for the first); a new root at the end of the scene's roots.
+        static void BuildLoaded(Span<Transform* const> nodes, Span<const i32> parents, u32 scene);
 
         // The block reallocated for `capacity` nodes (never below the nodes in use).
         static void Resize(TransformHierarchy& h, u32 capacity);

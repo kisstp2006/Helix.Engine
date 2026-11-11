@@ -7,6 +7,8 @@
 
 namespace helix::engine
 {
+    Array<TransformLinks>* detail::gTransformLinks = nullptr;
+
     namespace
     {
         LogChannel TransformLog{"Engine"};
@@ -93,7 +95,7 @@ namespace helix::engine
         i32 k = 0;
         if (p < 0)
         {
-            for (const TransformHierarchy* r = FirstRootHierarchy(); r && r != &h; r = r->nextRoot)
+            for (const TransformHierarchy* r = FirstRootHierarchy(h.scene); r && r != &h; r = r->nextRoot)
                 k++;
             return k;
         }
@@ -115,7 +117,7 @@ namespace helix::engine
     void Transform::SetAsLastSibling()
     {
         Transform* p = parent();
-        u32 last = p ? p->childCount() - 1 : RootHierarchyCount() - 1;
+        u32 last = p ? p->childCount() - 1 : RootHierarchyCount(hierarchy_->scene) - 1;
         SetSiblingIndex(i32(last));
     }
 
@@ -162,6 +164,12 @@ namespace helix::engine
     void Transform::SetLocalScale(Vector3 value)
     {
         hierarchy_->local[index_].scale = value;
+        Changed(this);
+    }
+
+    void Transform::SetLocal(const LocalTRS& value)
+    {
+        hierarchy_->local[index_] = value;
         Changed(this);
     }
 

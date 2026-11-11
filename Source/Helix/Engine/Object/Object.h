@@ -5,6 +5,8 @@
 #include <Helix/Core/Strings/String.h>
 #include <Helix/Engine/Object/Class.h>
 #include <Helix/Engine/Object/EntityId.h>
+#include <Helix/Serialization/SerializedFile/SerializedFile.h>
+#include <Helix/Serialization/Transfer/Yaml.h>
 
 #include <type_traits>
 
@@ -43,6 +45,8 @@ namespace helix::engine
         }
         template <class T>
         void Remap(Object& o, ReferenceRemap& r);
+        template <class T>
+        void SetSerialization(ClassInfo& info);
 
         template <class T, u32 flags>
         u32 Register(StringView name, i32 id)
@@ -56,7 +60,10 @@ namespace helix::engine
                 info.base = T::Base::StaticClass();
             info.flags = flags | (info.base != kNoClass ? GetClass(info.base).flags & (ClassComponent | ClassBehaviour) : 0u);
             if constexpr ((flags & ClassAbstract) == 0)
+            {
                 info.create = &Create<T>, info.clone = &Clone<T>;
+                SetSerialization<T>(info);
+            }
             info.remap = &Remap<T>;
             if constexpr (requires(T& t) { t.OnDestroyNative(); })
                 info.onDestroy = [](Object& o) { static_cast<T&>(o).OnDestroyNative(); };
@@ -112,7 +119,6 @@ public:                                                                         
         // Assets (loaded or created as assets) as opposed to objects of scenes.
         bool IsPersistent() const { return persistent_; }
         void SetPersistent(bool persistent) { persistent_ = persistent; }
-        bool IsDontDestroyOnLoad() const { return dontDestroyOnLoad_; }
 
         template <class V>
         void Transfer(V& v)
@@ -137,7 +143,6 @@ public:                                                                         
         u32 classIndex_ = kNoClass;
         u32 listPosition_ = 0;
         bool persistent_ = false;
-        bool dontDestroyOnLoad_ = false;
         bool destroying_ = false;
         // Made in its class's pool (not by `new`).
         bool pooled_ = false;
@@ -282,6 +287,22 @@ public:                                                                         
         static_cast<T&>(o).Transfer(r);
     }
 
+    template <class T>
+    void detail::SetSerialization(ClassInfo& info)
+    {
+        using namespace serialization;
+        info.writeYaml = [](Object& o, yaml::Emitter& e, ReferenceTable* refs) { WriteYaml(e, static_cast<T&>(o), refs); };
+        info.readYaml = [](Object& o, const yaml::Tree& t, u32 root, Array<String>& errors, ReferenceTable* refs) {
+            return ReadYaml(t, root, static_cast<T&>(o), errors, refs);
+        };
+        info.writeBinary = [](Object& o, SerializedFileWriter& w, i64 fileID, ReferenceTable* refs) {
+            w.Add(fileID, T::kClassId, static_cast<T&>(o), refs);
+        };
+        info.readBinary = [](Object& o, const SerializedFile& f, u32 index, String& error, ReferenceTable* refs) {
+            return f.Read(index, static_cast<T&>(o), error, refs);
+        };
+    }
+
     // A reference to an object: its EntityId, so a reference to a destroyed object reads null.
     template <class T>
     class PPtr
@@ -300,13 +321,19 @@ public:                                                                         
         explicit operator bool() const { return Get() != nullptr; }
         bool operator==(const PPtr& o) const { return id_ == o.id_; }
 
-        // Visitors that know about references (the remap here, scene files) take the id; others see the
-        // raw value.
+        // The remap takes the id; file visitors write {fileID, guid, type} through their reference table (scene
+        // files map fileIDs to objects); others see the raw value.
         template <class V>
         void Transfer(V& v)
         {
             if constexpr (requires { v.Reference(id_); })
                 v.Reference(id_);
+            else if constexpr (requires(u64& raw) { v.ObjectReference(raw); })
+            {
+                u64 raw = EntityId::ToULong(id_);
+                v.ObjectReference(raw);
+                id_ = EntityId::FromULong(raw);
+            }
             else
             {
                 u64 raw = id_.value;

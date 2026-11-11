@@ -1,13 +1,25 @@
 #pragma once
 
 #include <Helix/Core/Containers/Array.h>
-#include <Helix/Core/Strings/StringView.h>
+#include <Helix/Core/Strings/String.h>
 
 #include <type_traits>
 
 // The class registry: one entry per engine class with its class ID (the ID scene files use),
 // its base, what the object model needs to create, clone, remap and destroy it, and the classes it requires.
 // Classes are numbered depth first, so "derives from" is a range test on those numbers.
+namespace helix::serialization
+{
+    class ReferenceTable;
+    class SerializedFile;
+    class SerializedFileWriter;
+    namespace yaml
+    {
+        class Emitter;
+        class Tree;
+    }
+}
+
 namespace helix::engine
 {
     class Object;
@@ -57,6 +69,11 @@ namespace helix::engine
         void (*onDisable)(Object&) = nullptr;
         // Classes AddComponent adds first (RequireComponent).
         Array<u32> required = Array<u32>();
+        // Scene files through the class's Transfer; null for abstract classes.
+        void (*writeYaml)(Object&, serialization::yaml::Emitter&, serialization::ReferenceTable*) = nullptr;
+        bool (*readYaml)(Object&, const serialization::yaml::Tree&, u32 root, Array<String>& errors, serialization::ReferenceTable*) = nullptr;
+        void (*writeBinary)(Object&, serialization::SerializedFileWriter&, i64 fileID, serialization::ReferenceTable*) = nullptr;
+        bool (*readBinary)(Object&, const serialization::SerializedFile&, u32 index, String& error, serialization::ReferenceTable*) = nullptr;
 
         // Filled by the registry: the depth first number and the end of the subtree.
         u32 order = 0, orderEnd = 0;

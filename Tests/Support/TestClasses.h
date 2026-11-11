@@ -2,6 +2,7 @@
 
 #include <Helix/Core/Strings/Format.h>
 #include <Helix/Engine/GameObject/Lifecycle.h>
+#include <Helix/Engine/Scene/SceneManager.h>
 
 #include <cstdio>
 

@@ -16,6 +16,5 @@ namespace helix::engine
         static bool Destroying(const Object* o) { return o->destroying_; }
         static void SetDestroying(Object* o) { o->destroying_ = true; }
         static void SetPooled(Object* o) { o->pooled_ = true; }
-        static void SetDontDestroyOnLoad(Object* o, bool value) { o->dontDestroyOnLoad_ = value; }
     };
 }

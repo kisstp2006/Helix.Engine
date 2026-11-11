@@ -328,14 +328,15 @@ HX_TEST(Transform, DestroyInsideAHierarchy)
     b->transform()->SetParent(root->transform());
     a->AddComponent<Logger>();
     a1->AddComponent<Logger>();
-    u32 roots = RootHierarchyCount();
+    u32 scene = root->transform()->Hierarchy().scene;
+    u32 roots = RootHierarchyCount(scene);
     Events().Clear();
     HX_REQUIRE(DestroyImmediate(a));
     HX_CHECK(HasEvents({"a1:disable", "a1:destroy", "a:disable", "a:destroy"}));
     HX_CHECK(root->transform()->childCount() == 1u && root->transform()->hierarchyCount() == 2u && b->transform()->NodeIndex() == 1u);
-    HX_CHECK(RootHierarchyCount() == roots);
+    HX_CHECK(RootHierarchyCount(scene) == roots);
     HX_REQUIRE(DestroyImmediate(root));
-    HX_CHECK(RootHierarchyCount() == roots - 1 && ObjectCount() == 0u);
+    HX_CHECK(RootHierarchyCount(scene) == roots - 1 && ObjectCount() == 0u);
     Cleanup();
 }
 

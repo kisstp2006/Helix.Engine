@@ -50,13 +50,15 @@ namespace helix::engine
         u32 capacity = 0;
         // The OR of `changed`.
         u32 changedSystems = 0;
+        // The scene the hierarchy belongs to (a scene slot of the SceneManager).
+        u32 scene = 0;
         // Some node has WorldDirty.
         bool worldDirty = false;
         bool linked = false;
         // Places in the lists of hierarchies with stale world matrices and with pending changes.
         u32 worldSlot = ~0u;
         u32 changeSlot = ~0u;
-        // The roots in their sibling order.
+        // The roots of the scene in their sibling order.
         TransformHierarchy* previousRoot = nullptr;
         TransformHierarchy* nextRoot = nullptr;
         void* block = nullptr;
@@ -90,7 +92,7 @@ namespace helix::engine
             const_cast<F*>(&f), parallel);
     }
 
-    // Root hierarchies, in their sibling order.
-    TransformHierarchy* FirstRootHierarchy();
-    u32 RootHierarchyCount();
+    // The root hierarchies of a scene (by slot), in their sibling order.
+    TransformHierarchy* FirstRootHierarchy(u32 scene);
+    u32 RootHierarchyCount(u32 scene);
 }

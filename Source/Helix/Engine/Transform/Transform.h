@@ -14,6 +14,21 @@ namespace helix::engine
     };
 
     struct TransformHandle;
+    class Transform;
+
+    // The parent and children a Transform read from a file, for the scene builder to link.
+    struct TransformLinks
+    {
+        Transform* transform;
+        PPtr<Transform> father;
+        Array<PPtr<Transform>> children;
+    };
+
+    namespace detail
+    {
+        // Set by the scene builder while it reads a file (main thread only).
+        extern Array<TransformLinks>* gTransformLinks;
+    }
 
     class Transform final : public Component
     {
@@ -80,6 +95,7 @@ namespace helix::engine
             rotation = Local().rotation;
         }
         void SetLocalPositionAndRotation(Vector3 position, Quaternion rotation);
+        void SetLocal(const LocalTRS& value);
 
         // ---------------------------------------------------------------------------------------------- world
         const Matrix4x4& localToWorldMatrix() const
@@ -168,7 +184,7 @@ namespace helix::engine
             v.Field("m_LocalRotation", r);
             v.Field("m_LocalPosition", p);
             v.Field("m_LocalScale", s);
-            // Scene files list the children and the parent; linking them on read is the scene loader's.
+            // Scene files list the children and the parent; the scene builder links them after reading.
             Array<PPtr<Transform>> children;
             PPtr<Transform> father;
             if constexpr (!V::kReading)
@@ -181,8 +197,9 @@ namespace helix::engine
             v.Field("m_Father", father);
             if constexpr (V::kReading)
             {
-                SetLocalPositionAndRotation(l.position, l.rotation);
-                SetLocalScale(l.scale);
+                SetLocal(l);
+                if (detail::gTransformLinks)
+                    detail::gTransformLinks->Push({this, father, Move(children)});
             }
         }
 

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Helix/Engine/GameObject/GameObject.h>
+#include <Helix/Engine/Scene/Scene.h>
 
 // Instantiate, Destroy and their timing: destroys queue until ProcessDestroyQueue, which runs after the update loop.
 namespace helix::engine
@@ -11,6 +12,8 @@ namespace helix::engine
         // Under a parent: true keeps the original's world placement, false its local values. Without a parent the
         // clone always takes the original's world placement.
         bool worldSpace = false;
+        // The scene of the clone when it has no parent (invalid: the active scene).
+        Scene scene;
         // The original does not change while the clone is made (lets the clone be made off the main thread later).
         bool originalImmutable = false;
     };
@@ -22,6 +25,8 @@ namespace helix::engine
     Object* Instantiate(Object* original, Transform* parent, bool instantiateInWorldSpace = false);
     // At a world position and rotation (also under a parent).
     Object* Instantiate(Object* original, Vector3 position, Quaternion rotation, Transform* parent = nullptr);
+    // As a root of `scene`.
+    Object* Instantiate(Object* original, Scene scene);
     template <class T>
     T* Instantiate(T* original, const InstantiateParameters& parameters = {})
     {
@@ -37,8 +42,14 @@ namespace helix::engine
     {
         return static_cast<T*>(Instantiate(static_cast<Object*>(original), position, rotation, parent));
     }
-    // `count` clones of a GameObject; ids and transformIds (count entries each) receive the clones and their Transforms.
-    bool InstantiateGameObjects(EntityId source, u32 count, Span<EntityId> ids, Span<EntityId> transformIds);
+    template <class T>
+    T* Instantiate(T* original, Scene scene)
+    {
+        return static_cast<T*>(Instantiate(static_cast<Object*>(original), scene));
+    }
+    // `count` clones of a GameObject as roots of `scene` (invalid: the active scene); ids and transformIds (count entries
+    // each) receive the clones and their Transforms.
+    bool InstantiateGameObjects(EntityId source, u32 count, Span<EntityId> ids, Span<EntityId> transformIds, Scene scene = Scene());
 
     // The object goes after the current Update loop (when the player loop calls ProcessDestroyQueue), or `delay`
     // seconds of scaled time later. A GameObject takes its components and its transform children; a component leaves
@@ -46,7 +57,8 @@ namespace helix::engine
     void Destroy(Object* object, float delay = 0);
     // Now. Assets only with allowDestroyingAssets. False when nothing was destroyed.
     bool DestroyImmediate(Object* object, bool allowDestroyingAssets = false);
-    // Root GameObjects (or components on them) and their children survive scene loads.
+    // Root GameObjects (or components on them) and their children move to the DontDestroyOnLoad scene, which Single
+    // loads keep.
     bool DontDestroyOnLoad(Object* target);
 
     // The scaled time Destroy delays count from (the player loop sets it each frame).

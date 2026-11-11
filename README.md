@@ -1,7 +1,7 @@
 # Helix.Engine
 
 The runtime of the Helix engine: the object model, GameObjects and components, tags and layers, the lifecycle of
-objects (instantiate and destroy) and the transform hierarchy.
+objects (instantiate and destroy), the transform hierarchy, scenes and scene files.
 
 ## Contents
 
@@ -17,7 +17,11 @@ objects (instantiate and destroy) and the transform hierarchy.
 | `Source/Helix/Engine/Transform/Transform.h` | `Transform`: local and world values, hierarchy, sibling order, movement, single and span conversions, `Space` |
 | `Source/Helix/Engine/Transform/Hierarchy.h` | `TransformHierarchy` blocks, `UpdateWorldMatrices`, `RegisterTransformSystem`, `SetTransformInterest`, `DispatchTransformChanges` |
 | `Source/Helix/Engine/Transform/TransformHandle.h` | `TransformHandle` and its child enumerator |
-| `Tests/`, `Benchmarks/` | Ids, the class tree, components, hierarchies, enable and destroy order, clones, world math, change dispatch; throughput |
+| `Source/Helix/Engine/Scene/Scene.h` | `Scene`, `SceneHandle`, `LoadSceneMode`, `LoadSceneParameters`, `UnloadSceneOptions` |
+| `Source/Helix/Engine/Scene/SceneManager.h` | `SceneManager`, `AsyncOperation`, `SceneEvent`, `SceneSource` (`FileSceneSource`, `MemorySceneSource`) |
+| `Source/Helix/Engine/Scene/SceneFile.h` | `WriteSceneYaml`, `WriteSceneBinary`, `ReadSceneFile` |
+| `Source/Helix/Engine/Scene/SceneFormat.h` | `SceneFormat`, `SceneBuilder`, `RegisterSceneFormat`: scene file formats as plug ins |
+| `Tests/`, `Benchmarks/` | Ids, the class tree, components, hierarchies, enable and destroy order, clones, world math, change dispatch, scenes and scene files; throughput |
 
 ## Design
 
@@ -43,6 +47,19 @@ objects (instantiate and destroy) and the transform hierarchy.
   matrices up to date, hierarchy by hierarchy in parallel. Only hierarchies with pending changes are visited.
 - The hierarchy does not change while activation hooks run or while the objects involved are being destroyed; destroyed
   children's nodes stay (marked dead) until the topmost destroyed Transform removes the range at once.
+- Every hierarchy belongs to a scene; the roots of a scene are its own list. New GameObjects and clones go into the
+  active scene unless told otherwise; DontDestroyOnLoad moves a root into a scene of its own that Single loads keep.
+- Scene files are one YAML document per object (`--- !h!<classID> &<fileID>`, the class's fields below its name) with
+  references as `{fileID: N}` and the roots in order in a last SceneRoots document; the binary form is a serialized
+  file of the same objects. The loader knows no class: it creates objects by class ID through the class registry and
+  reads them through each class's Transfer, with references going through one table that maps fileIDs to objects.
+  Then it checks GameObjects and components, builds each root's transform block in one go from the parents and children
+  the Transforms read, and enables the objects parents first. Formats are plug ins (`RegisterSceneFormat`); YAML and
+  binary come registered. Objects read from a file keep their fileIDs when the scene is written again.
+- `LoadScene` loads in the next `ProcessSceneLoads`; `LoadSceneAsync` parses on Helix.Jobs and waits at 0.9 while
+  `allowSceneActivation` is off; a `LoadScene` makes the pending async loads finish first. Single unloads the other
+  scenes first, then the new scene becomes active, its objects are enabled, then `sceneLoaded` is raised. Scene bytes
+  come from a `SceneSource` (files by default); names resolve through the build scene list.
 - `Destroy` is queued with a delay in scaled time and runs at `ProcessDestroyQueue`, after the update loop and before
   rendering; `DestroyImmediate` destroys at once. Children go first, then components from the last to the first, then
   the GameObject; behaviours get their disable hook before their destroy hook.
@@ -80,6 +97,24 @@ ProcessDestroyQueue();
 GameObject* gone = EntityIdToObject<GameObject>(id); // null once destroyed
 ```
 
+Scenes:
+
+```cpp
+StringView build[] = {"Assets/Scenes/Menu.helix", "Assets/Scenes/Level1.helix"};
+SceneManager::SetBuildScenes(Span<const StringView>(build, 2));
+SceneManager::sceneLoaded().Add([](void*, Scene s, LoadSceneMode) { Log(s.name()); });
+
+AsyncOperation op = SceneManager::LoadSceneAsync("Level1", LoadSceneMode::Additive);
+op.SetAllowSceneActivation(false);
+// Each frame, after the update loop:
+SceneManager::ProcessSceneLoads();
+if (op.progress() >= 0.9f)
+    op.SetAllowSceneActivation(true);
+
+String text, error;
+WriteSceneYaml(SceneManager::GetActiveScene(), text, error);
+```
+
 Systems that keep their own copy of transform data (renderers, physics) follow changes like this:
 
 ```cpp
@@ -110,6 +145,16 @@ model rows above read the same under that load):
 | `SetParent` of a 10 node subtree between two hierarchies of 1000, world placement kept | 1.0 us per move |
 | Every root moved, then `DispatchTransformChanges` over the 100000 changed transforms | 22 ns per transform |
 | `TransformPoints` over 100000 points | 3.6 ns per point |
+
+Scene files of 10000 GameObjects (1000 roots with 9 children, each with a Transform and a behaviour with a reference),
+under the same load; reading includes destroying the objects again, which alone (with making them) takes 2.4 us:
+
+| Benchmark | Result |
+|---|---|
+| `WriteSceneYaml` (7.6 MB) | 12.8 us per GameObject |
+| `ReadSceneFile` from YAML: parse, create, read, link, enable | 15 us per GameObject |
+| `WriteSceneBinary` (4.0 MB, no type trees) | 4.1 us per GameObject |
+| `ReadSceneFile` from the binary file | 8.0 us per GameObject |
 
 ## Build
 

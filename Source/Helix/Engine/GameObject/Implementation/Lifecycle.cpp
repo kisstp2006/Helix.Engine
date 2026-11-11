@@ -3,6 +3,8 @@
 #include <Helix/Engine/Object/Implementation/ObjectAccess.h>
 #include <Helix/Engine/Transform/Implementation/TransformAccess.h>
 
+#include <Helix/Engine/Scene/SceneManager.h>
+
 #include <Helix/Core/Logging/Log.h>
 #include <Helix/Core/Strings/Format.h>
 
@@ -150,7 +152,11 @@ namespace helix::engine
             bool placed = false;
             Vector3 position;
             Quaternion rotation;
+            // The scene slot of a clone without a parent.
+            u32 scene = ~0u;
         };
+
+        u32 SlotOf(Scene scene) { return scene.IsValid() ? scene.Slot() : TransformAccess::NewRootScene(); }
 
         Object* CloneHierarchy(Object* original, const Placement& where)
         {
@@ -182,7 +188,8 @@ namespace helix::engine
             {
                 // The copy's hierarchy: the original's nodes, parents and local values in one block, a new root.
                 TransformAccess::BuildClone(Span<Transform* const>(originalTransforms.Data(), originalTransforms.Size()),
-                                            Span<Transform* const>(cloneTransforms.Data(), cloneTransforms.Size()));
+                                            Span<Transform* const>(cloneTransforms.Data(), cloneTransforms.Size()),
+                                            where.scene == ~0u ? TransformAccess::NewRootScene() : where.scene);
                 Transform* from = originalTransforms[0];
                 Transform* t = cloneTransforms[0];
                 if (where.parent)
@@ -225,6 +232,7 @@ namespace helix::engine
         Placement where;
         where.parent = parameters.parent;
         where.worldSpace = parameters.worldSpace;
+        where.scene = SlotOf(parameters.scene);
         return Clone(original, where);
     }
 
@@ -233,6 +241,13 @@ namespace helix::engine
         Placement where;
         where.parent = parent;
         where.worldSpace = instantiateInWorldSpace;
+        return Clone(original, where);
+    }
+
+    Object* Instantiate(Object* original, Scene scene)
+    {
+        Placement where;
+        where.scene = SlotOf(scene);
         return Clone(original, where);
     }
 
@@ -246,14 +261,16 @@ namespace helix::engine
         return Clone(original, where);
     }
 
-    bool InstantiateGameObjects(EntityId source, u32 count, Span<EntityId> ids, Span<EntityId> transformIds)
+    bool InstantiateGameObjects(EntityId source, u32 count, Span<EntityId> ids, Span<EntityId> transformIds, Scene scene)
     {
         GameObject* g = EntityIdToObject<GameObject>(source);
         if (!g || ids.Size() < count || transformIds.Size() < count)
             return false;
+        Placement where;
+        where.scene = SlotOf(scene);
         for (u32 i = 0; i < count; i++)
         {
-            GameObject* c = static_cast<GameObject*>(CloneHierarchy(g, Placement()));
+            GameObject* c = static_cast<GameObject*>(CloneHierarchy(g, where));
             ids[i] = c->GetEntityId();
             transformIds[i] = c->transform()->GetEntityId();
         }
@@ -292,7 +309,7 @@ namespace helix::engine
             HX_LOG_WARNING(LifecycleLog, "DontDestroyOnLoad only works for root GameObjects or components on root GameObjects ({}).", g->Name());
             return false;
         }
-        ObjectAccess::SetDontDestroyOnLoad(g, true);
+        TransformAccess::MoveToScene(g->transform()->Hierarchy(), DontDestroyOnLoadScene().Slot());
         return true;
     }
 

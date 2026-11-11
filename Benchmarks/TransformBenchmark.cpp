@@ -11,12 +11,12 @@ namespace
     constexpr u32 kRoots = 2000;
     constexpr u32 kPerRoot = 50;
 
-    struct Scene
+    struct Forest
     {
         Array<Transform*> roots;
         Array<Transform*> all;
 
-        Scene()
+        Forest()
         {
             roots.Reserve(kRoots);
             all.Reserve(kRoots * kPerRoot);
@@ -44,7 +44,7 @@ namespace
             UpdateWorldMatrices();
         }
 
-        ~Scene()
+        ~Forest()
         {
             for (Transform* r : roots)
                 DestroyImmediate(r->gameObject());
@@ -57,7 +57,7 @@ HX_BENCH(TransformSetLocalAndUpdateWorld)
 {
     jobs::Initialize();
     {
-        Scene s;
+        Forest s;
         state.SetItemsPerIteration(s.all.Size());
         f32 x = 0;
         while (state.KeepRunning())
@@ -75,7 +75,7 @@ HX_BENCH(TransformSetLocalAndUpdateWorld)
 // Items are transforms: a leaf moved and its world position read at once (the lazy path, up to the clean parent).
 HX_BENCH(TransformSetPositionAndRead)
 {
-    Scene s;
+    Forest s;
     state.SetItemsPerIteration(s.all.Size());
     f32 sum = 0, x = 0;
     while (state.KeepRunning())
@@ -119,7 +119,7 @@ HX_BENCH(TransformDispatchChanges)
 {
     jobs::Initialize();
     {
-        Scene s;
+        Forest s;
         u32 system = RegisterTransformSystem("BenchRenderer");
         for (Transform* t : s.all)
             SetTransformInterest(t, system, true);

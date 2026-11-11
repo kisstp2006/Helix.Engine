@@ -114,6 +114,14 @@ namespace helix::engine
         return g;
     }
 
+    GameObject* GameObject::Create(StringView name, Span<const u32> components)
+    {
+        GameObject* g = Create(name);
+        for (u32 klass : components)
+            g->AddComponent(klass);
+        return g;
+    }
+
     bool GameObject::SetTag(StringView tag)
     {
         TagHandle h;

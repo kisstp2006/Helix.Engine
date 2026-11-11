@@ -25,6 +25,9 @@ HX_TEST(GameObject, ComponentsTransformFirstAndLookups)
     HX_CHECK(a->gameObject() == g && a->transform() == g->transform() && a->Name() == StringView("g"));
     a->SetName("renamed");
     HX_CHECK(g->Name() == StringView("renamed"));
+    const u32 classes[] = {ClassOf<Linker>(), ClassOf<Logger>()};
+    GameObject* made = GameObject::Create("made", Span<const u32>(classes, 2));
+    HX_CHECK(made->GetComponentCount() == 3u && made->GetComponentAtIndex(1)->Is<Linker>() && made->GetComponentAtIndex(2)->Is<Logger>());
     Cleanup();
 }
 

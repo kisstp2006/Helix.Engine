@@ -20,6 +20,8 @@ namespace helix::engine
     public:
         // A GameObject with its Transform.
         static GameObject* Create(StringView name = "GameObject");
+        // A GameObject with its Transform and the components of the given classes, in order.
+        static GameObject* Create(StringView name, Span<const u32> components);
 
         u32 layer() const { return layer_; }
         void SetLayer(u32 layer) { layer_ = u8(layer < kLayerCount ? layer : 0); }

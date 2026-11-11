@@ -1,7 +1,8 @@
 # Helix.Engine
 
 The runtime of the Helix engine: the object model, GameObjects and components, tags and layers, the lifecycle of
-objects (instantiate, InstantiateAsync, destroy), the transform hierarchy, scenes and scene files, prefabs and pools.
+objects (instantiate, InstantiateAsync, destroy), the transform hierarchy, scenes and scene files, prefabs and pools,
+time, the player loop, the application and settings assets.
 
 ## Contents
 
@@ -23,6 +24,11 @@ objects (instantiate, InstantiateAsync, destroy), the transform hierarchy, scene
 | `Source/Helix/Engine/Scene/SceneFormat.h` | `SceneFormat`, `SceneBuilder`, `RegisterSceneFormat`: scene file formats as plug ins |
 | `Source/Helix/Engine/Prefab/Prefab.h` | `LoadPrefab`, `UnloadPrefab`, `FindPrefab`, `RegisterPrefab`, `PrefabSource` |
 | `Source/Helix/Engine/Pool/ObjectPool.h` | `ObjectPool<T>`, `LinkedPool<T>`, `PoolCallbacks<T>` |
+| `Source/Helix/Engine/Time/Time.h` | `Time`, `TimeClock` |
+| `Source/Helix/Engine/PlayerLoop/PlayerLoop.h` | `PlayerLoop`, `PlayerLoopSystem` |
+| `Source/Helix/Engine/Application/Application.h` | `Application`, `RuntimePlatform`, `NetworkReachability`, `LogType` |
+| `Source/Helix/Engine/Settings/Settings.h` | `TimeManager`, `TagManager`, `PlayerSettings`, `RegisterSettings`, `LoadSettingsFile` |
+| `Source/Helix/Engine/Event/Event.h` | `Event<Args...>`, `Query<Args...>` |
 | `Tests/`, `Benchmarks/` | Ids, the class tree, components, hierarchies, enable and destroy order, clones, world math, change dispatch, scenes and scene files; throughput |
 
 ## Design
@@ -73,6 +79,17 @@ objects (instantiate, InstantiateAsync, destroy), the transform hierarchy, scene
   `allowSceneActivation` is off; a `LoadScene` makes the pending async loads finish first. Single unloads the other
   scenes first, then the new scene becomes active, its objects are enabled, then `sceneLoaded` is raised. Scene bytes
   come from a `SceneSource` (files by default); names resolve through the build scene list.
+- A frame is the player loop: the phases TimeUpdate, Initialization, EarlyUpdate, FixedUpdate (run once per fixed step
+  the frame's time allows), PreUpdate, Update, PreLateUpdate and PostLateUpdate, each a list of named systems. The
+  engine's own work is registered there by name (Time, scene loads and async instantiations in EarlyUpdate, the
+  destroy queue and the world matrices in PostLateUpdate before rendering); systems of others go in with
+  `InsertSystem`. `SetPlayerLoop` compiles the tree into a flat list, so a frame does not walk a tree.
+- Time takes real time from a replaceable clock, caps it by maximumDeltaTime, scales it by timeScale (0 stops game
+  time, frames go on) and steps fixed time in fixedDeltaTime steps; inside a step deltaTime and time are the fixed
+  ones. Settings files set it up (TimeManager), with tags and layers (TagManager) and the product (PlayerSettings);
+  more kinds of settings register by class ID.
+- `Application::Quit` asks `wantsToQuit` (any false keeps running), then raises `quitting`, unloads every scene with
+  its hooks and raises `unloading`; `RunFrame` returns false from then on.
 - `Destroy` is queued with a delay in scaled time and runs at `ProcessDestroyQueue`, after the update loop and before
   rendering; `DestroyImmediate` destroys at once. Children go first, then components from the last to the first, then
   the GameObject; behaviours get their disable hook before their destroy hook.
@@ -150,6 +167,21 @@ GameObject* bullet = pool.Get();
 pool.Release(bullet);
 ```
 
+The frame:
+
+```cpp
+Array<String> errors;
+LoadSettingsFile(timeAndTagsText, errors);
+PlayerLoopSystem mine;
+mine.type = "MyUpdate";
+mine.updateFunction = [](void*) { /* every frame, before the scripts' Update */ };
+PlayerLoop::InsertSystem("Update", mine, "ScriptRunBehaviourUpdate");
+Application::SetTargetFrameRate(60);
+while (Application::RunFrame())
+    ;
+return Application::ExitCode();
+```
+
 Systems that keep their own copy of transform data (renderers, physics) follow changes like this:
 
 ```cpp
@@ -200,6 +232,9 @@ under the same load at normal priority:
 | The same from a scene object (no template) | 8 % slower |
 | `InstantiateAsync` of 1000 copies with a 2 ms budget | worst frame 2.1 to 3.7 ms (the machine's other load), 18 to 70 frames |
 | `ObjectPool` Get and Release of a pooled copy (33 behaviours enabled and disabled) | 2.6 to 3.6 times cheaper than a new copy and its destroy |
+
+The player loop: an empty frame of the engine's loop (its own systems run with nothing to do) takes about 170 ns;
+walking the same tree instead of the compiled list takes 2.8 times as long.
 
 ## Build
 

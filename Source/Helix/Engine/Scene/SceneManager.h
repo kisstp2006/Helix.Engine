@@ -2,6 +2,7 @@
 
 #include <Helix/Core/Basics/Span.h>
 #include <Helix/Core/Strings/String.h>
+#include <Helix/Engine/Event/Event.h>
 #include <Helix/Engine/Object/EntityId.h>
 #include <Helix/Engine/Scene/Scene.h>
 
@@ -10,45 +11,9 @@
 // thread. Scene bytes come from a SceneSource (files by default), names resolve through the build scene list.
 namespace helix::engine
 {
-    // Callbacks of an event: a function and its user pointer.
+    // The scene events are engine events.
     template <class... Args>
-    class SceneEvent
-    {
-    public:
-        using Callback = void (*)(void* user, Args... args);
-        // An id for Remove.
-        u32 Add(Callback callback, void* user = nullptr)
-        {
-            entries_.Push({callback, user, ++next_});
-            return next_;
-        }
-        void Remove(u32 id)
-        {
-            for (usize i = 0; i < entries_.Size(); i++)
-                if (entries_[i].id == id)
-                {
-                    entries_.RemoveAt(i);
-                    return;
-                }
-        }
-        void Invoke(Args... args) const
-        {
-            // A copy: callbacks may add or remove callbacks.
-            Array<Entry> now = entries_;
-            for (const Entry& e : now)
-                e.callback(e.user, args...);
-        }
-
-    private:
-        struct Entry
-        {
-            Callback callback;
-            void* user;
-            u32 id;
-        };
-        Array<Entry> entries_;
-        u32 next_ = 0;
-    };
+    using SceneEvent = Event<Args...>;
 
     // Where the bytes of a scene come from (extensible: packed player data, the editor's asset database).
     class SceneSource

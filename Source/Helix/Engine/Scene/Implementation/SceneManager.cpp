@@ -1,6 +1,7 @@
 #include <Helix/Engine/GameObject/Lifecycle.h>
 #include <Helix/Engine/Scene/Implementation/SceneAccess.h>
 #include <Helix/Engine/Scene/SceneFile.h>
+#include <Helix/Engine/Time/Time.h>
 #include <Helix/Engine/Transform/Implementation/TransformAccess.h>
 
 #include <Helix/Core/Logging/Log.h>
@@ -383,6 +384,7 @@ namespace helix::engine
                 for (u32 slot : others)
                     UnloadNow(slot, false);
                 SetActive(r.slot);
+                Time::LevelLoaded();
             }
             Array<String> errors;
             if (!SceneAccess::Build(*r.format, *r.parsed, r.slot, errors))

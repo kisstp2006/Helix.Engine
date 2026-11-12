@@ -1,5 +1,7 @@
 #pragma once
 
+#include <Helix/Engine/Math/MathTransfer.h>
+
 #include <Helix/Engine/GameObject/GameObject.h>
 #include <Helix/Math/Color.h>
 
@@ -88,8 +90,7 @@ namespace helix::engine
         {
             Base::Transfer(v);
             v.Field("m_Type", type_);
-            Rgba c{&color_.r};
-            v.Field("m_Color", c);
+            v.Field("m_Color", color_);
             v.Field("m_Intensity", intensity_);
             v.Field("m_Range", range_);
             v.Field("m_SpotAngle", spotAngle_);
@@ -105,20 +106,6 @@ namespace helix::engine
         }
 
     private:
-        struct Rgba
-        {
-            static constexpr StringView kTypeName = "ColorRGBA";
-            static constexpr bool kFlow = true;
-            f32* c;
-            template <class V>
-            void Transfer(V& v)
-            {
-                v.Field("r", c[0]);
-                v.Field("g", c[1]);
-                v.Field("b", c[2]);
-                v.Field("a", c[3]);
-            }
-        };
         struct ShadowSettings
         {
             static constexpr StringView kTypeName = "ShadowSettings";

@@ -93,14 +93,14 @@ helix_add_test_suite(helix_engine_tests DEPS Helix::Engine Helix::Jobs)
 # The tests' C++ scripts: a game module of their own (EngineTests), linked into the test program.
 if(TARGET helix_engine_tests)
     helix_bindgen(helix_engine_tests MODULE EngineTests NAMESPACE EngineTests KIND NativeGame
-                  HEADERS "${CMAKE_CURRENT_SOURCE_DIR}/Tests/Scripts/TestScripts.h" REFERENCES ${engine_binding_headers}
+                  HEADERS "${CMAKE_CURRENT_SOURCE_DIR}/Tests/Scripts/TestScripts.h" REFERENCES ${engine_binding_headers} REFERENCE_NAMESPACE HelixEngine
                   INCLUDE_ROOTS "${CMAKE_CURRENT_SOURCE_DIR}/Tests" "${engine_source}")
 endif()
 helix_add_benchmark_suite(helix_engine_bench DEPS Helix::Engine Helix::Jobs)
 if(TARGET helix_engine_bench)
     target_include_directories(helix_engine_bench PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/Benchmarks")
     helix_bindgen(helix_engine_bench MODULE EngineBench NAMESPACE EngineBench KIND NativeGame
-                  HEADERS "${CMAKE_CURRENT_SOURCE_DIR}/Benchmarks/Scripts/BenchScripts.h" REFERENCES ${engine_binding_headers}
+                  HEADERS "${CMAKE_CURRENT_SOURCE_DIR}/Benchmarks/Scripts/BenchScripts.h" REFERENCES ${engine_binding_headers} REFERENCE_NAMESPACE HelixEngine
                   INCLUDE_ROOTS "${CMAKE_CURRENT_SOURCE_DIR}/Benchmarks" "${engine_source}")
 endif()
 

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Helix/Engine/GameObject/GameObject.h>
+#include <Helix/Engine/Math/MathTransfer.h>
 #include <Helix/Math/Color.h>
 #include <Helix/Math/Geometry.h>
 
@@ -139,10 +140,8 @@ namespace helix::engine
         {
             Base::Transfer(v);
             v.Field("m_ClearFlags", clearFlags_);
-            ColorValue bg{&background_.r};
-            v.Field("m_BackGroundColor", bg);
-            RectValue r{&rect_.x};
-            v.Field("m_NormalizedViewPortRect", r);
+            v.Field("m_BackGroundColor", background_);
+            v.Field("m_NormalizedViewPortRect", rect_);
             v.Field("near clip plane", near_);
             v.Field("far clip plane", far_);
             v.Field("field of view", fieldOfView_);
@@ -156,33 +155,6 @@ namespace helix::engine
         }
 
     private:
-        struct ColorValue
-        {
-            static constexpr StringView kTypeName = "ColorRGBA";
-            static constexpr bool kFlow = true;
-            f32* c;
-            template <class V>
-            void Transfer(V& v)
-            {
-                v.Field("r", c[0]);
-                v.Field("g", c[1]);
-                v.Field("b", c[2]);
-                v.Field("a", c[3]);
-            }
-        };
-        struct RectValue
-        {
-            static constexpr StringView kTypeName = "Rectf";
-            f32* r;
-            template <class V>
-            void Transfer(V& v)
-            {
-                v.Field("x", r[0]);
-                v.Field("y", r[1]);
-                v.Field("width", r[2]);
-                v.Field("height", r[3]);
-            }
-        };
 
         f32 fieldOfView_ = 60;
         f32 near_ = 0.3f;

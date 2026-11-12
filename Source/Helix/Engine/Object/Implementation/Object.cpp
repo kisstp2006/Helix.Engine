@@ -269,7 +269,10 @@ namespace helix::engine
         void* memory = Allocate(klass, c);
         Object* o = c.clone ? c.clone(memory, original) : static_cast<Object*>(c.cloneScript(memory, &original));
         ObjectAccess::SetPooled(o);
-        return AddObject(o, klass);
+        Object* added = AddObject(o, klass);
+        if (added && c.afterClone)
+            c.afterClone(*added, original);
+        return added;
     }
 
     void ObjectAccess::Remove(Object* object)

@@ -7,6 +7,7 @@
 #include <Helix/Engine/Asset/Asset.h>
 #include <Helix/Engine/Material/Material.h>
 #include <Helix/Engine/Mesh/Mesh.h>
+#include <Helix/Engine/Prefab/Prefab.h>
 #include <Helix/Engine/Rendering/Camera.h>
 #include <Helix/Engine/Rendering/Graphics.h>
 #include <Helix/Engine/Rendering/Renderer.h>
@@ -475,6 +476,302 @@ HX_TEST(Scripts, TheCppScriptApi)
     ::HelixEngine::Debug::Assert(false, "checked");
     RemoveLogSink(sink, &lines);
     HX_CHECK(lines.texts.Size() == 2 && lines.texts[0] == "from the api" && lines.texts[1] == "Assertion failed: checked");
+    ScriptCalls().Clear();
+    Cleanup();
+}
+
+namespace
+{
+    // A scene file with one script of `className` (its MonoScript the asset of `guid`) holding `fields`, on Holder;
+    // Holder has a child Pin.
+    String ScriptScene(const char* className, const char* guidText, StringView fields)
+    {
+        Guid guid;
+        Guid::TryParse(guidText, guid);
+        RegisterAssetObject(guid, 11500000, MonoScript::FromScriptClass(Script(className)), true);
+        String text = String(R"(%YAML 1.1
+%TAG !h! tag:helixengine,2026:
+--- !h!1 &100
+GameObject:
+  m_Component:
+  - component: {fileID: 101}
+  - component: {fileID: 102}
+  m_Name: Holder
+  m_IsActive: 1
+--- !h!4 &101
+Transform:
+  m_GameObject: {fileID: 100}
+  m_Children:
+  - {fileID: 201}
+  m_Father: {fileID: 0}
+--- !h!114 &102
+GameBehaviour:
+  m_GameObject: {fileID: 100}
+  m_Enabled: 1
+  m_Script: {fileID: 11500000, guid: )");
+        text.Append(guidText);
+        text.Append(", type: 3}\n");
+        text.Append(fields);
+        text.Append(R"(--- !h!1 &200
+GameObject:
+  m_Component:
+  - component: {fileID: 201}
+  m_Name: Pin
+  m_IsActive: 1
+--- !h!4 &201
+Transform:
+  m_GameObject: {fileID: 200}
+  m_Children: []
+  m_Father: {fileID: 101}
+)");
+        return text;
+    }
+
+    constexpr const char* kFields = R"(  count: 9
+  speed: 2.5
+  on: 0
+  pace: 0
+  title: read
+  numbers:
+  - 1
+  - 2
+  words:
+  - a
+  - b c
+  offset: {x: 1, y: 2, z: 3}
+  tint: {r: 1, g: 0.5, b: 0, a: 1}
+  home:
+    position: {x: 4, y: 5, z: 6}
+    wait: 4
+  route:
+  - position: {x: 0, y: 0, z: 1}
+    wait: 1
+  - position: {x: 0, y: 0, z: 2}
+    wait: 2
+  target: {fileID: 200}
+  points:
+  - {fileID: 201}
+  - {fileID: 101}
+  scratch: 5
+  secret: 11
+)";
+
+    // The fields of kFields on the Fields of `holder` (references into holder's own hierarchy).
+    bool FieldsAsRead(GameObject* holder, const char* className = "Fields")
+    {
+        auto* f = static_cast<Fields*>(holder->GetComponent(Script(className).type));
+        if (!f)
+            return false;
+        GameObject* pin = holder->transform()->GetChild(0)->gameObject();
+        bool ok = f->count == 9 && f->speed == 2.5f && !f->on && f->pace == Pace::Slow && f->title == StringView("read") &&
+                  f->numbers.Size() == 2 && f->numbers[1] == 2 && f->words.Size() == 2 && f->words[1] == StringView("b c") &&
+                  f->offset == Vector3(1, 2, 3) && f->tint == Color(1, 0.5f, 0, 1) && f->home.position == Vector3(4, 5, 6) && f->home.wait == 4 &&
+                  f->route.Size() == 2 && f->route[1].position.z == 2 && f->route[1].wait == 2 && f->target == pin && f->points.Size() == 2 &&
+                  f->points[0] == pin->transform() && f->points[1] == holder->transform() && f->scratch == 0 && f->Secret() == 11;
+        if (!ok)
+            std::printf("    fields: count %d speed %g title %.*s route %d target %p pin %p secret %d\n", f->count, double(f->speed), int(f->title.Size()),
+                        f->title.Data(), int(f->route.Size()), static_cast<void*>(f->target), static_cast<void*>(pin), f->Secret());
+        return ok;
+    }
+
+    GameObject* Loaded(Scene s, const String& text)
+    {
+        Array<String> errors;
+        bool read = ReadSceneFile(StringView(text), s, errors);
+        for (const String& e : errors)
+            std::printf("    %.*s\n", int(e.Size()), e.Data());
+        if (!read || !errors.Empty())
+            return nullptr;
+        Array<GameObject*> roots = s.GetRootGameObjects();
+        return roots.Size() == 1 ? roots[0] : nullptr;
+    }
+}
+
+HX_TEST(Scripts, CppScriptFieldsInSceneFiles)
+{
+    ScriptCalls().Clear();
+    Scene s = SceneManager::CreateScene("FieldsSource");
+    GameObject* holder = Loaded(s, ScriptScene("Fields", "d0000000000000000000000000000005", kFields));
+    HX_REQUIRE(holder != nullptr);
+    HX_CHECK(FieldsAsRead(holder));
+    auto* f = static_cast<Fields*>(holder->GetComponent(Script("Fields").type));
+    HX_CHECK(f->deserialized == 1 && f->serialized == 0);
+    // Written again: the same values, NonSerialized and untagged members left out.
+    String text, error;
+    HX_REQUIRE(WriteSceneYaml(s, text, error));
+    HX_CHECK(text.View().Contains("  count: 9\n  speed: 2.5\n  on: 0\n  pace: 0\n  title: read\n"));
+    HX_CHECK(text.View().Contains("  offset: {x: 1, y: 2, z: 3}\n  tint: {r: 1, g: 0.5, b: 0, a: 1}\n"));
+    HX_CHECK(text.View().Contains("  target: {fileID: 200}\n") && text.View().Contains("  secret: 11\n"));
+    HX_CHECK(!text.View().Contains("scratch") && !text.View().Contains("untagged") && !text.View().Contains("serialized"));
+    HX_CHECK(f->serialized == 1 && f->deserialized == 1);
+    // AddComponent: the members' initializers.
+    GameObject* added = GameObject::Create("Added");
+    auto* fresh = static_cast<Fields*>(AddScript(added, Script("Fields")));
+    HX_REQUIRE(fresh != nullptr);
+    HX_CHECK(fresh->count == 3 && fresh->speed == 1.5f && fresh->on && fresh->title == StringView("fields") && fresh->Secret() == 7 && fresh->tint == Color(1, 1, 1, 1));
+    DestroyImmediate(added);
+    // Into another scene: references go to the copy's objects.
+    Scene t = SceneManager::CreateScene("FieldsCopy");
+    GameObject* copy = Loaded(t, text);
+    HX_REQUIRE(copy != nullptr && copy != holder);
+    HX_CHECK(FieldsAsRead(copy));
+    // Binary, with and without type trees.
+    for (bool trees : {false, true})
+    {
+        Array<u8> bytes;
+        HX_REQUIRE(WriteSceneBinary(s, bytes, error, trees));
+        Scene b = SceneManager::CreateScene(trees ? "FieldsTrees" : "FieldsBinary");
+        Array<String> errors;
+        HX_CHECK(ReadSceneFile(Span<const u8>(bytes), b, errors) && errors.Empty());
+        for (const String& e : errors)
+            std::printf("    %.*s\n", int(e.Size()), e.Data());
+        Array<GameObject*> roots = b.GetRootGameObjects();
+        HX_REQUIRE(roots.Size() == 1);
+        HX_CHECK(FieldsAsRead(roots[0]));
+        SceneManager::UnloadSceneAsync(b);
+    }
+    // Instantiate copies the fields; references inside the copied hierarchy go to the clones.
+    GameObject* clone = Instantiate(holder);
+    HX_REQUIRE(clone != nullptr);
+    HX_CHECK(FieldsAsRead(clone));
+    SceneManager::UnloadSceneAsync(s);
+    SceneManager::UnloadSceneAsync(t);
+    SceneManager::ProcessSceneLoads();
+    ScriptCalls().Clear();
+    Cleanup();
+}
+
+HX_TEST(Scripts, DerivedAndApiScriptFields)
+{
+    ScriptCalls().Clear();
+    Scene s = SceneManager::CreateScene("MoreFields");
+    String more = String(kFields);
+    more.Append("  extra: 5\n");
+    GameObject* holder = Loaded(s, ScriptScene("MoreFields", "d0000000000000000000000000000006", more));
+    HX_REQUIRE(holder != nullptr);
+    auto* m = static_cast<MoreFields*>(holder->GetComponent(Script("MoreFields").type));
+    HX_REQUIRE(m != nullptr);
+    HX_CHECK(m->extra == 5 && FieldsAsRead(holder, "MoreFields"));
+    String text, error;
+    HX_REQUIRE(WriteSceneYaml(s, text, error));
+    HX_CHECK(text.View().Contains("  secret: 11\n  extra: 5\n"));
+    // Value handles: object references of the API.
+    Scene a = SceneManager::CreateScene("ApiFields");
+    GameObject* api = Loaded(a, ScriptScene("ApiFields", "d0000000000000000000000000000007", "  other: {fileID: 200}\n  marks:\n  - {fileID: 201}\n  level: 4\n"));
+    HX_REQUIRE(api != nullptr);
+    auto* f = static_cast<ApiFields*>(api->GetComponent(Script("ApiFields").type));
+    HX_REQUIRE(f != nullptr);
+    GameObject* pin = api->transform()->GetChild(0)->gameObject();
+    HX_CHECK(f->level == 4 && f->other.GetEntityId() == pin->GetEntityId() && f->marks.Size() == 1 &&
+             f->marks[0].GetEntityId() == pin->transform()->GetEntityId());
+    GameObject* clone = Instantiate(api);
+    HX_REQUIRE(clone != nullptr);
+    auto* cf = static_cast<ApiFields*>(clone->GetComponent(Script("ApiFields").type));
+    HX_REQUIRE(cf != nullptr);
+    GameObject* clonePin = clone->transform()->GetChild(0)->gameObject();
+    HX_CHECK(cf->other.GetEntityId() == clonePin->GetEntityId() && cf->marks[0].GetEntityId() == clonePin->transform()->GetEntityId());
+    // A reference to an object of another type reads as none.
+    Scene w = SceneManager::CreateScene("WrongType");
+    GameObject* wrong = Loaded(w, ScriptScene("ApiFields", "d0000000000000000000000000000007", "  other: {fileID: 201}\n"));
+    HX_REQUIRE(wrong != nullptr);
+    HX_CHECK(!static_cast<ApiFields*>(wrong->GetComponent(Script("ApiFields").type))->other);
+    for (Scene x : {s, a, w})
+        SceneManager::UnloadSceneAsync(x);
+    SceneManager::ProcessSceneLoads();
+    ScriptCalls().Clear();
+    Cleanup();
+}
+
+namespace
+{
+    // A modification of the prefab's script (fileID 102).
+    String ScriptModification(const char* guid, const char* path, const char* value, i64 reference = 0)
+    {
+        return Format("    - target: {{fileID: 102, guid: {}, type: 3}}\n      propertyPath: {}\n      value: {}\n      objectReference: {{fileID: {}}}\n", guid, path,
+                      value, reference);
+    }
+
+    // A scene with Root holding an instance of the prefab of `guid` with `mods`.
+    String PrefabInstanceScene(const String& guid, const String& mods)
+    {
+        String text = String(R"(%YAML 1.1
+%TAG !h! tag:helixengine,2026:
+--- !h!1 &1
+GameObject:
+  m_Component:
+  - component: {fileID: 2}
+  m_Name: Root
+  m_IsActive: 1
+--- !h!4 &2
+Transform:
+  m_GameObject: {fileID: 1}
+  m_Children:
+  - {fileID: 9001}
+  m_Father: {fileID: 0}
+--- !h!1001 &5000
+PrefabInstance:
+  serializedVersion: 2
+  m_Modification:
+    serializedVersion: 3
+    m_TransformParent: {fileID: 2}
+    m_Modifications:
+)");
+        text.Append(mods);
+        text.Append(R"(    m_RemovedComponents: []
+    m_RemovedGameObjects: []
+    m_AddedGameObjects: []
+    m_AddedComponents: []
+  m_SourcePrefab: {fileID: 100100000, guid: )");
+        text.Append(guid);
+        text.Append(R"(, type: 3}
+--- !h!4 &9001 stripped
+Transform:
+  m_CorrespondingSourceObject: {fileID: 101, guid: )");
+        text.Append(guid);
+        text.Append(R"(, type: 3}
+  m_PrefabInstance: {fileID: 5000}
+  m_PrefabAsset: {fileID: 0}
+--- !h!1660057539 &9223372036854775807
+SceneRoots:
+  m_Roots:
+  - {fileID: 2}
+)");
+        return text;
+    }
+}
+
+HX_TEST(Scripts, CppScriptFieldsInPrefabs)
+{
+    ScriptCalls().Clear();
+    const char* guid = "d0000000000000000000000000000008";
+    Guid g;
+    Guid::TryParse(guid, g);
+    Array<String> errors;
+    GameObject* prefab = LoadPrefab(StringView(ScriptScene("Fields", "d0000000000000000000000000000009", kFields)), errors, g);
+    for (const String& e : errors)
+        std::printf("    %.*s\n", int(e.Size()), e.Data());
+    HX_REQUIRE(prefab != nullptr);
+    String mods = ScriptModification(guid, "count", "12");
+    mods.Append(ScriptModification(guid, "route.Array.data[1].wait", "9"));
+    mods.Append(ScriptModification(guid, "title", "modified"));
+    mods.Append(ScriptModification(guid, "target", "''", 1));
+    Scene s = SceneManager::CreateScene("FieldsPrefab");
+    String file = PrefabInstanceScene(String(guid), mods);
+    errors.Clear();
+    HX_CHECK(ReadSceneFile(StringView(file), s, errors) && errors.Empty());
+    for (const String& e : errors)
+        std::printf("    %.*s\n", int(e.Size()), e.Data());
+    Array<GameObject*> roots = s.GetRootGameObjects();
+    HX_REQUIRE(roots.Size() == 1 && roots[0]->transform()->childCount() == 1);
+    GameObject* holder = roots[0]->transform()->GetChild(0)->gameObject();
+    auto* f = static_cast<Fields*>(holder->GetComponent(Script("Fields").type));
+    HX_REQUIRE(f != nullptr);
+    // The modified fields; the others the prefab's, its references the instance's own objects.
+    GameObject* pin = holder->transform()->GetChild(0)->gameObject();
+    HX_CHECK(f->count == 12 && f->title == StringView("modified") && f->route[1].wait == 9 && f->route[0].wait == 1 && f->target == roots[0]);
+    HX_CHECK(f->speed == 2.5f && f->points.Size() == 2 && f->points[0] == pin->transform() && f->points[1] == holder->transform() && f->Secret() == 11);
+    SceneManager::UnloadSceneAsync(s);
+    SceneManager::ProcessSceneLoads();
     ScriptCalls().Clear();
     Cleanup();
 }

@@ -74,6 +74,10 @@ namespace helix::engine
                 info.onActivate = [](Object& o) { static_cast<T&>(o).OnActivateNative(); };
             if constexpr (requires { &T::ResolveYaml; })
                 info.resolveYaml = &T::ResolveYaml;
+            if constexpr (requires { &T::ResolveBinary; })
+                info.resolveBinary = &T::ResolveBinary;
+            if constexpr (requires(T& t, const T& o) { t.OnCloneNative(o); })
+                info.afterClone = [](Object& c, const Object& o) { static_cast<T&>(c).OnCloneNative(static_cast<const T&>(o)); };
             if constexpr (requires(T& t) { t.OnDestroyNative(); })
                 info.onDestroy = [](Object& o) { static_cast<T&>(o).OnDestroyNative(); };
             if constexpr (requires(T& t) { t.OnEnableNative(); })
@@ -304,6 +308,13 @@ public:                                                                         
 
     // Visits the object references of objects: a clone's references to objects of the original turn into references
     // to their clones. Classes name their references with PPtr fields in Transfer.
+    // The binary layout of one object of a class whose fields are known at run time.
+    struct ObjectLayout
+    {
+        const serialization::TypeTree* tree;
+        Md5Digest hash;
+    };
+
     class ReferenceRemap
     {
     public:
@@ -345,6 +356,14 @@ public:                                                                         
             else if (const EntityId* to = map.Find(id))
                 id = *to;
         }
+
+        // A reference as its EntityId value (fields known at run time).
+        void ObjectReference(u64& raw)
+        {
+            EntityId id = EntityId::FromULong(raw);
+            Reference(id);
+            raw = EntityId::ToULong(id);
+        }
     };
 
     template <class T>
@@ -361,11 +380,28 @@ public:                                                                         
         info.readYaml = [](Object& o, const yaml::Tree& t, u32 root, Array<String>& errors, ReferenceTable* refs) {
             return ReadYaml(t, root, static_cast<T&>(o), errors, refs);
         };
+        // A class whose fields are known at run time (scripts) gives the type tree and hash of each object.
         info.writeBinary = [](Object& o, SerializedFileWriter& w, i64 fileID, ReferenceTable* refs) {
-            w.Add(fileID, T::kClassId, static_cast<T&>(o), refs);
+            T& t = static_cast<T&>(o);
+            if constexpr (requires { t.ObjectLayout(); })
+            {
+                ObjectLayout l = t.ObjectLayout();
+                w.Add(fileID, T::kClassId, t, *l.tree, l.hash, refs);
+            }
+            else
+                w.Add(fileID, T::kClassId, t, refs);
         };
         info.readBinary = [](Object& o, const SerializedFile& f, u32 index, String& error, ReferenceTable* refs) {
-            return f.Read(index, static_cast<T&>(o), error, refs);
+            T& t = static_cast<T&>(o);
+            if constexpr (requires { t.ObjectLayout(); })
+            {
+                // Its layout can depend on the data (the script its m_Script names).
+                if constexpr (requires { t.PrepareBinaryRead(f, index, refs); })
+                    t.PrepareBinaryRead(f, index, refs);
+                return f.Read(index, t, t.ObjectLayout().hash, error, refs);
+            }
+            else
+                return f.Read(index, t, error, refs);
         };
         info.applyProperty = [](Object& o, StringView path, StringView value, const AssetReference& reference, ReferenceTable* refs, String& error) {
             return ApplyProperty(static_cast<T&>(o), path, value, reference, refs, error);

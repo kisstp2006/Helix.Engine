@@ -113,6 +113,72 @@ namespace helix::engine::testing
         void OnDisable() { ScriptCalls().Push(Format("api.OnDisable:{}", isActiveAndEnabled ? "active" : "inactive")); }
     };
 
+    HX_ENUM(Namespace = "EngineTests")
+    enum class Pace : i32
+    {
+        Slow,
+        Fast,
+    };
+
+    // A struct of script fields (by value and in arrays).
+    HX_STRUCT(Namespace = "EngineTests")
+    struct Waypoint
+    {
+        HX_FIELD() Vector3 position;
+        HX_FIELD() i32 wait = 0;
+    };
+
+    // Serialized fields of every kind a C++ script has.
+    HX_CLASS(Namespace = "EngineTests")
+    class Fields : public GameBehaviour
+    {
+    public:
+        HX_FIELD() i32 count = 3;
+        HX_FIELD() f32 speed = 1.5f;
+        HX_FIELD() bool on = true;
+        HX_FIELD() Pace pace = Pace::Fast;
+        HX_FIELD() String title = String("fields");
+        HX_FIELD() Array<i32> numbers = Array<i32>();
+        HX_FIELD() Array<String> words = Array<String>();
+        HX_FIELD() Vector3 offset;
+        HX_FIELD() Color tint = Color(1, 1, 1, 1);
+        HX_FIELD() Waypoint home;
+        HX_FIELD() Array<Waypoint> route = Array<Waypoint>();
+        HX_FIELD() GameObject* target = nullptr;
+        HX_FIELD() Array<Transform*> points = Array<Transform*>();
+        HX_FIELD(NonSerialized) i32 scratch = 0;
+        i32 untagged = 0;
+        // OnBeforeSerialize and OnAfterDeserialize, counted.
+        i32 serialized = 0;
+        i32 deserialized = 0;
+
+        i32 Secret() const { return secret_; }
+
+    private:
+        HX_FIELD(SerializeField, Name = "secret") i32 secret_ = 7;
+
+        void OnBeforeSerialize() { serialized++; }
+        void OnAfterDeserialize() { deserialized++; }
+    };
+
+    // A derived script: its base's fields first.
+    HX_CLASS(Namespace = "EngineTests")
+    class MoreFields : public Fields
+    {
+    public:
+        HX_FIELD() i32 extra = 1;
+    };
+
+    // Value handles of the C++ script API as fields.
+    HX_CLASS(Namespace = "EngineTests")
+    class ApiFields : public ::HelixEngine::GameBehaviour
+    {
+    public:
+        HX_FIELD() ::HelixEngine::GameObject other;
+        HX_FIELD() Array<::HelixEngine::Transform> marks = Array<::HelixEngine::Transform>();
+        HX_FIELD() i32 level = 1;
+    };
+
     // A script that counts its Updates (the benchmark).
     HX_CLASS(Namespace = "EngineTests")
     class Counter : public GameBehaviour

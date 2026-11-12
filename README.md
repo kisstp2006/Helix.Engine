@@ -17,6 +17,7 @@ reports it.
 | `Source/Helix/Engine/GameObject/GameObject.h` | `GameObject`, `Component`, `Behaviour` |
 | `Source/Helix/Engine/GameObject/Tags.h` | `TagHandle`, tags and the 32 layers |
 | `Source/Helix/Engine/GameObject/Lifecycle.h` | `Instantiate`, `InstantiateParameters`, `InstantiateGameObjects`, `Destroy`, `DestroyImmediate`, `DontDestroyOnLoad` |
+| `Source/Helix/Engine/Math/MathTransfer.h` | Helix.Math's value types in scene and asset files, in the reference's layout (`Vector3f`, `Quaternionf`, `ColorRGBA`, `Rectf`, `AABB`, `Matrix4x4f`, ...) |
 | `Source/Helix/Engine/Transform/Transform.h` | `Transform`: local and world values, hierarchy, sibling order, movement, single and span conversions, `Space` |
 | `Source/Helix/Engine/Transform/Hierarchy.h` | `TransformHierarchy` blocks, `UpdateWorldMatrices`, `RegisterTransformSystem`, `SetTransformInterest`, `DispatchTransformChanges` |
 | `Source/Helix/Engine/Transform/TransformHandle.h` | `TransformHandle` and its child enumerator |
@@ -375,6 +376,14 @@ walking the same tree instead of the compiled list takes 2.8 times as long.
   SceneManager and the value types of Helix.Math are tagged; Helix.Bindgen makes their C# (HelixEngine.CoreModule)
   and the C++ script API (`<HelixEngine/HelixEngineApi.h>`: value handles of the engine's objects over the same
   function table, the class C++ scripts derive from), so both languages have the same members.
+- Script fields: a script's serialized fields go after `m_Script` in every visitor of its GameBehaviour (scene and
+  prefab files, YAML and binary, property paths of prefab modifications, the remap of copies) through
+  Helix.Serialization's `DynamicVisitor`: the generated transfer of a C++ script class, the C# side's for C# scripts.
+  A script class's binary layout is built once from its first object; binary files find a script's class from its
+  `m_Script` (`resolveBinary`, `PrepareBinaryRead`); `Instantiate` copies a C++ script by its copy constructor and a
+  C# script's fields through their binary form, then points references at the copies. C++ scripts' methods
+  `OnBeforeSerialize` and `OnAfterDeserialize` are found by name and run around writes and reads. The Helix.Math
+  value types C# fields hold are found by C# name (`HxEngineScripts_ValueType`).
 - `HelixEngine` is also built as one shared library (`helix_engine_shared`, `Helix::EngineShared`:
   `HelixEngine.dll`, `libHelixEngine.so`) on Windows, Linux and Android: the player and the game modules it loads link
   it, so a module uses the engine of its process.

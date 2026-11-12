@@ -42,6 +42,8 @@ namespace helix::engine
             i32 (*create)(u64 objectId, u32 scriptIndex, u64* handle) = nullptr;
             void (*runBatch)(u32 message, const u64* handles, const u32* scripts, const u8* live, i32 count) = nullptr;
             void (*runOne)(u64 handle, u32 message, u8 argument) = nullptr;
+            // A C# script's serialized fields through a serialization::DynamicVisitor.
+            void (*transfer)(u64 handle, void* visitor) = nullptr;
         };
         ManagedScripts gManaged;
         // A C# object a C# SendMessage passes on (it does not become a Variant).
@@ -473,10 +475,45 @@ namespace helix::engine
         if (MonoScript* asset = scriptAsset_.Get())
             if (const ScriptClass* s = asset->GetScriptClass())
             {
-                ScriptAccess::SetScript(this, s);
-                return;
+                // A C++ script lives in an object of its own class: another object cannot become one.
+                if (s->language == ScriptLanguage::CSharp || s->engineClass == ClassIndex())
+                {
+                    ScriptAccess::SetScript(this, s);
+                    return;
+                }
+                if (!script_)
+                    HX_LOG_ERROR(gScriptLog, "{}: the C++ script {} needs an object made as its class", Name(), s->name);
             }
         ScriptAccess::ResolveScript(this);
+    }
+
+    ObjectLayout GameBehaviour::ObjectLayout()
+    {
+        ScriptAccess::ResolveScript(this);
+        // A C# script without its C# object (no .NET host) has no fields to write.
+        if (!script_ || !script_->transfer || (script_->language == ScriptLanguage::CSharp && !Handle(this)))
+            return engine::ObjectLayout{&serialization::TypeTreeOf<GameBehaviour>(), serialization::TypeHashOf<GameBehaviour>()};
+        ScriptClass* s = MutableScriptClass(script_->index);
+        if (!s->hasLayout)
+        {
+            serialization::TypeTreeBuild(s->layout).Node("Base", *this);
+            s->layout.ComputeSizes();
+            s->layoutHash = s->layout.Hash();
+            s->hasLayout = true;
+        }
+        return engine::ObjectLayout{&s->layout, s->layoutHash};
+    }
+
+    namespace
+    {
+        u32 CppScriptClassOf(const ScriptOnly& only)
+        {
+            if (MonoScript* asset = only.m_Script.Get())
+                if (const ScriptClass* s = asset->GetScriptClass())
+                    if (s->language == ScriptLanguage::Cpp && s->alive)
+                        return s->engineClass;
+            return kNoClass;
+        }
     }
 
     u32 GameBehaviour::ResolveYaml(const serialization::yaml::Tree& tree, u32 root, serialization::ReferenceTable* refs)
@@ -484,11 +521,51 @@ namespace helix::engine
         ScriptOnly only;
         Array<String> errors;
         serialization::ReadYaml(tree, root, only, errors, refs);
-        if (MonoScript* asset = only.m_Script.Get())
-            if (const ScriptClass* s = asset->GetScriptClass())
-                if (s->language == ScriptLanguage::Cpp)
-                    return s->engineClass;
-        return kNoClass;
+        return CppScriptClassOf(only);
+    }
+
+    void GameBehaviour::PrepareBinaryRead(const serialization::SerializedFile& file, u32 index, serialization::ReferenceTable* refs)
+    {
+        if (script_)
+            return;
+        const serialization::TypeTree& tree = file.Types()[file.Objects()[index].type].tree;
+        ScriptOnly only;
+        serialization::SafeBinaryRead r(tree.nodes.Empty() ? serialization::TypeTreeOf<GameBehaviour>() : tree, file.Data(index), refs);
+        r.At(0, 0, only);
+        if (!r.Failed() && only.m_Script.Get())
+        {
+            scriptAsset_ = only.m_Script;
+            AttachScriptAsset();
+        }
+    }
+
+    void GameBehaviour::OnCloneNative(const GameBehaviour& original)
+    {
+        if (!script_ || script_->language != ScriptLanguage::CSharp || !script_->transfer)
+            return;
+        ScriptAccess::EnsureManaged(this);
+        if (!Handle(this) || !Handle(const_cast<GameBehaviour*>(&original)))
+            return;
+        Array<u8> bytes;
+        serialization::BinaryWrite w(bytes);
+        serialization::DynamicVisitor written = serialization::DynamicAdapter<serialization::BinaryWrite>::Make(w);
+        script_->transfer(static_cast<Object*>(const_cast<GameBehaviour*>(&original)), &written);
+        serialization::BinaryRead r{Span<const u8>(bytes)};
+        serialization::DynamicVisitor read = serialization::DynamicAdapter<serialization::BinaryRead>::Make(r);
+        script_->transfer(static_cast<Object*>(this), &read);
+        if (r.Failed())
+            HX_LOG_ERROR(gScriptLog, "{}: the copy of the script's fields failed ({})", script_->name, r.Error());
+    }
+
+    u32 GameBehaviour::ResolveBinary(const serialization::SerializedFile& file, u32 index, serialization::ReferenceTable* refs)
+    {
+        // m_Script through the file's type tree, else through GameBehaviour's own: the data starts with its fields (the
+        // script's come after them).
+        const serialization::TypeTree& tree = file.Types()[file.Objects()[index].type].tree;
+        ScriptOnly only;
+        serialization::SafeBinaryRead r(tree.nodes.Empty() ? serialization::TypeTreeOf<GameBehaviour>() : tree, file.Data(index), refs);
+        r.At(0, 0, only);
+        return r.Failed() ? kNoClass : CppScriptClassOf(only);
     }
 
     MonoScript* MonoScript::FromScriptClass(const ScriptClass& script)
@@ -751,8 +828,15 @@ namespace helix::engine
             s.name = String(n.name);
             s.type = n.type;
             s.defaultOrder = n.executionOrder;
+            s.transfer = n.transfer;
             for (const scripting::NativeScriptMethod& m : n.methods)
+            {
                 s.methods.Push(m);
+                if (m.call && m.name == StringView("OnBeforeSerialize"))
+                    s.beforeSerialize = m.call;
+                else if (m.call && m.name == StringView("OnAfterDeserialize"))
+                    s.afterDeserialize = m.call;
+            }
             for (const scripting::NativeScriptMethod& m : n.methods)
             {
                 ScriptMessage message = ScriptMessageOf(m.name);
@@ -876,13 +960,60 @@ namespace helix::engine
     {
         bool SetManaged(void* const* table, u32 count)
         {
-            if (count != 4)
+            if (count != 5)
                 return false;
             gManaged.create = std::bit_cast<decltype(gManaged.create)>(table[0]);
             gManaged.runBatch = std::bit_cast<decltype(gManaged.runBatch)>(table[1]);
             gManaged.runOne = std::bit_cast<decltype(gManaged.runOne)>(table[2]);
             gManaged.sendMessage = std::bit_cast<decltype(gManaged.sendMessage)>(table[3]);
+            gManaged.transfer = std::bit_cast<decltype(gManaged.transfer)>(table[4]);
             return true;
+        }
+
+        // The transfer of C# script classes with serialized fields: the C# object's (none without one).
+        void ManagedTransfer(void* instance, void* visitor)
+        {
+            auto* b = static_cast<GameBehaviour*>(static_cast<Object*>(instance));
+            if (u64 handle = Handle(b); handle && gManaged.transfer)
+                gManaged.transfer(handle, visitor);
+        }
+
+        // The Helix.Math value types C# fields hold, by their C# names: their TransferTraits (the C# structs have
+        // the native layout, checked by size).
+        struct ManagedValueType
+        {
+            StringView name;
+            const serialization::DynamicStruct& (*type)();
+            u32 size;
+        };
+        template <class T>
+        constexpr ManagedValueType ValueTypeEntry(StringView name)
+        {
+            return ManagedValueType{name, &serialization::DynamicStructOf<T>, u32(sizeof(T))};
+        }
+        const ManagedValueType kManagedValueTypes[] = {
+            ValueTypeEntry<Vector2>("HelixEngine.Vector2"),       ValueTypeEntry<Vector3>("HelixEngine.Vector3"),
+            ValueTypeEntry<Vector4>("HelixEngine.Vector4"),       ValueTypeEntry<Quaternion>("HelixEngine.Quaternion"),
+            ValueTypeEntry<Vector2Int>("HelixEngine.Vector2Int"), ValueTypeEntry<Vector3Int>("HelixEngine.Vector3Int"),
+            ValueTypeEntry<Color>("HelixEngine.Color"),           ValueTypeEntry<Color32>("HelixEngine.Color32"),
+            ValueTypeEntry<Rect>("HelixEngine.Rect"),             ValueTypeEntry<RectInt>("HelixEngine.RectInt"),
+            ValueTypeEntry<Bounds>("HelixEngine.Bounds"),         ValueTypeEntry<Matrix4x4>("HelixEngine.Matrix4x4"),
+        };
+
+        const serialization::DynamicStruct* FindManagedValueType(const char* name, i32 size, u32 managedSize)
+        {
+            StringView n(name, usize(size));
+            for (const ManagedValueType& t : kManagedValueTypes)
+                if (t.name == n)
+                    return t.size == managedSize ? &t.type() : nullptr;
+            return nullptr;
+        }
+
+        // The registered type of an object (0 when there is none), for C# wrappers of references read from files.
+        u32 ObjectTypeOf(u64 id)
+        {
+            Object* o = scripting::ObjectHandles<Object>::FromId(id);
+            return o ? scripting::ObjectHandles<Object>::TypeOf(o).value : 0u;
         }
 
         scripting::Variant ToVariant(const MessageValue* v)
@@ -917,7 +1048,7 @@ namespace helix::engine
         // A C# script class: its type in the scripting core (in the module of its assembly, below its base's type) and
         // its script class; the index, ~0 when the type cannot be declared.
         u32 RegisterManagedClass(const char* assembly, i32 an, const char* ns, i32 nn, const char* name, i32 n, u32 baseType, u32 messages, i32 order,
-                                 u32* typeOut)
+                                 u8 fields, u32* typeOut)
         {
             ScriptClass s;
             s.language = ScriptLanguage::CSharp;
@@ -947,6 +1078,7 @@ namespace helix::engine
             s.type = type;
             s.messages = messages;
             s.defaultOrder = order;
+            s.transfer = fields ? &ManagedTransfer : nullptr;
             s.engineClass = ClassOf<GameBehaviour>();
             *typeOut = type.value;
             return RegisterScriptClass(s);
@@ -968,6 +1100,8 @@ namespace helix::engine
         scripting::RegisterNativeExport("HxEngineScripts_SetManaged", std::bit_cast<const void*>(&SetManaged));
         scripting::RegisterNativeExport("HxEngineScripts_RegisterClass", std::bit_cast<const void*>(&RegisterManagedClass));
         scripting::RegisterNativeExport("HxEngine_Log", std::bit_cast<const void*>(&Log));
+        scripting::RegisterNativeExport("HxEngineScripts_ValueType", std::bit_cast<const void*>(&FindManagedValueType));
+        scripting::RegisterNativeExport("HxEngineScripts_ObjectType", std::bit_cast<const void*>(&ObjectTypeOf));
         scripting::RegisterNativeExport("HxEngineScripts_SendMessage", std::bit_cast<const void*>(&SendFromManaged));
         scripting::SetNativeScriptHandler(&OnNativeScript, nullptr);
     }

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Helix/Engine/GameObject/GameObject.h>
+#include <Helix/Engine/Math/MathTransfer.h>
 #include <Helix/Engine/Transform/Hierarchy.h>
 
 // Transform: position, rotation and scale in a hierarchy. Its data lives in the hierarchy blocks of Hierarchy.h; the
@@ -193,11 +194,9 @@ namespace helix::engine
         {
             Base::Transfer(v);
             LocalTRS l = Local();
-            Value<4> r{&l.rotation.x};
-            Value<3> p{&l.position.x}, s{&l.scale.x};
-            v.Field("m_LocalRotation", r);
-            v.Field("m_LocalPosition", p);
-            v.Field("m_LocalScale", s);
+            v.Field("m_LocalRotation", l.rotation);
+            v.Field("m_LocalPosition", l.position);
+            v.Field("m_LocalScale", l.scale);
             // Scene files list the children and the parent; the scene builder links them after reading.
             Array<PPtr<Transform>> children;
             PPtr<Transform> father;
@@ -220,21 +219,6 @@ namespace helix::engine
 
     private:
         friend struct TransformAccess;
-        // A vector or quaternion as scene files write it: {x: 0, y: 0, z: 0[, w: 1]}.
-        template <u32 N>
-        struct Value
-        {
-            static constexpr StringView kTypeName = N == 4 ? StringView("Quaternionf") : StringView("Vector3f");
-            static constexpr bool kFlow = true;
-            f32* f;
-            template <class V>
-            void Transfer(V& v)
-            {
-                const char* names[4] = {"x", "y", "z", "w"};
-                for (u32 i = 0; i < N; i++)
-                    v.Field(names[i], f[i]);
-            }
-        };
         void RefreshWorld() const;
 
         TransformHierarchy* hierarchy_ = nullptr;

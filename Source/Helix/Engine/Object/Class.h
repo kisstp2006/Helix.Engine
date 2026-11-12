@@ -64,6 +64,8 @@ namespace helix::engine
         Object* (*create)(void* memory) = nullptr;
         // A copy of the object's fields (not its identity) in `memory`.
         Object* (*clone)(void* memory, const Object&) = nullptr;
+        // After a copy got its identity: what the copy constructor does not copy (a C# script's fields).
+        void (*afterClone)(Object& copy, const Object& original) = nullptr;
         // Script classes of game modules (in place of create and clone): the object as its address.
         void* (*createScript)(void* memory) = nullptr;
         void* (*cloneScript)(void* memory, const void* original) = nullptr;
@@ -71,6 +73,8 @@ namespace helix::engine
         void (*onActivate)(Object&) = nullptr;
         // The class of the object a scene document makes, when the document decides it (a script's C++ class).
         u32 (*resolveYaml)(const serialization::yaml::Tree&, u32 root, serialization::ReferenceTable*) = nullptr;
+        // The same for an object of a binary file.
+        u32 (*resolveBinary)(const serialization::SerializedFile&, u32 index, serialization::ReferenceTable*) = nullptr;
         // Visits every object reference of the object.
         void (*remap)(Object&, ReferenceRemap&) = nullptr;
         // Native hooks, null when the class has none: just before the object goes, and when a component starts or stops

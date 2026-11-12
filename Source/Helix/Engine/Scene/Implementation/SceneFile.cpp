@@ -904,7 +904,15 @@ namespace helix::engine
                         rootsObject = i;
                         continue;
                     }
-                    if (Object* obj = builder.Create(classId, o.fileID, 0))
+                    // The class the object decides (a script's C++ class), else the one of its class ID.
+                    u32 klass = FindClassById(classId);
+                    if (klass != kNoClass && GetClass(klass).resolveBinary)
+                    {
+                        u32 resolved = GetClass(klass).resolveBinary(f, i, &builder.References());
+                        if (resolved != kNoClass)
+                            klass = resolved;
+                    }
+                    if (Object* obj = builder.CreateOfClass(klass, classId, o.fileID, 0))
                     {
                         made.Push(obj);
                         at.Push(i);

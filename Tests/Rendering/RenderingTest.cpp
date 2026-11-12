@@ -313,3 +313,38 @@ HX_TEST(Rendering, PlaceholderRendererDrawsOnEveryDevice)
     });
     std::printf("    %u devices\n", devices);
 }
+
+HX_TEST(Rendering, BackFacesAreCulledOnEveryDevice)
+{
+    constexpr u32 size = 16;
+    ForEachDevice([&](rhi::Device& device) {
+        TestShaderFolder shaders;
+        rhi::TextureHandle color =
+            device.CreateTexture({.format = rhi::Format::RGBA8Unorm, .width = size, .height = size, .usage = rhi::TextureRenderTarget | rhi::TextureSampled});
+        rhi::TextureHandle depth = device.CreateTexture({.format = rhi::Format::D32Float, .width = size, .height = size, .usage = rhi::TextureDepthStencil});
+        Graphics::SetDevice(&device);
+        Graphics::SetTarget({color, depth, size, size, rhi::Format::RGBA8Unorm, rhi::Format::D32Float});
+        // One unit is 4 pixels. The quad is clockwise seen from the camera (its front); the copy with the triangles
+        // reversed shows the camera its back and is not drawn.
+        MakeCamera(Vector3(0, 0, -10), 2);
+        Mesh* front = Quad();
+        Mesh* back = Quad();
+        const i32 reversed[] = {0, 2, 1, 0, 3, 2};
+        back->SetTriangles(Span<const i32>(reversed, 6));
+        back->RecalculateNormals();
+        HX_CHECK(front->normals()[0].z < -0.9f && back->normals()[0].z > 0.9f);
+        Material* red = Material::Create(Shader::Find("Tests/Unlit"));
+        red->SetColor("color", Color(1, 0, 0, 1));
+        Thing("Front", front, red, Vector3(-1, 0, 0), 2);
+        Thing("Back", back, red, Vector3(1, 0, 0), 2);
+        Graphics::RenderFrame();
+        Array<u32> pixels;
+        pixels.Resize(size * size);
+        HX_REQUIRE(device.ReadTexture(color, 0, pixels.Data(), pixels.Size() * 4));
+        HX_CHECK(NearColor(Pixel(pixels, size, 4, 8), Rgba(255, 0, 0)));
+        HX_CHECK(NearColor(Pixel(pixels, size, 12, 8), Rgba(0, 0, 0)));
+        Graphics::ReleaseResources();
+        device.Destroy(color);
+        device.Destroy(depth);
+    });
+}

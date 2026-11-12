@@ -27,6 +27,12 @@ namespace helix::engine
             std::mutex mutex;
             HashMap<String, LoadedAssembly*> byName;
             bool embedded = false;
+
+            ~Libraries()
+            {
+                for (auto e : byName)
+                    delete e.value;
+            }
         };
 
         Libraries& Libs()

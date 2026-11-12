@@ -9,6 +9,7 @@
 #include <Helix/Platform/System/DynamicLibrary.h>
 #include <Helix/Scripting/Bindings/Interop.h>
 #include <Helix/Scripting/Scripts/NativeScript.h>
+#include <Helix/Scripting/Types/Invoke.h>
 #include <Helix/Scripting/Types/TypeBuilder.h>
 
 #include <bit>
@@ -21,14 +22,30 @@ namespace helix::engine
     {
         LogChannel gScriptLog{"Scripts"};
 
+        // A SendMessage value between the languages (the same layout in ScriptBridge.cs).
+        struct MessageValue
+        {
+            // 0 none, 1 bool, 2 integer, 3 real, 4 text, 5 a native object, 6 a C# object (a GC handle).
+            u32 kind = 0;
+            u32 type = 0;
+            i64 integer = 0;
+            f64 real = 0;
+            const char* text = nullptr;
+            i32 textSize = 0;
+            u64 object = 0;
+        };
+
         // The functions the C# side of the engine hands over.
         struct ManagedScripts
         {
+            u8 (*sendMessage)(u64 handle, const char* name, i32 size, const MessageValue* value) = nullptr;
             i32 (*create)(u64 objectId, u32 scriptIndex, u64* handle) = nullptr;
             void (*runBatch)(u32 message, const u64* handles, const u32* scripts, const u8* live, i32 count) = nullptr;
             void (*runOne)(u64 handle, u32 message, u8 argument) = nullptr;
         };
         ManagedScripts gManaged;
+        // A C# object a C# SendMessage passes on (it does not become a Variant).
+        const MessageValue* gPassing = nullptr;
 
         // The phases with lists: FixedUpdate, Update, LateUpdate.
         constexpr ScriptMessage kPhases[] = {ScriptMessage::FixedUpdate, ScriptMessage::Update, ScriptMessage::LateUpdate};
@@ -551,6 +568,153 @@ namespace helix::engine
 
     bool ManagedScriptsReady() { return gManaged.create != nullptr; }
 
+    // ---------------------------------------------------------------------------------------------- SendMessage
+
+    namespace
+    {
+        MessageValue FromVariant(const scripting::Variant& v, String& text)
+        {
+            using namespace scripting;
+            MessageValue m;
+            if (v.IsVoid())
+                return m;
+            const TypeInfo* t = GetType(v.Type());
+            if (v.Type() == TypeOf<bool>())
+            {
+                m.kind = 1;
+                m.integer = v.AsBool() ? 1 : 0;
+            }
+            else if (v.Type() == TypeOf<String>())
+            {
+                text = String(v.AsText());
+                m.kind = 4;
+                m.text = text.Data();
+                m.textSize = i32(text.Size());
+            }
+            else if (v.Type() == TypeOf<f32>() || v.Type() == TypeOf<f64>())
+            {
+                m.kind = 3;
+                m.real = v.AsReal();
+            }
+            else if (t && t->kind == TypeKind::Primitive)
+            {
+                m.kind = 2;
+                m.integer = v.AsInt();
+            }
+            else if (t && (t->kind == TypeKind::Class || t->kind == TypeKind::Interface))
+            {
+                auto* o = static_cast<Object*>(v.AsObject());
+                m.kind = 5;
+                m.object = o ? ObjectHandles<Object>::ToId(o) : 0;
+                m.type = o ? ObjectHandles<Object>::TypeOf(o).value : 0;
+            }
+            return m;
+        }
+
+        bool Deliver(GameBehaviour* b, StringView name, const scripting::Variant& value)
+        {
+            using namespace scripting;
+            const ScriptClass* s = b->script();
+            if (!s || !s->alive)
+                return false;
+            if (s->language == ScriptLanguage::CSharp)
+            {
+                if (!gManaged.sendMessage || !Handle(b))
+                    return false;
+                String text;
+                MessageValue m = gPassing ? *gPassing : FromVariant(value, text);
+                return gManaged.sendMessage(Handle(b), name.Data(), i32(name.Size()), &m) != 0;
+            }
+            if (gPassing)
+                return false;
+            void* self = static_cast<Object*>(b);
+            // A tagged method that takes the value, then a method without arguments (or with a bool).
+            if (!value.IsVoid())
+            {
+                Span<const Variant> args(&value, 1);
+                if (const MethodInfo* m = FindMethod(s->type, name, args))
+                {
+                    Variant result;
+                    String error;
+                    if (!Invoke(*m, self, args, result, error))
+                        HX_LOG_ERROR(gScriptLog, "SendMessage {} of {}: {}", name, s->name, error);
+                    return true;
+                }
+            }
+            for (const NativeScriptMethod& m : s->methods)
+                if (m.name == name)
+                {
+                    if (m.callBool && !value.IsVoid() && value.Type() == TypeOf<bool>())
+                    {
+                        m.callBool(self, value.AsBool());
+                        return true;
+                    }
+                    if (m.call)
+                    {
+                        m.call(self);
+                        return true;
+                    }
+                }
+            if (value.IsVoid())
+                if (const MethodInfo* m = FindMethod(s->type, name, Span<const Variant>()))
+                {
+                    Variant result;
+                    String error;
+                    Invoke(*m, self, Span<const Variant>(), result, error);
+                    return true;
+                }
+            return false;
+        }
+
+        bool DeliverTo(GameObject* g, StringView name, const scripting::Variant& value)
+        {
+            if (!g || !g->activeInHierarchy())
+                return false;
+            // The components as they are now (a receiver may add or remove some).
+            Array<EntityId> ids;
+            for (const GameObject::ComponentEntry& e : g->Components())
+                if (IsDerivedFrom(e.klass, ClassOf<GameBehaviour>()))
+                    ids.Push(e.component.Id());
+            bool found = false;
+            for (EntityId id : ids)
+                if (auto* b = EntityIdToObject<GameBehaviour>(id))
+                    found = Deliver(b, name, value) || found;
+            return found;
+        }
+
+        bool DeliverDown(GameObject* g, StringView name, const scripting::Variant& value)
+        {
+            bool found = DeliverTo(g, name, value);
+            if (Transform* t = g ? g->transform() : nullptr)
+                for (u32 i = 0; i < t->childCount(); i++)
+                    found = DeliverDown(t->GetChild(i)->gameObject(), name, value) || found;
+            return found;
+        }
+    }
+
+    bool SendScriptMessage(GameObject* g, StringView name, const scripting::Variant& value, SendMessageOptions options, MessageReach reach)
+    {
+        if (!g)
+            return false;
+        bool found = false;
+        switch (reach)
+        {
+            case MessageReach::Self:
+                found = DeliverTo(g, name, value);
+                break;
+            case MessageReach::Children:
+                found = DeliverDown(g, name, value);
+                break;
+            case MessageReach::Parents:
+                for (Transform* t = g->transform(); t; t = t->parent())
+                    found = DeliverTo(t->gameObject(), name, value) || found;
+                break;
+        }
+        if (!found && options == SendMessageOptions::RequireReceiver)
+            HX_LOG_ERROR(gScriptLog, "SendMessage {} has no receiver!", name);
+        return found;
+    }
+
     // ---------------------------------------------------------------------------------------------- C++ script classes
 
     namespace
@@ -587,6 +751,8 @@ namespace helix::engine
             s.name = String(n.name);
             s.type = n.type;
             s.defaultOrder = n.executionOrder;
+            for (const scripting::NativeScriptMethod& m : n.methods)
+                s.methods.Push(m);
             for (const scripting::NativeScriptMethod& m : n.methods)
             {
                 ScriptMessage message = ScriptMessageOf(m.name);
@@ -710,12 +876,42 @@ namespace helix::engine
     {
         bool SetManaged(void* const* table, u32 count)
         {
-            if (count != 3)
+            if (count != 4)
                 return false;
             gManaged.create = std::bit_cast<decltype(gManaged.create)>(table[0]);
             gManaged.runBatch = std::bit_cast<decltype(gManaged.runBatch)>(table[1]);
             gManaged.runOne = std::bit_cast<decltype(gManaged.runOne)>(table[2]);
+            gManaged.sendMessage = std::bit_cast<decltype(gManaged.sendMessage)>(table[3]);
             return true;
+        }
+
+        scripting::Variant ToVariant(const MessageValue* v)
+        {
+            using namespace scripting;
+            if (!v)
+                return Variant();
+            switch (v->kind)
+            {
+                case 1: return Variant::Bool(v->integer != 0);
+                case 2: return Variant::Int(TypeOf<i64>(), v->integer);
+                case 3: return Variant::Real(TypeOf<f64>(), v->real);
+                case 4: return Variant::Text(StringView(v->text, usize(v->textSize)));
+                case 5: return Variant::Object(TypeId{v->type}, ObjectHandles<Object>::FromId(v->object));
+                default: return Variant();
+            }
+        }
+
+        // SendMessage from C# (GameObject.SendMessage and its kinds).
+        u8 SendFromManaged(u64 gameObject, const char* name, i32 size, const MessageValue* value, u32 options, u32 reach)
+        {
+            auto* g = static_cast<GameObject*>(scripting::ObjectHandles<Object>::FromId(gameObject));
+            if (!g || !g->Is<GameObject>())
+                return 0;
+            // A C# object goes to C# scripts only: it travels as it came.
+            gPassing = value && value->kind == 6 ? value : nullptr;
+            bool found = SendScriptMessage(g, StringView(name, usize(size)), ToVariant(value), SendMessageOptions(options), MessageReach(reach));
+            gPassing = nullptr;
+            return found ? 1 : 0;
         }
 
         // A C# script class: its type in the scripting core (in the module of its assembly, below its base's type) and
@@ -772,6 +968,7 @@ namespace helix::engine
         scripting::RegisterNativeExport("HxEngineScripts_SetManaged", std::bit_cast<const void*>(&SetManaged));
         scripting::RegisterNativeExport("HxEngineScripts_RegisterClass", std::bit_cast<const void*>(&RegisterManagedClass));
         scripting::RegisterNativeExport("HxEngine_Log", std::bit_cast<const void*>(&Log));
+        scripting::RegisterNativeExport("HxEngineScripts_SendMessage", std::bit_cast<const void*>(&SendFromManaged));
         scripting::SetNativeScriptHandler(&OnNativeScript, nullptr);
     }
 }

@@ -2,6 +2,7 @@
 
 #include <Helix/Core/Containers/Array.h>
 #include <Helix/Core/Strings/String.h>
+#include <Helix/Scripting/Scripts/NativeScript.h>
 #include <Helix/Scripting/Types/Type.h>
 
 // Script classes of both languages: what the engine knows of a script to make it, find its messages and order it.
@@ -60,6 +61,8 @@ namespace helix::engine
         // C++ scripts: the message functions (the object as its root class's address).
         void (*call[u32(ScriptMessage::Count)])(void* instance) = {};
         void (*callBool[u32(ScriptMessage::Count)])(void* instance, bool value) = {};
+        // C++ scripts: every method without arguments or with one bool, by name (SendMessage).
+        Array<scripting::NativeScriptMethod> methods = Array<scripting::NativeScriptMethod>();
         // Its index in the registry (what the C# side knows it by).
         u32 index = 0;
         // False once its module is unloaded (objects of it are gone).

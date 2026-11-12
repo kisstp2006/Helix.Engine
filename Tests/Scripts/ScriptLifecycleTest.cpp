@@ -7,6 +7,7 @@
 #include <Helix/Engine/Scene/SceneManager.h>
 #include <Helix/Engine/Script/ScriptRuntime.h>
 #include <Helix/Scripting/Bindings/Interop.h>
+#include <Helix/Core/Logging/Log.h>
 #include <Helix/Testing/Test.h>
 
 #include <initializer_list>
@@ -261,6 +262,45 @@ HX_TEST(Scripts, UnloadingTheModuleDestroysItsScripts)
     HX_CHECK(again->engineClass != klass && AddScript(g, *again) != nullptr);
     HX_CHECK(Calls({"U:Awake", "U:OnEnable"}));
     DestroyImmediate(g);
+    ScriptCalls().Clear();
+    Cleanup();
+}
+
+namespace
+{
+    u32 gErrors = 0;
+    void CountErrors(const LogMessage& m, void*)
+    {
+        if (m.level >= LogLevel::Error)
+            gErrors++;
+    }
+}
+
+HX_TEST(Scripts, SendMessageReachesCppScriptsByName)
+{
+    ScriptCalls().Clear();
+    GameObject* top = GameObject::Create("Top");
+    GameObject* mid = GameObject::Create("Mid");
+    GameObject* low = GameObject::Create("Low");
+    mid->transform()->SetParent(top->transform());
+    low->transform()->SetParent(mid->transform());
+    for (GameObject* g : {top, mid, low})
+        Add<Receiver>(g, "Receiver");
+    ScriptCalls().Clear();
+    HX_CHECK(SendScriptMessage(mid, "Ping") && Calls({"Mid:Ping"}));
+    HX_CHECK(SendScriptMessage(mid, "Ping", scripting::Variant(), SendMessageOptions::RequireReceiver, MessageReach::Children) && Calls({"Mid:Ping", "Low:Ping"}));
+    HX_CHECK(SendScriptMessage(mid, "Toggle", scripting::Variant::Bool(true), SendMessageOptions::RequireReceiver, MessageReach::Parents) &&
+             Calls({"Mid:Toggle(true)", "Top:Toggle(true)"}));
+    // Inactive GameObjects are left out; RequireReceiver logs when no script has the method.
+    low->SetActive(false);
+    HX_CHECK(SendScriptMessage(mid, "Ping", scripting::Variant(), SendMessageOptions::RequireReceiver, MessageReach::Children) && Calls({"Mid:Ping"}));
+    gErrors = 0;
+    AddLogSink(&CountErrors, nullptr);
+    HX_CHECK(!SendScriptMessage(top, "Nothing"));
+    HX_CHECK(!SendScriptMessage(top, "Nothing", scripting::Variant(), SendMessageOptions::DontRequireReceiver));
+    RemoveLogSink(&CountErrors, nullptr);
+    HX_CHECK(gErrors == 1);
+    DestroyImmediate(top);
     ScriptCalls().Clear();
     Cleanup();
 }

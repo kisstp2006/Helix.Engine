@@ -80,6 +80,14 @@ namespace helix::engine::testing
         }
     };
 
+    // Methods SendMessage reaches by name (not messages of the engine).
+    HX_CLASS(Namespace = "EngineTests")
+    class Receiver : public GameBehaviour
+    {
+        void Ping() { Note(this, "Ping"); }
+        void Toggle(bool on) { Note(this, on ? "Toggle(true)" : "Toggle(false)"); }
+    };
+
     // A script that counts its Updates (the benchmark).
     HX_CLASS(Namespace = "EngineTests")
     class Counter : public GameBehaviour

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Helix/Engine/Script/GameBehaviour.h>
+#include <Helix/Scripting/Types/Variant.h>
 
 // The scripts of both languages at run time: one scheduler calls their messages in the reference's order. C++ scripts
 // are called through the function pointers of their class; C# scripts in one call into C# per phase and execution
@@ -20,6 +21,29 @@ namespace helix::engine
     void BroadcastScriptMessage(ScriptMessage message, bool argument = false);
     // How many scripts the phase calls now (enabled on active GameObjects, with the message).
     u32 ScriptPhaseCount(ScriptMessage phase);
+
+    // SendMessage and its kinds (the reference's values).
+    enum class SendMessageOptions : u8
+    {
+        RequireReceiver = 0,
+        DontRequireReceiver = 1,
+    };
+
+    enum class MessageReach : u8
+    {
+        // The scripts of the GameObject (SendMessage).
+        Self,
+        // And of its children, depth first (BroadcastMessage).
+        Children,
+        // And of its parents (SendMessageUpwards).
+        Parents,
+    };
+
+    // Calls the method of that name of every script that has one, in either language: one that takes the value (when
+    // there is one), else one without arguments. Inactive GameObjects are left out. RequireReceiver logs an error when
+    // no script had it. True when one was called.
+    bool SendScriptMessage(GameObject* gameObject, StringView methodName, const scripting::Variant& value = scripting::Variant(),
+                           SendMessageOptions options = SendMessageOptions::RequireReceiver, MessageReach reach = MessageReach::Self);
 
     // The C# side of the engine: whether it handed its functions over (C# scripts need it).
     bool ManagedScriptsReady();

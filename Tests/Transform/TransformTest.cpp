@@ -1,5 +1,6 @@
 #include <Support/TestClasses.h>
 
+#include <Helix/Engine/Transform/Implementation/TransformAccess.h>
 #include <Helix/Engine/Transform/TransformHandle.h>
 #include <Helix/Jobs/Jobs.h>
 #include <Helix/Serialization/Transfer/Yaml.h>
@@ -427,4 +428,33 @@ HX_TEST(Transform, TransferWritesAndReadsTheNode)
     HX_CHECK(serialization::ReadYaml(tree, tree.documents.Empty() ? 0u : tree.documents[0].root, *back, errors));
     HX_CHECK(Near(back->localPosition(), Vector3(1, 2, 3)) && Near(back->localScale(), Vector3(4, 5, 6)) && back->parent() == nullptr);
     Cleanup();
+}
+
+HX_TEST(Transform, SystemsHearOfHierarchiesBuiltByALoad)
+{
+    // A scene load makes every Transform a root of its own, then builds the hierarchies at once; a system that follows
+    // a child (a renderer enabled on load) hears that its world matrix changed.
+    static u32 system = RegisterTransformSystem("LoadedHierarchyTest");
+    GameObject* parent = GameObject::Create("Parent");
+    GameObject* child = GameObject::Create("Child");
+    parent->transform()->SetLocalPosition(Vector3(-2, 0, 0));
+    child->transform()->SetLocalPosition(Vector3(0, 1, 0));
+    SetTransformInterest(child->transform(), system, true);
+    DispatchTransformChanges(system, [](TransformHierarchy&, u32) {}, false);
+    Transform* const nodes[] = {parent->transform(), child->transform()};
+    const i32 parents[] = {-1, 0};
+    TransformAccess::BuildLoaded(Span<Transform* const>(nodes, 2), Span<const i32>(parents, 2), SceneManager::GetActiveScene().Slot());
+    HX_REQUIRE(child->transform()->parent() == parent->transform());
+    Vector3 heard{100, 100, 100};
+    u32 visits = 0;
+    DispatchTransformChanges(
+        system,
+        [&](TransformHierarchy& h, u32 node) {
+            visits++;
+            heard = h.world[node].GetPosition();
+        },
+        false);
+    HX_CHECK(visits == 1);
+    HX_CHECK(heard == Vector3(-2, 1, 0));
+    DestroyImmediate(parent, true);
 }

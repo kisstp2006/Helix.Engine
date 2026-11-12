@@ -587,6 +587,7 @@ namespace helix::engine
             return;
         TransformHierarchy* h = NewHierarchy(n);
         h->count = n;
+        u32 changed = 0;
         for (u32 k = 0; k < n; k++)
         {
             Transform* t = nodes[k];
@@ -599,7 +600,10 @@ namespace helix::engine
             h->size[k] = 1;
             h->children[k] = 0;
             h->interest[k] = own->interest[t->index_];
-            h->changed[k] = 0;
+            // Each node's world matrix changes now that it hangs under its parent: every system that follows it hears
+            // of that (a renderer enabled before the hierarchy was built would keep its local matrix otherwise).
+            h->changed[k] = h->interest[k] | own->changed[t->index_];
+            changed |= h->changed[k];
             h->flags[k] = TransformFlags::WorldDirty | TransformFlags::HasChanged;
             // Each was a root of its own since it was made.
             FreeHierarchy(own);
@@ -610,7 +614,7 @@ namespace helix::engine
             h->children[h->parent[k]]++;
         }
         Reindex(*h, 0, n);
-        NoteState(*h, true, 0);
+        NoteState(*h, true, changed);
         h->scene = scene;
         LinkRoot(*h, nullptr);
     }

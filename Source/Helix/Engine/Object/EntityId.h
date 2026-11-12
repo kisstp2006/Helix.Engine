@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Helix/Core/Basics/Types.h>
+#include <Helix/Scripting/Bindings/Tags.h>
 
 #include <compare>
 
@@ -9,9 +10,10 @@ namespace helix::engine
     // The identity of an object: 64 bits, of which the object table uses the low half as a slot and the high half as
     // the slot's generation. Nothing else may be read into the value: not an order of creation, not whether the
     // object is an asset, not a sign. None is 0.
+    HX_STRUCT()
     struct EntityId
     {
-        u64 value = 0;
+        HX_FIELD() u64 value = 0;
 
         static constexpr EntityId None() { return EntityId(); }
         static constexpr EntityId FromULong(u64 raw) { return EntityId{raw}; }

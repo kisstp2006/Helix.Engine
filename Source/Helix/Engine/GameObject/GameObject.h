@@ -29,13 +29,14 @@ namespace helix::engine
         }
     }
 
+    HX_CLASS()
     class GameObject final : public Object
     {
         HX_ENGINE_CLASS(GameObject, Object, ClassId::GameObject, ClassNone)
 
     public:
         // A GameObject with its Transform.
-        static GameObject* Create(StringView name = "GameObject");
+        HX_FUNCTION(Constructor) static GameObject* Create(StringView name = "GameObject");
         // A GameObject with its Transform and the components of the given classes, in order.
         static GameObject* Create(StringView name, Span<const u32> components);
 
@@ -51,10 +52,10 @@ namespace helix::engine
         u32 staticEditorFlags = 0;
         bool isStatic() const { return staticEditorFlags != 0; }
 
-        bool activeSelf() const { return activeSelf_; }
-        bool activeInHierarchy() const { return activeInHierarchy_; }
+        HX_PROPERTY(ReadOnly) bool activeSelf() const { return activeSelf_; }
+        HX_PROPERTY(ReadOnly) bool activeInHierarchy() const { return activeInHierarchy_; }
         // activeSelf only; components hear about it when activeInHierarchy changes.
-        void SetActive(bool value);
+        HX_FUNCTION() void SetActive(bool value);
 
         Transform* transform() const;
         TransformHandle transformHandle() const;
@@ -71,6 +72,10 @@ namespace helix::engine
         {
             return static_cast<T*>(AddComponent(ClassOf<T>()));
         }
+
+        // By the type of either language: an engine class or a script class.
+        HX_FUNCTION(Generic = "T : Component") Component* AddComponent(scripting::TypeId type);
+        HX_FUNCTION(Generic = "T : Component") Component* GetComponent(scripting::TypeId type) const;
 
         Component* GetComponent(u32 klass) const;
         Component* GetComponent(StringView className) const;
@@ -158,12 +163,13 @@ namespace helix::engine
         bool activeInHierarchy_ = true;
     };
 
+    HX_CLASS()
     class Component : public Object
     {
         HX_ENGINE_CLASS(Component, Object, ClassId::Component, ClassAbstract | ClassComponent)
 
     public:
-        GameObject* gameObject() const { return gameObject_.Get(); }
+        HX_PROPERTY(ReadOnly) GameObject* gameObject() const { return gameObject_.Get(); }
         Transform* transform() const;
         TransformHandle transformHandle() const;
         StringView Name() const override;
@@ -195,15 +201,16 @@ namespace helix::engine
         PPtr<GameObject> gameObject_;
     };
 
+    HX_CLASS()
     class Behaviour : public Component
     {
         HX_ENGINE_CLASS(Behaviour, Component, ClassId::Behaviour, ClassAbstract | ClassBehaviour)
 
     public:
-        bool enabled() const { return enabled_; }
+        HX_PROPERTY() bool enabled() const { return enabled_; }
         void SetEnabled(bool value);
         // Enabled, on a GameObject active in the hierarchy, and its enable hook has run.
-        bool isActiveAndEnabled() const { return enableCalled_; }
+        HX_PROPERTY(ReadOnly) bool isActiveAndEnabled() const { return enableCalled_; }
 
         template <class V>
         void Transfer(V& v)

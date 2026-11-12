@@ -19,6 +19,17 @@ helix_require(Scripting)
 helix_add_library(helix_engine ALIAS Engine PUBLIC_DEPS Helix::Core Helix::Math Helix::Serialization Helix::Image Helix::ShaderCompiler Helix::RHI Helix::Scripting
                   PRIVATE_DEPS Helix::Jobs Helix::Platform Helix::Model)
 
+# The engine's classes for C# and the scripting core: Helix.Bindgen over the tagged headers. The C++ goes into the
+# engine; HELIX_ENGINE_BINDINGS_CS is the C# for the C# side of the engine (Helix.ScriptCore).
+helix_dependency_dir(bindgen_dir Bindgen)
+include("${bindgen_dir}/CMake/HelixBindgen.cmake")
+set(engine_source "${CMAKE_CURRENT_SOURCE_DIR}/Source")
+helix_bindgen(helix_engine MODULE HelixEngine NAMESPACE HelixEngine KIND Engine INCLUDE_ROOTS "${engine_source}"
+              HEADERS "${engine_source}/Helix/Engine/Object/EntityId.h" "${engine_source}/Helix/Engine/Object/Object.h"
+                      "${engine_source}/Helix/Engine/GameObject/GameObject.h"
+              CS_OUTPUT engine_cs)
+set(HELIX_ENGINE_BINDINGS_CS "${engine_cs}" CACHE INTERNAL "")
+
 # The built in shaders are C#: built with the .NET SDK and embedded with the shader library they call into. The C#
 # shader library and the embedding script are found where their repos are (this repo may be a dependency itself).
 find_program(HELIX_DOTNET NAMES dotnet HINTS "$ENV{HELIX_DOTNET_ROOT}" "$ENV{DOTNET_ROOT}" REQUIRED)

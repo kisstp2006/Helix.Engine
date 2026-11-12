@@ -19,6 +19,9 @@
 #define HX_OBJECT_POOLS 1
 #endif
 
+HX_BINDINGS_EXPORT bool HxBindings_HelixEngine_Register();
+HX_BINDINGS_EXPORT void HxBindings_HelixEngine_Publish();
+
 namespace helix::engine
 {
     namespace
@@ -142,6 +145,12 @@ namespace helix::engine
     {
         // The scripting core asks for the engine's classes before its first lookup (they register on first use).
         const bool kScriptingProvider = (scripting::AddTypeProvider(&RegisterBuiltinClasses), true);
+        // The generated members of the engine's classes (after the classes themselves) and the exports by name.
+        const bool kBindingsProvider = (scripting::AddTypeProvider([] {
+                                            HxBindings_HelixEngine_Register();
+                                            HxBindings_HelixEngine_Publish();
+                                        }),
+                                        true);
     }
 
     u32 FindClassById(i32 classId)
@@ -260,6 +269,7 @@ namespace helix::engine
             return;
         u32 klass = object->classIndex_;
         bool pooled = object->pooled_;
+        scripting::ReleaseWrapper(object->wrapper_);
         ObjectAccess::Remove(object);
         if (!pooled)
         {

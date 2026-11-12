@@ -46,3 +46,6 @@
 [submodule "External/Helix.Scripting"]
 	path = External/Helix.Scripting
 	url = https://github.com/kisstp2006/Helix.Scripting
+[submodule "External/Helix.Bindgen"]
+	path = External/Helix.Bindgen
+	url = https://github.com/kisstp2006/Helix.Bindgen

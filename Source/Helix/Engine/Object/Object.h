@@ -5,6 +5,8 @@
 #include <Helix/Core/Strings/String.h>
 #include <Helix/Engine/Object/Class.h>
 #include <Helix/Engine/Object/EntityId.h>
+#include <Helix/Scripting/Bindings/Interop.h>
+#include <Helix/Scripting/Bindings/Tags.h>
 #include <Helix/Serialization/SerializedFile/SerializedFile.h>
 #include <Helix/Serialization/Transfer/Property.h>
 #include <Helix/Serialization/Transfer/Yaml.h>
@@ -97,6 +99,7 @@ public:                                                                         
         return index;                                                                               \
     }
 
+    HX_CLASS(Root)
     class Object
     {
         HX_ENGINE_CLASS(Object, void, ClassId::Object, ClassAbstract)
@@ -104,7 +107,7 @@ public:                                                                         
     public:
         virtual ~Object() = default;
 
-        EntityId GetEntityId() const { return id_; }
+        HX_FUNCTION() EntityId GetEntityId() const { return id_; }
         u32 ClassIndex() const { return classIndex_; }
         const ClassInfo& Class() const { return GetClass(classIndex_); }
         // The class the object was made as (the registry index).
@@ -116,7 +119,7 @@ public:                                                                         
         }
 
         // Components forward their name to their GameObject.
-        virtual StringView Name() const { return name_; }
+        HX_PROPERTY(Name = "name") virtual StringView Name() const { return name_; }
         virtual void SetName(StringView name) { name_ = name; }
 
         HideFlags hideFlags = HideFlags::None;
@@ -151,6 +154,9 @@ public:                                                                         
         bool destroying_ = false;
         // Made in its class's pool (not by `new`).
         bool pooled_ = false;
+        // The GC handle of the object's C# wrapper (0 without one), let go when the object goes.
+        u64 wrapper_ = 0;
+        friend struct scripting::ObjectHandles<Object>;
     };
 
     namespace detail
@@ -372,3 +378,13 @@ public:                                                                         
         EntityId id_;
     };
 }
+
+// Objects of the engine cross to C# as their EntityId, with their class's type as dynamic type.
+template <>
+struct helix::scripting::ObjectHandles<helix::engine::Object>
+{
+    static u64 ToId(const engine::Object* object) { return object->GetEntityId().value; }
+    static engine::Object* FromId(u64 id) { return engine::EntityIdToObject(engine::EntityId::FromULong(id)); }
+    static TypeId TypeOf(const engine::Object* object) { return object->Class().type; }
+    static u64& WrapperOf(engine::Object* object) { return object->wrapper_; }
+};

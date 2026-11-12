@@ -1,5 +1,6 @@
 #include <Helix/Engine/GameObject/Implementation/GameObjectAccess.h>
 #include <Helix/Engine/Object/Implementation/ObjectAccess.h>
+#include <Helix/Engine/Object/Implementation/ScriptingTypes.h>
 #include <Helix/Engine/Transform/Implementation/TransformAccess.h>
 
 #include <Helix/Core/Logging/Log.h>
@@ -221,6 +222,34 @@ namespace helix::engine
             if (r.Has(e.klass))
                 return static_cast<Component*>(EntityIdToObject(e.component.Id()));
         return nullptr;
+    }
+
+    namespace
+    {
+        // The engine class of a type of the HelixEngine module (kNoClass for other types).
+        u32 ClassOfType(scripting::TypeId type)
+        {
+            const scripting::TypeInfo* t = scripting::GetType(type);
+            return t && t->module == detail::EngineModule() && t->kind == scripting::TypeKind::Class ? u32(t->user) : kNoClass;
+        }
+    }
+
+    Component* GameObject::AddComponent(scripting::TypeId type)
+    {
+        u32 klass = ClassOfType(type);
+        if (klass == kNoClass)
+        {
+            const scripting::TypeInfo* t = scripting::GetType(type);
+            HX_LOG_ERROR(EngineLog, "AddComponent: {} is not a component type.", t ? t->fullName : StringView("an unknown type"));
+            return nullptr;
+        }
+        return AddComponent(klass);
+    }
+
+    Component* GameObject::GetComponent(scripting::TypeId type) const
+    {
+        u32 klass = ClassOfType(type);
+        return klass == kNoClass ? nullptr : GetComponent(klass);
     }
 
     Component* GameObject::GetComponent(StringView className) const

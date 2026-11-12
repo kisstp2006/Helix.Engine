@@ -53,3 +53,27 @@ HX_TEST(ScriptingTypes, SerializedFieldsByReflection)
     HX_CHECK(!Invoke(transform, "ReadSerializedProperty", t, Span<const Variant>(&bad, 1), result, error) && error.View().Contains("no field"));
     DestroyImmediate(g);
 }
+
+HX_TEST(ScriptingTypes, GeneratedMembersJoinTheEngineClasses)
+{
+    using namespace scripting;
+    TypeId gameObject = FindType("HelixEngine.GameObject");
+    TypeId object = FindType("HelixEngine.Object");
+    HX_REQUIRE(gameObject.IsValid() && object.IsValid());
+    // The engine's own registration (ClassId, the serialized property methods) and the generated members, together.
+    HX_CHECK(FindAttribute(gameObject, GetType(gameObject)->attributes, engine::detail::ClassIdAttribute()) != nullptr);
+    HX_CHECK(FindProperty(gameObject, "activeSelf") && FindProperty(object, "name") && FindMethod(object, "ReadSerializedProperty", Span<const TypeId>(), nullptr) == nullptr);
+    GameObject* g = GameObject::Create("Bound");
+    String error;
+    Variant v;
+    HX_CHECK(GetMember(gameObject, "name", g, v, error) && v.AsText() == StringView("Bound"));
+    Variant no[] = {Variant::Bool(false)};
+    HX_CHECK(Invoke(gameObject, "SetActive", g, Span<const Variant>(no), v, error) && !g->activeSelf());
+    Variant type[] = {Variant::OfType(GetClass(ClassOf<Logger>()).type)};
+    HX_CHECK(Invoke(gameObject, "AddComponent", g, Span<const Variant>(type), v, error) && v.AsObject() == g->GetComponent<Logger>());
+    HX_CHECK(Invoke(gameObject, "GetComponent", g, Span<const Variant>(type), v, error) && v.AsObject() == g->GetComponent<Logger>());
+    // Objects cross as their EntityId.
+    HX_CHECK(ObjectHandles<Object>::ToId(g) == g->GetEntityId().value && ObjectHandles<Object>::FromId(g->GetEntityId().value) == g);
+    HX_CHECK(ObjectHandles<Object>::TypeOf(g) == gameObject);
+    DestroyImmediate(g);
+}

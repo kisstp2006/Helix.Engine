@@ -18,22 +18,28 @@ helix_require(RHI)
 helix_add_library(helix_engine ALIAS Engine PUBLIC_DEPS Helix::Core Helix::Math Helix::Serialization Helix::Image Helix::ShaderCompiler Helix::RHI
                   PRIVATE_DEPS Helix::Jobs Helix::Platform Helix::Model)
 
-# The built in shaders are C#: built with the .NET SDK and embedded with the shader library they call into.
+# The built in shaders are C#: built with the .NET SDK and embedded with the shader library they call into. The C#
+# shader library and the embedding script are found where their repos are (this repo may be a dependency itself).
 find_program(HELIX_DOTNET NAMES dotnet HINTS "$ENV{HELIX_DOTNET_ROOT}" "$ENV{DOTNET_ROOT}" REQUIRED)
+helix_dependency_dir(shaders_dir Shaders)
+helix_dependency_dir(shader_compiler_dir ShaderCompiler)
+set(HELIX_ENGINE_SHADERS_PROJECT "${CMAKE_CURRENT_SOURCE_DIR}/Shaders/HelixEngine.BuiltinShaders.csproj" CACHE INTERNAL "")
+set(HELIX_SHADERS_DIR "${shaders_dir}" CACHE INTERNAL "")
 set(engine_artifacts "${CMAKE_CURRENT_BINARY_DIR}/Dotnet")
 set(engine_generated "${CMAKE_CURRENT_BINARY_DIR}/Generated")
 set(builtin_dir "${engine_artifacts}/bin/HelixEngine.BuiltinShaders/release")
 set(builtin_dll "${builtin_dir}/HelixEngine.BuiltinShaders.dll")
 set(builtin_pdb "${builtin_dir}/HelixEngine.BuiltinShaders.pdb")
 set(library_dll "${builtin_dir}/HelixEngine.Shaders.dll")
-set(embed_file "${CMAKE_CURRENT_SOURCE_DIR}/External/Helix.ShaderCompiler/Tools/EmbedFile.cmake")
+set(embed_file "${shader_compiler_dir}/Tools/EmbedFile.cmake")
+set(HELIX_EMBED_FILE "${embed_file}" CACHE INTERNAL "")
 file(GLOB_RECURSE builtin_sources CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/Shaders/*.cs" "${CMAKE_CURRENT_SOURCE_DIR}/Shaders/*.csproj"
-     "${CMAKE_CURRENT_SOURCE_DIR}/External/Helix.Shaders/Source/*.cs")
+     "${shaders_dir}/Source/*.cs")
 list(FILTER builtin_sources EXCLUDE REGEX "/(bin|obj)/")
 add_custom_command(
     OUTPUT "${builtin_dll}" "${builtin_pdb}" "${library_dll}"
     COMMAND "${HELIX_DOTNET}" build "${CMAKE_CURRENT_SOURCE_DIR}/Shaders/HelixEngine.BuiltinShaders.csproj" -c Release
-            --artifacts-path "${engine_artifacts}" --nologo -v quiet
+            --artifacts-path "${engine_artifacts}" --nologo -v quiet "-p:HelixShadersDir=${shaders_dir}"
     DEPENDS ${builtin_sources}
     COMMENT "Building the built in C# shaders")
 set(builtin_embedded "${engine_generated}/BuiltinShadersAssembly.h" "${engine_generated}/BuiltinShadersSymbols.h"
@@ -63,7 +69,7 @@ if(TARGET helix_engine_tests OR TARGET helix_engine_bench)
     add_custom_command(
         OUTPUT "${test_shaders_dir}/HelixEngine.TestShaders.dll" "${test_shaders_dir}/HelixEngine.TestShaders.pdb"
         COMMAND "${HELIX_DOTNET}" build "${CMAKE_CURRENT_SOURCE_DIR}/Tests/Shaders/HelixEngine.TestShaders.csproj" -c Release
-                --artifacts-path "${engine_artifacts}" --nologo -v quiet
+                --artifacts-path "${engine_artifacts}" --nologo -v quiet "-p:HelixShadersDir=${shaders_dir}"
         DEPENDS ${test_shader_sources} ${builtin_sources} "${builtin_dll}"
         COMMENT "Building the C# test shaders")
     # Embedded: the tests write them into a temporary folder, which every platform (the Web's memory file system too) has.

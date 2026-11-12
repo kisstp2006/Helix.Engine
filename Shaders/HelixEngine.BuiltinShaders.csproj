@@ -13,7 +13,11 @@
     <Optimize>true</Optimize>
     <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
   </PropertyGroup>
+  <PropertyGroup>
+    <!-- The C# shader library: given by the build (where the dependency was found), else this repo's own. -->
+    <HelixShadersDir Condition="'$(HelixShadersDir)' == ''">$(MSBuildThisFileDirectory)../External/Helix.Shaders</HelixShadersDir>
+  </PropertyGroup>
   <ItemGroup>
-    <ProjectReference Include="../External/Helix.Shaders/Source/HelixEngine.Shaders/HelixEngine.Shaders.csproj" />
+    <ProjectReference Include="$(HelixShadersDir)/Source/HelixEngine.Shaders/HelixEngine.Shaders.csproj" />
   </ItemGroup>
 </Project>

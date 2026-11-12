@@ -13,8 +13,11 @@
     <Optimize>true</Optimize>
     <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
   </PropertyGroup>
+  <PropertyGroup>
+    <HelixShadersDir Condition="'$(HelixShadersDir)' == ''">$(MSBuildThisFileDirectory)../../External/Helix.Shaders</HelixShadersDir>
+  </PropertyGroup>
   <ItemGroup>
-    <ProjectReference Include="../../External/Helix.Shaders/Source/HelixEngine.Shaders/HelixEngine.Shaders.csproj" />
+    <ProjectReference Include="$(HelixShadersDir)/Source/HelixEngine.Shaders/HelixEngine.Shaders.csproj" />
     <ProjectReference Include="../../Shaders/HelixEngine.BuiltinShaders.csproj" />
   </ItemGroup>
 </Project>

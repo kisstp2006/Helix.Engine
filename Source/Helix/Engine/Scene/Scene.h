@@ -2,6 +2,7 @@
 
 #include <Helix/Core/Containers/Array.h>
 #include <Helix/Core/Strings/StringView.h>
+#include <Helix/Engine/Scene/LoadableSceneId.h>
 
 // Scene: a value naming one scene of the SceneManager. A scene that was unloaded (or never existed) is not valid;
 // its getters then return empty values.
@@ -61,6 +62,8 @@ namespace helix::engine
         bool isLoaded() const;
         bool isDirty() const;
         bool isSubScene() const;
+        // The id of the scene asset it was loaded from by LoadableSceneId; invalid for scenes loaded otherwise.
+        LoadableSceneId loadableSceneId() const;
         void SetIsSubScene(bool value) const;
         u32 rootCount() const;
         // The root GameObjects in their order.

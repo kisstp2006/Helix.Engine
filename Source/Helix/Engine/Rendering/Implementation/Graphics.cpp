@@ -1,12 +1,16 @@
 #include <Helix/Engine/Material/Material.h>
 #include <Helix/Engine/Rendering/Graphics.h>
 #include <Helix/Engine/Rendering/Implementation/RendererManager.h>
+#include <Helix/Engine/Application/Application.h>
 #include <Helix/Engine/Rendering/Light.h>
+#include <Helix/Engine/Rendering/ScreenCapture.h>
 #include <Helix/Engine/Texture/Texture.h>
 
 #include <Helix/Core/Hashing/Hash.h>
 #include <Helix/Core/Logging/Log.h>
+#include <Helix/Image/Codecs/Png.h>
 #include <Helix/Image/Texture/Convert.h>
+#include <Helix/Platform/IO/FileSystem.h>
 
 #include <algorithm>
 #include <cmath>
@@ -65,6 +69,12 @@ namespace helix::engine
             RenderStats stats;
             EntityId errorMaterial;
             u32 frame = 0;
+            struct Capture
+            {
+                String path;
+                i32 superSize = 1;
+            };
+            Array<Capture> captures = Array<Capture>();
         };
 
         RenderState& R()
@@ -797,6 +807,89 @@ namespace helix::engine
     void Graphics::SetAmbientLight(Color color) { R().ambient = color; }
     const RenderStats& Graphics::LastStats() { return R().stats; }
 
+    namespace
+    {
+        void RenderCameras()
+        {
+            RenderState& s = R();
+            Array<Camera*> cameras;
+            Camera::GetAllCameras(cameras);
+            bool first = true;
+            for (Camera* c : cameras)
+            {
+                RenderOne(*c, first);
+                first = false;
+                s.stats.cameras++;
+            }
+        }
+
+        // Draws the frame again into textures of the target's formats (so the pipelines are shared) and writes a PNG.
+        void WriteCapture(const RenderState::Capture& capture)
+        {
+            RenderState& s = R();
+            RenderTarget saved = s.target;
+            u32 scale = capture.superSize > 1 ? u32(capture.superSize) : 1u;
+            u32 w = saved.width * scale, h = saved.height * scale;
+            rhi::Format colorFormat = saved.colorFormat == rhi::Format::Unknown ? rhi::Format::RGBA8Unorm : saved.colorFormat;
+            if (w == 0 || h == 0 || (colorFormat != rhi::Format::RGBA8Unorm && colorFormat != rhi::Format::BGRA8Unorm))
+            {
+                HX_LOG_ERROR(RenderLog, "ScreenCapture: no screen to capture into '{}'.", capture.path);
+                return;
+            }
+            rhi::TextureHandle color = s.device->CreateTexture({.format = colorFormat, .width = w, .height = h,
+                                                                .usage = rhi::TextureRenderTarget | rhi::TextureSampled, .debugName = "ScreenCapture"});
+            rhi::TextureHandle depth;
+            if (saved.depthFormat != rhi::Format::Unknown)
+                depth = s.device->CreateTexture({.format = saved.depthFormat, .width = w, .height = h, .usage = rhi::TextureDepthStencil,
+                                                 .debugName = "ScreenCaptureDepth"});
+            RenderStats stats = s.stats;
+            Graphics::SetTarget({color, depth, w, h, colorFormat, saved.depthFormat});
+            RenderCameras();
+            image::Image img;
+            img.Allocate(w, h, image::ImageFormat::RGBA8);
+            bool read = s.device->ReadTexture(color, 0, img.pixels.Data(), img.pixels.Size());
+            Graphics::SetTarget(saved);
+            s.stats = stats;
+            s.device->Destroy(color);
+            s.device->Destroy(depth);
+            if (!read)
+            {
+                HX_LOG_ERROR(RenderLog, "ScreenCapture: the frame for '{}' could not be read back.", capture.path);
+                return;
+            }
+            u8* p = img.pixels.Data();
+            for (usize i = 0; i < img.pixels.Size(); i += 4)
+            {
+                if (colorFormat == rhi::Format::BGRA8Unorm)
+                {
+                    u8 b = p[i];
+                    p[i] = p[i + 2];
+                    p[i + 2] = b;
+                }
+                // The screen has no transparency.
+                p[i + 3] = 255;
+            }
+            Array<u8> png;
+            image::EncodePng(img, png);
+            String path = capture.path;
+#if HX_PLATFORM_ANDROID || HX_PLATFORM_WEB
+            if (!StringView(path).StartsWith("/"))
+                path = platform::JoinPath(Application::persistentDataPath(), path);
+#endif
+            if (!platform::WriteFile(path, Span<const u8>(png.Data(), png.Size())))
+                HX_LOG_ERROR(RenderLog, "ScreenCapture: '{}' could not be written.", path);
+        }
+    }
+
+    void ScreenCapture::CaptureScreenshot(StringView filename, i32 superSize)
+    {
+        if (filename.Empty())
+            return;
+        R().captures.Push({String(filename), superSize});
+    }
+
+    u32 ScreenCapture::PendingCaptures() { return u32(R().captures.Size()); }
+
     void Graphics::RenderFrame()
     {
         RendererManager& m = RendererManager::Get();
@@ -811,14 +904,13 @@ namespace helix::engine
             return;
         if ((++s.frame & 63) == 0)
             ForgetDead();
-        Array<Camera*> cameras;
-        Camera::GetAllCameras(cameras);
-        bool first = true;
-        for (Camera* c : cameras)
+        RenderCameras();
+        if (!s.captures.Empty())
         {
-            RenderOne(*c, first);
-            first = false;
-            s.stats.cameras++;
+            Array<RenderState::Capture> captures = Move(s.captures);
+            s.captures = Array<RenderState::Capture>();
+            for (const RenderState::Capture& c : captures)
+                WriteCapture(c);
         }
     }
 

@@ -4,6 +4,8 @@
 #include <Helix/Engine/Rendering/Graphics.h>
 #include <Helix/Engine/Rendering/Light.h>
 #include <Helix/Engine/Rendering/Renderer.h>
+#include <Helix/Engine/Rendering/ScreenCapture.h>
+#include <Helix/Image/Codecs/Png.h>
 #include <Helix/Engine/Transform/Hierarchy.h>
 #include <Helix/Platform/Window/Window.h>
 #include <Helix/Testing/Test.h>
@@ -277,6 +279,34 @@ HX_TEST(Rendering, PlaceholderRendererDrawsOnEveryDevice)
         // A second frame makes nothing new.
         Graphics::RenderFrame();
         HX_CHECK(Graphics::LastStats().pipelinesCreated == 0 && Graphics::LastStats().uploads == 0);
+        // Screenshots: the frame drawn again into a texture, at the screen's size and twice it.
+        String shot = platform::JoinPath(platform::TempDirectory(), Format("helix-shot-{}.png", Guid::Generate().ToString()));
+        String big = platform::JoinPath(platform::TempDirectory(), Format("helix-shot-{}.png", Guid::Generate().ToString()));
+        ScreenCapture::CaptureScreenshot(shot);
+        ScreenCapture::CaptureScreenshot(big, 2);
+        HX_CHECK(ScreenCapture::PendingCaptures() == 2);
+        Graphics::RenderFrame();
+        HX_CHECK(ScreenCapture::PendingCaptures() == 0 && Graphics::LastStats().cameras == 2);
+        Array<u8> png;
+        image::Image img, bigImg;
+        HX_REQUIRE(platform::ReadFile(shot, png) && image::DecodePng(Span<const u8>(png.Data(), png.Size()), img));
+        HX_CHECK(img.width == size && img.height == size);
+        bool same = true;
+        for (u32 i = 0; i < size * size; i++)
+        {
+            u32 c = (pixels[i] & 0x00ffffffu) | 0xff000000u;
+            u32 got;
+            std::memcpy(&got, img.pixels.Data() + i * 4, 4);
+            same = same && NearColor(got, c);
+        }
+        HX_CHECK(same);
+        HX_REQUIRE(platform::ReadFile(big, png) && image::DecodePng(Span<const u8>(png.Data(), png.Size()), bigImg));
+        HX_CHECK(bigImg.width == size * 2 && bigImg.height == size * 2);
+        u32 bigRed;
+        std::memcpy(&bigRed, bigImg.pixels.Data() + (10 * size * 2 + 10) * 4, 4);
+        HX_CHECK(NearColor(bigRed, Rgba(255, 0, 0)));
+        platform::RemoveFile(shot);
+        platform::RemoveFile(big);
         Graphics::ReleaseResources();
         device.Destroy(color);
         device.Destroy(depth);

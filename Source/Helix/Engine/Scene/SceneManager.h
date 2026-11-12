@@ -35,6 +35,18 @@ namespace helix::engine
         String root_;
     };
 
+    // The extension of scene files (lower case, without the dot).
+    inline constexpr StringView kSceneFileExtension = "helix";
+
+    // Scenes as assets: the bytes from the asset source that lists the path (a player data folder, source files). Makes
+    // the asset catalog list scene files.
+    class AssetSceneSource final : public SceneSource
+    {
+    public:
+        AssetSceneSource();
+        bool Read(StringView path, Array<u8>& out, String& error) override;
+    };
+
     // Scenes held in memory under their paths.
     class MemorySceneSource final : public SceneSource
     {
@@ -63,6 +75,8 @@ namespace helix::engine
         static Scene GetSceneByName(StringView name);
         static Scene GetSceneByPath(StringView path);
         static Scene GetSceneByBuildIndex(i32 buildIndex);
+        // A loaded scene that came from the id (the first when it was loaded more than once); invalid when none.
+        static Scene GetSceneByLoadableSceneId(LoadableSceneId loadableSceneId);
         // An empty loaded scene; invalid when a loaded scene has the name.
         static Scene CreateScene(StringView name, const CreateSceneParameters& parameters = {});
 
@@ -73,6 +87,8 @@ namespace helix::engine
         static void LoadScene(i32 buildIndex, LoadSceneMode mode) { LoadScene(buildIndex, LoadSceneParameters{mode}); }
         static AsyncOperation LoadSceneAsync(StringView nameOrPath, const LoadSceneParameters& parameters = {});
         static AsyncOperation LoadSceneAsync(i32 buildIndex, const LoadSceneParameters& parameters = {});
+        // The scene asset the id names in the asset catalog; each load makes a scene of its own.
+        static AsyncOperation LoadSceneAsync(LoadableSceneId loadableSceneId, const LoadSceneParameters& parameters = {});
         static AsyncOperation LoadSceneAsync(StringView nameOrPath, LoadSceneMode mode) { return LoadSceneAsync(nameOrPath, LoadSceneParameters{mode}); }
         static AsyncOperation LoadSceneAsync(i32 buildIndex, LoadSceneMode mode) { return LoadSceneAsync(buildIndex, LoadSceneParameters{mode}); }
         // Destroys the scene's objects and removes it; refused for the last loaded scene (an invalid operation).

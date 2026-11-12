@@ -7,6 +7,7 @@
 #include <Helix/Engine/Prefab/Prefab.h>
 #include <Helix/Engine/Scene/SceneFile.h>
 #include <Helix/Engine/Scene/SceneManager.h>
+#include <Helix/Engine/Settings/Settings.h>
 #include <Helix/Engine/Texture/Texture.h>
 #include <Helix/Jobs/Jobs.h>
 #include <Helix/Platform/IO/FileSystem.h>
@@ -426,4 +427,85 @@ HX_TEST(Asset, UnloadingAssets)
     // Loading it again makes a new object.
     Texture2D* b2 = Resources::Load<Texture2D>("b");
     HX_CHECK(b2 && b2->GetEntityId() != bId);
+}
+
+namespace
+{
+    // Reads the data folder's files from disk and counts them (a stand in for the APK reader of Android).
+    struct CountingReader final : DataFileReader
+    {
+        u32 reads = 0;
+        bool Read(StringView root, StringView path, Array<u8>& out) override
+        {
+            reads++;
+            return platform::ReadFile(platform::JoinPath(root, path), out);
+        }
+    };
+}
+
+HX_TEST(Asset, ScenesOfADataFolderByLoadableSceneId)
+{
+    Folder f;
+    // A scene with one GameObject, written as a scene file of the data folder.
+    Scene made = SceneManager::CreateScene("Made");
+    GameObject* hero = GameObject::Create("Hero");
+    SceneManager::MoveGameObjectToScene(hero, made);
+    String yaml, error;
+    HX_REQUIRE(WriteSceneYaml(made, yaml, error));
+    SceneManager::UnloadSceneAsync(made);
+    SceneManager::ProcessSceneLoads();
+    f.Write("Scenes/Level.helix", StringView(yaml));
+    AssetEntry entry;
+    entry.guid = Guid::Generate();
+    entry.path = "Scenes/Level.helix";
+    HX_REQUIRE(WriteAssetIndex(f.root, Span<const AssetEntry>(&entry, 1), error));
+    const char* settings = R"(%YAML 1.1
+%TAG !h! tag:helixengine,2026:
+--- !h!141 &1
+BuildSettings:
+  scenes:
+  - Scenes/Level.helix
+)";
+    Array<String> errors;
+    HX_REQUIRE(LoadSettingsFile(StringView(settings), errors));
+    HX_CHECK(errors.Empty() && SceneManager::sceneCountInBuildSettings() == 1);
+
+    CountingReader reader;
+    PlayerDataSource data(f.root, &reader);
+    AddAssetSource(&data);
+    AssetSceneSource scenes;
+    SceneManager::SetSceneSource(&scenes);
+    LoadableSceneId id{entry.guid};
+    HX_CHECK(id.IsValid() && !LoadableSceneId().IsValid());
+    HX_CHECK(!SceneManager::GetSceneByLoadableSceneId(id).IsValid());
+    // Two loads of one id make two scenes; the build list gives them their index.
+    AsyncOperation first = SceneManager::LoadSceneAsync(id, LoadSceneParameters{LoadSceneMode::Additive});
+    AsyncOperation second = SceneManager::LoadSceneAsync(id, LoadSceneParameters{LoadSceneMode::Additive});
+    HX_REQUIRE(first.IsValid() && second.IsValid());
+    HX_CHECK(RunUntil(first) && RunUntil(second));
+    Scene a = SceneManager::GetSceneByLoadableSceneId(id);
+    HX_REQUIRE(a.IsValid() && a.isLoaded());
+    HX_CHECK(a.loadableSceneId() == id && a.buildIndex() == 0 && a.name() == StringView("Level"));
+    u32 fromId = 0;
+    for (u32 i = 0; i < SceneManager::sceneCount(); i++)
+        if (SceneManager::GetSceneAt(i).loadableSceneId() == id)
+            fromId++;
+    HX_CHECK(fromId == 2);
+    HX_CHECK(a.rootCount() == 1 && a.GetRootGameObjects()[0]->Name() == StringView("Hero"));
+    HX_CHECK(reader.reads >= 2);
+    // A scene loaded by its path is not from an id; an id of no asset loads nothing.
+    Scene byPath = SceneManager::LoadScene("Scenes/Level.helix", LoadSceneParameters{LoadSceneMode::Additive});
+    SceneManager::ProcessSceneLoads();
+    HX_CHECK(byPath.IsValid() && !byPath.loadableSceneId().IsValid());
+    HX_CHECK(!SceneManager::LoadSceneAsync(LoadableSceneId{Guid::Generate()}).IsValid());
+    for (u32 i = SceneManager::sceneCount(); i-- > 0;)
+    {
+        Scene s = SceneManager::GetSceneAt(i);
+        if (s.path() == StringView("Scenes/Level.helix"))
+            SceneManager::UnloadSceneAsync(s);
+    }
+    SceneManager::ProcessSceneLoads();
+    SceneManager::SetSceneSource(nullptr);
+    SceneManager::SetBuildScenes(Span<const StringView>());
+    RemoveAssetSource(&data);
 }

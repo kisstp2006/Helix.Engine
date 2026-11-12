@@ -9,7 +9,7 @@ namespace helix::engine
 {
     namespace SettingsClassId
     {
-        inline constexpr i32 TimeManager = 5, TagManager = 78, PlayerSettings = 129;
+        inline constexpr i32 TimeManager = 5, TagManager = 78, PlayerSettings = 129, BuildSettings = 141;
     }
 
     class TimeManager final : public Object
@@ -69,6 +69,22 @@ namespace helix::engine
             v.Field("productName", productName);
             v.Field("bundleVersion", bundleVersion);
             v.Field("applicationIdentifier", applicationIdentifier);
+        }
+    };
+
+    // The build: its scenes in order (paths of scene assets), the first one starts the player.
+    class BuildSettings final : public Object
+    {
+        HX_ENGINE_CLASS(BuildSettings, Object, SettingsClassId::BuildSettings, ClassNone)
+
+    public:
+        Array<String> scenes = Array<String>();
+
+        template <class V>
+        void Transfer(V& v)
+        {
+            Base::Transfer(v);
+            v.Field("scenes", scenes);
         }
     };
 

@@ -37,6 +37,7 @@ namespace helix::engine
             i32 buildIndex = -1;
             String name;
             String path;
+            LoadableSceneId loadableId;
             HashMap<EntityId, i64> fileIds;
             u64 fileIdCounter = 0;
         };
@@ -169,6 +170,7 @@ namespace helix::engine
             s.buildIndex = buildIndex;
             s.name = name;
             s.path = path;
+            s.loadableId = LoadableSceneId();
             s.fileIds.Clear();
             s.fileIdCounter = 0;
             gState.order.Push(index);
@@ -274,7 +276,7 @@ namespace helix::engine
             return true;
         }
 
-        Request* Queue(StringView nameOrPath, i32 buildIndex, const LoadSceneParameters& p, bool async)
+        Request* Queue(StringView nameOrPath, i32 buildIndex, const LoadSceneParameters& p, bool async, LoadableSceneId id = {})
         {
             String path;
             i32 index = buildIndex;
@@ -314,6 +316,7 @@ namespace helix::engine
                 delete r;
                 return nullptr;
             }
+            gState.slots[r->slot].loadableId = id;
             r->mode = p.loadSceneMode;
             r->async = async;
             if (async)
@@ -440,6 +443,12 @@ namespace helix::engine
     {
         const SceneSlot* s = SlotOf(handle);
         return s ? StringView(s->name) : StringView();
+    }
+
+    LoadableSceneId Scene::loadableSceneId() const
+    {
+        const SceneSlot* s = SlotOf(handle);
+        return s ? s->loadableId : LoadableSceneId();
     }
 
     StringView Scene::path() const
@@ -615,6 +624,44 @@ namespace helix::engine
     {
         Request* r = Queue(nameOrPath, -1, parameters, true);
         return r ? AsyncOperation{r->op} : AsyncOperation();
+    }
+
+    AsyncOperation SceneManager::LoadSceneAsync(LoadableSceneId loadableSceneId, const LoadSceneParameters& parameters)
+    {
+        const AssetEntry* e = loadableSceneId.IsValid() ? FindAsset(loadableSceneId.guid) : nullptr;
+        if (!e)
+        {
+            HX_LOG_ERROR(SceneLog, "LoadSceneAsync: no scene asset has the id {}.", loadableSceneId.guid.ToString());
+            return AsyncOperation();
+        }
+        Request* r = Queue(e->path, -1, parameters, true, loadableSceneId);
+        return r ? AsyncOperation{r->op} : AsyncOperation();
+    }
+
+    Scene SceneManager::GetSceneByLoadableSceneId(LoadableSceneId loadableSceneId)
+    {
+        if (!loadableSceneId.IsValid())
+            return Scene();
+        for (u32 slot : gState.order)
+        {
+            const SceneSlot& s = gState.slots[slot];
+            if (s.used && s.state == SceneState::Loaded && s.loadableId == loadableSceneId)
+                return MakeScene(slot);
+        }
+        return Scene();
+    }
+
+    AssetSceneSource::AssetSceneSource() { RegisterListedExtension(kSceneFileExtension); }
+
+    bool AssetSceneSource::Read(StringView path, Array<u8>& out, String& error)
+    {
+        const AssetEntry* e = FindAssetAtPath(path);
+        if (!e || !e->source)
+        {
+            error = Format("no asset source lists '{}'", path);
+            return false;
+        }
+        return e->source->Read(e->path, out, error);
     }
 
     AsyncOperation SceneManager::LoadSceneAsync(i32 buildIndex, const LoadSceneParameters& parameters)

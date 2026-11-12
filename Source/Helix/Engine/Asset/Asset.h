@@ -61,22 +61,36 @@ namespace helix::engine
         String root_;
     };
 
+    // How a player data folder's files are read: files on disk by default; the host gives another (the APK's assets).
+    class DataFileReader
+    {
+    public:
+        virtual ~DataFileReader() = default;
+        // A whole file by its path below the data folder's root (thread safe: the IO thread and jobs read).
+        virtual bool Read(StringView root, StringView path, Array<u8>& out) = 0;
+    };
+
     // A player data folder: the engine's serialized files and the index that lists them (kAssetIndexFile).
     class PlayerDataSource final : public AssetSource
     {
     public:
-        explicit PlayerDataSource(StringView root) : root_(root) {}
+        explicit PlayerDataSource(StringView root, DataFileReader* reader = nullptr) : root_(root), reader_(reader) {}
         void List(Array<AssetEntry>& out) override;
         bool Read(StringView path, Array<u8>& out, String& error) override;
+        StringView Root() const { return root_; }
 
     private:
         String root_;
+        DataFileReader* reader_ = nullptr;
     };
     inline constexpr StringView kAssetIndexFile = "assets.index";
     // Writes the index of a player data folder (builds, tools, tests).
     bool WriteAssetIndex(StringView folder, Span<const AssetEntry> entries, String& error);
 
     // ------------------------------------------------------------------------------------------------- catalog
+    // Files of an extension (lower case, without the dot) the catalog lists although no loader makes objects of them:
+    // scene files, which SceneManager reads through their source. Loading one as an object gives null.
+    void RegisterListedExtension(StringView extension);
     // Lists the source's assets; a guid listed by an earlier source stays with it.
     void AddAssetSource(AssetSource* source);
     // Forgets the source's assets (objects already loaded stay).

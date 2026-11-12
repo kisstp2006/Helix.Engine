@@ -126,8 +126,9 @@ namespace helix::engine
             HashMap<Guid, u32> byGuid;
             HashMap<String, u32> byPath;
             HashMap<String, u32> byResource;
-            // Loaders.
+            // Loaders, and the extensions listed without one.
             Array<AssetLoader> loaders;
+            Array<String> listed;
             bool builtins = false;
             // Loaded assets.
             HashMap<Guid, Record*> records;
@@ -196,6 +197,15 @@ namespace helix::engine
             return kNoAssetLoader;
         }
 
+        bool IsListed(StringView path)
+        {
+            String ext = LowerPath(ExtensionOf(path));
+            for (const String& e : S().listed)
+                if (ext == e)
+                    return true;
+            return false;
+        }
+
         void Rebuild()
         {
             State& s = S();
@@ -215,7 +225,7 @@ namespace helix::engine
                         continue;
                     e.source = source;
                     e.loader = LoaderOf(e.path);
-                    if (e.loader == kNoAssetLoader)
+                    if (e.loader == kNoAssetLoader && !IsListed(e.path))
                         continue;
                     e.resourcePath = ResourcePathOf(e.path);
                     u32 index = u32(s.entries.Size());
@@ -574,6 +584,11 @@ namespace helix::engine
             const AssetEntry* e = FindAsset(guid);
             if (!e)
                 return nullptr;
+            if (e->loader == kNoAssetLoader)
+            {
+                HX_LOG_ERROR(AssetLog, "'{}' is no asset of objects (it is read through its source).", e->path);
+                return nullptr;
+            }
             Request* r = NewRequest(*e, priority);
             if (async)
                 Queue(*r);
@@ -662,6 +677,18 @@ namespace helix::engine
                 l = loader, replaced = true;
         if (!replaced)
             s.loaders.Push(loader);
+        if (!s.sources.Empty())
+            Rebuild();
+    }
+
+    void RegisterListedExtension(StringView extension)
+    {
+        State& s = S();
+        String e = LowerPath(extension);
+        for (const String& o : s.listed)
+            if (o == e)
+                return;
+        s.listed.Push(Move(e));
         if (!s.sources.Empty())
             Rebuild();
     }
@@ -1149,7 +1176,7 @@ namespace helix::engine
     void PlayerDataSource::List(Array<AssetEntry>& out)
     {
         Array<u8> bytes;
-        if (!platform::ReadFile(platform::JoinPath(root_, kAssetIndexFile), bytes))
+        if (!(reader_ ? reader_->Read(root_, kAssetIndexFile, bytes) : platform::ReadFile(platform::JoinPath(root_, kAssetIndexFile), bytes)))
         {
             HX_LOG_ERROR(AssetLog, "The player data folder '{}' has no {}.", root_, kAssetIndexFile);
             return;
@@ -1179,7 +1206,7 @@ namespace helix::engine
 
     bool PlayerDataSource::Read(StringView path, Array<u8>& out, String& error)
     {
-        if (platform::ReadFile(platform::JoinPath(root_, path), out))
+        if (reader_ ? reader_->Read(root_, path, out) : platform::ReadFile(platform::JoinPath(root_, path), out))
             return true;
         error = Format("'{}' could not be read", path);
         return false;

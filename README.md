@@ -3,7 +3,8 @@
 The runtime of the Helix engine: the object model, GameObjects and components, tags and layers, the lifecycle of
 objects (instantiate, InstantiateAsync, destroy), the transform hierarchy, scenes and scene files, prefabs and pools,
 time, the player loop, the application and settings assets, the asset runtime with meshes and textures, shaders and
-materials, and the rendering components with a placeholder renderer on Helix.RHI.
+materials, the rendering components with a placeholder renderer on Helix.RHI, and the screen as a player host
+reports it.
 
 ## Contents
 
@@ -20,7 +21,8 @@ materials, and the rendering components with a placeholder renderer on Helix.RHI
 | `Source/Helix/Engine/Transform/Hierarchy.h` | `TransformHierarchy` blocks, `UpdateWorldMatrices`, `RegisterTransformSystem`, `SetTransformInterest`, `DispatchTransformChanges` |
 | `Source/Helix/Engine/Transform/TransformHandle.h` | `TransformHandle` and its child enumerator |
 | `Source/Helix/Engine/Scene/Scene.h` | `Scene`, `SceneHandle`, `LoadSceneMode`, `LoadSceneParameters`, `UnloadSceneOptions` |
-| `Source/Helix/Engine/Scene/SceneManager.h` | `SceneManager`, `SceneEvent`, `SceneSource` (`FileSceneSource`, `MemorySceneSource`) |
+| `Source/Helix/Engine/Scene/LoadableSceneId.h` | `LoadableSceneId`: a scene asset by its guid |
+| `Source/Helix/Engine/Scene/SceneManager.h` | `SceneManager`, `SceneEvent`, `SceneSource` (`FileSceneSource`, `MemorySceneSource`, `AssetSceneSource`) |
 | `Source/Helix/Engine/Async/AsyncOperation.h` | `AsyncOperation`, `ResourceRequest` |
 | `Source/Helix/Engine/Scene/SceneFile.h` | `WriteSceneYaml`, `WriteSceneBinary`, `ReadSceneFile` |
 | `Source/Helix/Engine/Scene/SceneFormat.h` | `SceneFormat`, `SceneBuilder`, `RegisterSceneFormat`: scene file formats as plug ins |
@@ -29,9 +31,10 @@ materials, and the rendering components with a placeholder renderer on Helix.RHI
 | `Source/Helix/Engine/Time/Time.h` | `Time`, `TimeClock` |
 | `Source/Helix/Engine/PlayerLoop/PlayerLoop.h` | `PlayerLoop`, `PlayerLoopSystem` |
 | `Source/Helix/Engine/Application/Application.h` | `Application`, `RuntimePlatform`, `NetworkReachability`, `LogType` |
-| `Source/Helix/Engine/Settings/Settings.h` | `TimeManager`, `TagManager`, `PlayerSettings`, `RegisterSettings`, `LoadSettingsFile` |
+| `Source/Helix/Engine/Settings/Settings.h` | `TimeManager`, `TagManager`, `PlayerSettings`, `BuildSettings`, `RegisterSettings`, `LoadSettingsFile` |
+| `Source/Helix/Engine/Screen/Screen.h` | `Screen`, `FullScreenMode`, `ScreenOrientation`, `Resolution`, `RefreshRate`, `DisplayInfo`, the host's `ScreenReport` and `ScreenRequests` |
 | `Source/Helix/Engine/Event/Event.h` | `Event<Args...>`, `Query<Args...>` |
-| `Source/Helix/Engine/Asset/Asset.h` | The asset runtime: `AssetSource` (`FolderAssetSource`, `PlayerDataSource`), the catalog, `LoadAsset`, `LoadAssetAsync`, `UnloadUnusedAssets`, `WriteAssetFile` |
+| `Source/Helix/Engine/Asset/Asset.h` | The asset runtime: `AssetSource` (`FolderAssetSource`, `PlayerDataSource` with a `DataFileReader`), the catalog, `LoadAsset`, `LoadAssetAsync`, `UnloadUnusedAssets`, `WriteAssetFile` |
 | `Source/Helix/Engine/Asset/AssetLoader.h` | `AssetLoader`, `RegisterAssetLoader`: loaders by file extension, decode and integrate halves |
 | `Source/Helix/Engine/Asset/Resources.h` | `Resources`: `Load`, `LoadAll`, `LoadAsync`, `UnloadAsset`, `UnloadUnusedAssets` |
 | `Source/Helix/Engine/Mesh/Mesh.h` | `Mesh`, `VertexAttributeDescriptor`, `SubMeshDescriptor`, `VertexAttribute`, `VertexAttributeFormat`, `IndexFormat`, `MeshTopology` |
@@ -43,6 +46,7 @@ materials, and the rendering components with a placeholder renderer on Helix.RHI
 | `Source/Helix/Engine/Rendering/Camera.h` | `Camera`, `CameraClearFlags`, `CameraType`, `GeometryUtility` |
 | `Source/Helix/Engine/Rendering/Light.h` | `Light`, `LightType`, `LightShadows`, `LightRenderMode` |
 | `Source/Helix/Engine/Rendering/Graphics.h` | `Graphics` (device, target, `RenderFrame`), `RenderTarget`, `RenderStats`: the placeholder renderer |
+| `Source/Helix/Engine/Rendering/ScreenCapture.h` | `ScreenCapture::CaptureScreenshot`: the frame drawn again into a texture and written as PNG |
 | `Shaders/` | The built in shaders in C# (`Hidden/InternalErrorShader`, `Hidden/InternalClear`, the engine's shader variables and vertex input locations), built with the .NET SDK and embedded |
 | `Tests/Shaders/` | C# test shaders, embedded into the tests |
 | `Tests/`, `Benchmarks/` | Ids, the class tree, components, hierarchies, enable and destroy order, clones, world math, change dispatch, scenes and scene files, assets, meshes and textures; throughput |
@@ -162,6 +166,12 @@ materials, and the rendering components with a placeholder renderer on Helix.RHI
   drawing (Hidden/InternalClear). GPU meshes (formats the GPU lacks widened to float, missing attributes read zero),
   textures, samplers, shaders and pipelines are cached by the versions of their sources; meshes and textures that are
   not readable drop their CPU copy once uploaded.
+- Screen keeps what the host reports (render size, dpi, mode, displays, window position) and queues what scripts ask
+  (resolution and mode, window moves as AsyncOperations, orientation, sleep timeout, brightness); the host takes the
+  queue at the end of the frame and applies it.
+- Scenes can be assets: with `AssetSceneSource` scene files (`.helix`) are listed by the asset catalog and read
+  through their source, `LoadSceneAsync(LoadableSceneId)` loads one by its guid, and `BuildSettings` in a settings
+  file gives the build scene list.
 - `Destroy` is queued with a delay in scaled time and runs at `ProcessDestroyQueue`, after the update loop and before
   rendering; `DestroyImmediate` destroys at once. Children go first, then components from the last to the first, then
   the GameObject; behaviours get their disable hook before their destroy hook.

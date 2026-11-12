@@ -1,5 +1,6 @@
 #include <Helix/Engine/Application/Application.h>
 #include <Helix/Engine/GameObject/Tags.h>
+#include <Helix/Engine/Scene/SceneManager.h>
 #include <Helix/Engine/Settings/Settings.h>
 #include <Helix/Engine/Time/Time.h>
 
@@ -48,6 +49,15 @@ namespace helix::engine
             Application::SetProductInfo(p.companyName, p.productName, p.bundleVersion, p.applicationIdentifier);
         }
 
+        void ApplyBuild(Object& o)
+        {
+            BuildSettings& b = static_cast<BuildSettings&>(o);
+            Array<StringView> paths;
+            for (const String& s : b.scenes)
+                paths.Push(s);
+            SceneManager::SetBuildScenes(Span<const StringView>(paths.Data(), paths.Size()));
+        }
+
         Array<Entry>& Entries()
         {
             static Array<Entry> e = [] {
@@ -55,6 +65,7 @@ namespace helix::engine
                 built.Push({ClassOf<TimeManager>(), &ApplyTime, EntityId()});
                 built.Push({ClassOf<TagManager>(), &ApplyTags, EntityId()});
                 built.Push({ClassOf<PlayerSettings>(), &ApplyPlayer, EntityId()});
+                built.Push({ClassOf<BuildSettings>(), &ApplyBuild, EntityId()});
                 return built;
             }();
             return e;

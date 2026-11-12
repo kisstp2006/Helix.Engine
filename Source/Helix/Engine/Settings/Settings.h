@@ -60,6 +60,8 @@ namespace helix::engine
         String productName = String("Product");
         String bundleVersion = String("0.1");
         String applicationIdentifier;
+        // Application.runInBackground at startup: frames go on while the player has no focus.
+        bool runInBackground = true;
 
         template <class V>
         void Transfer(V& v)
@@ -69,6 +71,7 @@ namespace helix::engine
             v.Field("productName", productName);
             v.Field("bundleVersion", bundleVersion);
             v.Field("applicationIdentifier", applicationIdentifier);
+            v.Field("runInBackground", runInBackground);
         }
     };
 

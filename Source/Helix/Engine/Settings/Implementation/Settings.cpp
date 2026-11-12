@@ -47,6 +47,7 @@ namespace helix::engine
         {
             PlayerSettings& p = static_cast<PlayerSettings&>(o);
             Application::SetProductInfo(p.companyName, p.productName, p.bundleVersion, p.applicationIdentifier);
+            Application::SetRunInBackground(p.runInBackground);
         }
 
         void ApplyBuild(Object& o)

@@ -4,6 +4,8 @@
 
 #include <Helix/Engine/Application/Application.h>
 #include <Helix/Engine/Time/Time.h>
+#include <Helix/Engine/PlayerLoop/PlayerLoop.h>
+#include <Helix/Engine/Script/Coroutines.h>
 #include <Helix/Engine/Asset/Asset.h>
 #include <Helix/Engine/Material/Material.h>
 #include <Helix/Engine/Mesh/Mesh.h>
@@ -774,4 +776,162 @@ HX_TEST(Scripts, CppScriptFieldsInPrefabs)
     SceneManager::ProcessSceneLoads();
     ScriptCalls().Clear();
     Cleanup();
+}
+
+namespace
+{
+    // Frames by hand: 1/16 s each, one fixed step of 1/16 s per frame.
+    struct CoroutineFrames
+    {
+        struct Clock final : TimeClock
+        {
+            double now = 10;
+            double Now() override { return now; }
+        } clock;
+
+        CoroutineFrames()
+        {
+            Time::SetClock(&clock);
+            Time::Reset();
+            Time::SetFixedDeltaTime(0.0625f);
+            PlayerLoop::SetPlayerLoop(PlayerLoop::GetDefaultPlayerLoop());
+            PlayerLoop::RunFrame();
+            ScriptCalls().Clear();
+        }
+        ~CoroutineFrames()
+        {
+            Time::SetClock(nullptr);
+            Time::Reset();
+            ScriptCalls().Clear();
+            Cleanup();
+        }
+        void Frame()
+        {
+            clock.now += 0.0625;
+            PlayerLoop::RunFrame();
+        }
+    };
+}
+
+HX_TEST(Scripts, CppCoroutinesResumeAtTheReferencesPoints)
+{
+    CoroutineFrames frames;
+    GameObject* g = GameObject::Create("C");
+    auto* r = Add<Routines>(g, "Routines");
+    HX_REQUIRE(r != nullptr);
+    frames.Frame();
+    // Start runs the coroutine to its first yield; null resumes after the next frame's Update.
+    HX_CHECK(Calls({"C:co.start", "C:FixedUpdate", "C:Update", "C:LateUpdate"}));
+    frames.Frame();
+    HX_CHECK(Calls({"C:FixedUpdate", "C:Update", "C:co.frame", "C:LateUpdate"}));
+    frames.Frame();
+    // The fixed update: after the step's FixedUpdates; the end of the frame: after rendering.
+    HX_CHECK(Calls({"C:FixedUpdate", "C:co.fixed", "C:Update", "C:LateUpdate", "C:co.end"}));
+    frames.Frame();
+    HX_CHECK(Calls({"C:FixedUpdate", "C:Update", "C:LateUpdate"}));
+    r->ready = true;
+    frames.Frame();
+    // The nested coroutine runs at once; the outer one goes on when it ends, in the same pass.
+    HX_CHECK(Calls({"C:FixedUpdate", "C:Update", "C:co.ready", "C:inner.start", "C:LateUpdate"}));
+    frames.Frame();
+    HX_CHECK(Calls({"C:FixedUpdate", "C:Update", "C:inner.end", "C:co.done", "C:LateUpdate"}));
+    HX_CHECK(!IsCoroutineRunning(r->running.handle));
+    DestroyImmediate(g);
+}
+
+HX_TEST(Scripts, CppCoroutinesStopByTheReferencesRules)
+{
+    CoroutineFrames frames;
+    GameObject* g = GameObject::Create("S");
+    auto* r = Add<Routines>(g, "Routines");
+    r->trace = false;
+    frames.Frame();
+    ScriptCalls().Clear();
+    // Disabling the behaviour does not stop its coroutines.
+    CoroutineRef a = r->StartCoroutine(r->Forever());
+    HX_CHECK(a && Calls({"S:tick"}));
+    r->SetEnabled(false);
+    frames.Frame();
+    HX_CHECK(Calls({"S:tick"}));
+    // StopCoroutine; an inactive GameObject stops the others (enabled or not).
+    r->StopCoroutine(a);
+    frames.Frame();
+    HX_CHECK(Calls({}) && !IsCoroutineRunning(a.handle));
+    CoroutineRef b = r->StartCoroutine(r->Forever());
+    HX_CHECK(Calls({"S:tick"}));
+    g->SetActive(false);
+    HX_CHECK(!IsCoroutineRunning(b.handle));
+    // Started on an inactive GameObject: the reference's error, null.
+    CoroutineRef c = r->StartCoroutine(r->Forever());
+    HX_CHECK(!c && Calls({}));
+    g->SetActive(true);
+    r->SetEnabled(true);
+    ScriptCalls().Clear();
+    // StopAllCoroutines, and a coroutine that ends without yielding answers null.
+    CoroutineRef d = r->StartCoroutine(r->Forever());
+    CoroutineRef e = r->StartCoroutine(r->Forever());
+    r->StopAllCoroutines();
+    HX_CHECK(d && e && !IsCoroutineRunning(d.handle) && !IsCoroutineRunning(e.handle));
+    HX_CHECK(!r->StartCoroutine(r->Ends()));
+    ScriptCalls().Clear();
+    // Destroying the behaviour stops its coroutines.
+    CoroutineRef f = r->StartCoroutine(r->Forever());
+    DestroyImmediate(r);
+    HX_CHECK(!IsCoroutineRunning(f.handle));
+    HX_CHECK(CoroutineCount() == 0);
+    DestroyImmediate(g);
+}
+
+HX_TEST(Scripts, CppCoroutinesWaitForTimeAndPredicates)
+{
+    CoroutineFrames frames;
+    GameObject* g = GameObject::Create("T");
+    auto* r = Add<Routines>(g, "Routines");
+    r->trace = false;
+    frames.Frame();
+    ScriptCalls().Clear();
+    r->StartCoroutine(r->Seconds(0.2f));
+    r->StartCoroutine(r->Timeout());
+    Array<String> seen;
+    for (int i = 0; i < 12; i++)
+    {
+        frames.Frame();
+        for (const String& c : ScriptCalls())
+            if (!c.View().EndsWith("Update"))
+                seen.Push(Format("{}:{}", i, c));
+        ScriptCalls().Clear();
+        if (i == 6)
+            r->ready = true;
+    }
+    // 0.2 s of game time is the fourth frame (1/16 s each), then 0.2 s of real time; the timeout of 0.1 s of game
+    // time runs onTimeout, then WaitWhile waits for ready.
+    String text;
+    for (const String& s : seen)
+        text.Append(Format("{} ", s));
+    HX_CHECK(text == StringView("1:T:timeout 1:T:after.timeout 3:T:seconds 7:T:after.while 7:T:realtime "));
+    DestroyImmediate(g);
+}
+
+HX_TEST(Scripts, CoroutineTimeoutsCountTheirTime)
+{
+    CoroutineFrames frames;
+    GameObject* g = GameObject::Create("M");
+    auto* r = Add<Routines>(g, "Routines");
+    r->trace = false;
+    frames.Frame();
+    // With time stopped, only the real time timeout ends.
+    Time::SetTimeScale(0);
+    r->StartCoroutine(r->TimeoutIn(WaitTimeoutMode::Realtime, "real"));
+    r->StartCoroutine(r->TimeoutIn(WaitTimeoutMode::InGameTime, "game"));
+    ScriptCalls().Clear();
+    for (int i = 0; i < 6; i++)
+        frames.Frame();
+    Array<String> seen;
+    for (const String& c : ScriptCalls())
+        if (!c.View().EndsWith("Update"))
+            seen.Push(c);
+    HX_CHECK(seen.Size() == 1 && seen[0] == StringView("M:real") && CoroutineCount() == 1);
+    Time::SetTimeScale(1);
+    DestroyImmediate(g);
+    HX_CHECK(CoroutineCount() == 0);
 }

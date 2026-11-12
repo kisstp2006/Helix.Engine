@@ -36,6 +36,8 @@ namespace helix::engine
         // Every time the component is on an active GameObject (scripts awake the first time, enabled or not).
         if (info.onActivate && g && g->activeInHierarchy() && !ObjectAccess::Destroying(c))
             info.onActivate(*c);
+        if (info.onDeactivate && g && !g->activeInHierarchy())
+            info.onDeactivate(*c);
         if (info.flags & ClassBehaviour)
         {
             Behaviour* b = static_cast<Behaviour*>(c);

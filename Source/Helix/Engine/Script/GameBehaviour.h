@@ -2,6 +2,7 @@
 
 #include <Helix/Engine/GameObject/GameObject.h>
 #include <Helix/Engine/Math/MathTransfer.h>
+#include <Helix/Engine/Script/Coroutine.h>
 #include <Helix/Engine/Script/MonoScript.h>
 #include <Helix/Engine/Script/ScriptClass.h>
 #include <Helix/Serialization/Transfer/Dynamic.h>
@@ -28,6 +29,22 @@ namespace helix::engine
 
         // Native hooks (the class registry calls them).
         void OnActivateNative();
+        // Its coroutines stop when its GameObject is inactive in the hierarchy.
+        void OnDeactivateNative();
+
+        // C++ coroutines on the engine's scheduler (C# scripts have their own StartCoroutine). The routine runs at once
+        // up to its first co_await; null when it ended there or the GameObject is inactive.
+        CoroutineRef StartCoroutine(Coroutine routine) { return std::move(routine).Start(GetEntityId().value); }
+        void StopCoroutine(CoroutineRef routine)
+        {
+            if (routine && detail::Exports().stop)
+                detail::Exports().stop(routine.handle);
+        }
+        void StopAllCoroutines()
+        {
+            if (detail::Exports().stopAll)
+                detail::Exports().stopAll(GetEntityId().value);
+        }
         void OnEnableNative();
         void OnDisableNative();
         void OnDestroyNative();

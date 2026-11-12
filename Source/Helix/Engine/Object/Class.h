@@ -71,6 +71,8 @@ namespace helix::engine
         void* (*cloneScript)(void* memory, const void* original) = nullptr;
         // A component is on a GameObject active in the hierarchy (enabled or not), each time that is so.
         void (*onActivate)(Object&) = nullptr;
+        // A component's GameObject is inactive in the hierarchy (each time the component is told so, enabled or not).
+        void (*onDeactivate)(Object&) = nullptr;
         // The class of the object a scene document makes, when the document decides it (a script's C++ class).
         u32 (*resolveYaml)(const serialization::yaml::Tree&, u32 root, serialization::ReferenceTable*) = nullptr;
         // The same for an object of a binary file.

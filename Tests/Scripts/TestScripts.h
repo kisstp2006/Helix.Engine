@@ -179,6 +179,81 @@ namespace helix::engine::testing
         HX_FIELD() i32 level = 1;
     };
 
+    // C++ coroutines: every yield instruction, a nested coroutine, the stop rules.
+    HX_CLASS(Namespace = "EngineTests")
+    class Routines : public GameBehaviour
+    {
+    public:
+        bool ready = false;
+        bool trace = true;
+        CoroutineRef running;
+
+        void Start()
+        {
+            if (trace)
+                running = StartCoroutine(Trace());
+        }
+        void FixedUpdate() { Note(this, "FixedUpdate"); }
+        void Update() { Note(this, "Update"); }
+        void LateUpdate() { Note(this, "LateUpdate"); }
+
+        Coroutine Trace()
+        {
+            Note(this, "co.start");
+            co_await NextFrame();
+            Note(this, "co.frame");
+            co_await WaitForFixedUpdate();
+            Note(this, "co.fixed");
+            co_await WaitForEndOfFrame();
+            Note(this, "co.end");
+            co_await WaitUntil([this] { return ready; });
+            Note(this, "co.ready");
+            co_await Inner();
+            Note(this, "co.done");
+        }
+
+        Coroutine Inner()
+        {
+            Note(this, "inner.start");
+            co_await NextFrame();
+            Note(this, "inner.end");
+        }
+
+        // Waits for ever, one frame at a time (the stop rules end it).
+        Coroutine Forever()
+        {
+            for (;;)
+            {
+                Note(this, "tick");
+                co_await NextFrame();
+            }
+        }
+
+        Coroutine Seconds(f32 seconds)
+        {
+            co_await WaitForSeconds(seconds);
+            Note(this, "seconds");
+            co_await WaitForSecondsRealtime(seconds);
+            Note(this, "realtime");
+        }
+
+        Coroutine Timeout()
+        {
+            co_await WaitUntil([] { return false; }, 0.1, [this] { Note(this, "timeout"); }, WaitTimeoutMode::InGameTime);
+            Note(this, "after.timeout");
+            co_await WaitWhile([this] { return !ready; });
+            Note(this, "after.while");
+        }
+
+        Coroutine Ends() { co_return; }
+
+        // A timeout of 0.1 s counted in the given time.
+        Coroutine TimeoutIn(WaitTimeoutMode mode, const char* name)
+        {
+            co_await WaitUntil([] { return false; }, 0.1, [this, name] { Note(this, name); }, mode);
+        }
+    };
+
     // A script that counts its Updates (the benchmark).
     HX_CLASS(Namespace = "EngineTests")
     class Counter : public GameBehaviour

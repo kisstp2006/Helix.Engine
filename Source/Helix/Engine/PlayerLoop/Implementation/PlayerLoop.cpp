@@ -1,4 +1,5 @@
 #include <Helix/Engine/Script/ScriptRuntime.h>
+#include <Helix/Engine/Script/Coroutines.h>
 #include <Helix/Engine/Application/Application.h>
 #include <Helix/Engine/Asset/Asset.h>
 #include <Helix/Engine/GameObject/Lifecycle.h>
@@ -152,6 +153,11 @@ namespace helix::engine
         void ScriptsFixedUpdate(void*) { RunScriptPhase(ScriptMessage::FixedUpdate); }
         void ScriptsUpdate(void*) { RunScriptPhase(ScriptMessage::Update); }
         void ScriptsLateUpdate(void*) { RunScriptPhase(ScriptMessage::LateUpdate); }
+        // Coroutines and waits at their points of the frame.
+        void DelayedFixed(void*) { RunCoroutines(CoroutinePoint::FixedUpdate); }
+        void DelayedDynamic(void*) { RunCoroutines(CoroutinePoint::Update); }
+        void EndOfFrame(void*) { RunCoroutines(CoroutinePoint::EndOfFrame); }
+        void DelayedTasks(void*) { RunDelayedTasks(); }
         void BeforeRender(void*) { Application::onBeforeRender().Invoke(); }
         // Renderer data up to date, then every camera (the placeholder renderer until the pipelines).
         void FinishRendering(void*) { Graphics::RenderFrame(); }
@@ -163,7 +169,7 @@ namespace helix::engine
             System("ClearLines"), System("NewInputFixedUpdate"), System("AudioFixedUpdate"), System("ScriptRunBehaviourFixedUpdate", &ScriptsFixedUpdate),
             System("DirectorFixedUpdate"), System("LegacyFixedAnimationUpdate"), System("XRFixedUpdate"), System("PhysicsFixedUpdate"),
             System("Physics2DFixedUpdate"), System("PhysicsClothFixedUpdate"), System("DirectorFixedUpdatePostPhysics"),
-            System("ScriptRunDelayedFixedFrameRate"),
+            System("ScriptRunDelayedFixedFrameRate", &DelayedFixed),
         });
         // Once per fixed step the frame's time allows.
         fixedUpdate.loopConditionFunction = &FixedStep;
@@ -185,7 +191,7 @@ namespace helix::engine
             System("UpdateVideo"),
         }));
         root.subSystemList.Push(Phase("Update", {
-            System("ScriptRunBehaviourUpdate", &ScriptsUpdate), System("ScriptRunDelayedDynamicFrameRate"), System("ScriptRunDelayedTasks"), System("DirectorUpdate"),
+            System("ScriptRunBehaviourUpdate", &ScriptsUpdate), System("ScriptRunDelayedDynamicFrameRate", &DelayedDynamic), System("ScriptRunDelayedTasks", &DelayedTasks), System("DirectorUpdate"),
         }));
         root.subSystemList.Push(Phase("PreLateUpdate", {
             System("AIUpdatePostScript"), System("DirectorUpdateAnimationBegin"), System("LegacyAnimationUpdate"),
@@ -196,7 +202,7 @@ namespace helix::engine
             System("DestroyQueue", &DestroyQueue), System("PlayerSendFrameStarted"), System("DirectorLateUpdate"),
             System("UpdateWorldMatrices", &WorldMatrices), System("PlayerUpdateCanvases"), System("UIElementsRepaintPanels"), System("UpdateAudio"),
             System("VFXUpdate"), System("BeforeRender", &BeforeRender), System("FinishFrameRendering", &FinishRendering), System("BatchModeUpdate"),
-            System("PresentAfterDraw"), System("ProfilerEndFrame"), System("ObjectDispatcherPostLateUpdate"),
+            System("PresentAfterDraw", &EndOfFrame), System("ProfilerEndFrame"), System("ObjectDispatcherPostLateUpdate"),
         }));
         return root;
     }

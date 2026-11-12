@@ -1,5 +1,7 @@
 #include <Helix/Engine/Script/ScriptRuntime.h>
 
+#include <Helix/Engine/Script/Coroutines.h>
+
 #include <Helix/Core/Logging/Log.h>
 #include <Helix/Engine/Application/Application.h>
 #include <Helix/Engine/GameObject/Lifecycle.h>
@@ -44,6 +46,8 @@ namespace helix::engine
             void (*runOne)(u64 handle, u32 message, u8 argument) = nullptr;
             // A C# script's serialized fields through a serialization::DynamicVisitor.
             void (*transfer)(u64 handle, void* visitor) = nullptr;
+            // A C# script's GameBehaviour was destroyed (its destroyCancellationToken).
+            void (*destroyed)(u64 handle) = nullptr;
         };
         ManagedScripts gManaged;
         // A C# object a C# SendMessage passes on (it does not become a Variant).
@@ -278,6 +282,9 @@ namespace helix::engine
         static void Destroy(GameBehaviour* b)
         {
             Forget(b);
+            StopAllCoroutines(b);
+            if (gManaged.destroyed && Handle(b))
+                gManaged.destroyed(Handle(b));
             if (b->awoken_)
                 CallScriptMessage(b, ScriptMessage::OnDestroy);
         }
@@ -466,6 +473,7 @@ namespace helix::engine
     }
 
     void GameBehaviour::OnActivateNative() { ScriptAccess::Activate(this); }
+    void GameBehaviour::OnDeactivateNative() { engine::StopAllCoroutines(this); }
     void GameBehaviour::OnEnableNative() { ScriptAccess::Enable(this); }
     void GameBehaviour::OnDisableNative() { ScriptAccess::Disable(this); }
     void GameBehaviour::OnDestroyNative() { ScriptAccess::Destroy(this); }
@@ -890,6 +898,7 @@ namespace helix::engine
     {
         // The engine's exports for the C# side and the handler of C++ script classes (the bindings provider runs it).
         void StartScriptRuntime();
+        void RegisterCoroutineExports();
     }
 
     bool LoadGameModule(StringView path, String& error)
@@ -960,13 +969,14 @@ namespace helix::engine
     {
         bool SetManaged(void* const* table, u32 count)
         {
-            if (count != 5)
+            if (count != 6)
                 return false;
             gManaged.create = std::bit_cast<decltype(gManaged.create)>(table[0]);
             gManaged.runBatch = std::bit_cast<decltype(gManaged.runBatch)>(table[1]);
             gManaged.runOne = std::bit_cast<decltype(gManaged.runOne)>(table[2]);
             gManaged.sendMessage = std::bit_cast<decltype(gManaged.sendMessage)>(table[3]);
             gManaged.transfer = std::bit_cast<decltype(gManaged.transfer)>(table[4]);
+            gManaged.destroyed = std::bit_cast<decltype(gManaged.destroyed)>(table[5]);
             return true;
         }
 
@@ -1104,5 +1114,6 @@ namespace helix::engine
         scripting::RegisterNativeExport("HxEngineScripts_ObjectType", std::bit_cast<const void*>(&ObjectTypeOf));
         scripting::RegisterNativeExport("HxEngineScripts_SendMessage", std::bit_cast<const void*>(&SendFromManaged));
         scripting::SetNativeScriptHandler(&OnNativeScript, nullptr);
+        detail::RegisterCoroutineExports();
     }
 }

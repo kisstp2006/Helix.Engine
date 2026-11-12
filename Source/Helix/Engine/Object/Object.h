@@ -72,6 +72,8 @@ namespace helix::engine
             info.remap = &Remap<T>;
             if constexpr (requires(T& t) { t.OnActivateNative(); })
                 info.onActivate = [](Object& o) { static_cast<T&>(o).OnActivateNative(); };
+            if constexpr (requires(T& t) { t.OnDeactivateNative(); })
+                info.onDeactivate = [](Object& o) { static_cast<T&>(o).OnDeactivateNative(); };
             if constexpr (requires { &T::ResolveYaml; })
                 info.resolveYaml = &T::ResolveYaml;
             if constexpr (requires { &T::ResolveBinary; })

@@ -109,6 +109,9 @@ namespace helix::engine
 
         // Runs the loads and unloads that are due; the player loop calls it after the update loop.
         static void ProcessSceneLoads();
+        // Back to the state at startup: loads dropped, every scene unloaded (the DontDestroyOnLoad scene emptied), one
+        // new empty active scene, no build scenes and files as the scene source (a host that runs again, tests).
+        static void Reset();
 
         static SceneEvent<Scene, Scene>& activeSceneChanged();
         static SceneEvent<Scene, LoadSceneMode>& sceneLoaded();

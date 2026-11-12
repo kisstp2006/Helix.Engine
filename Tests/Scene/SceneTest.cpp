@@ -442,3 +442,25 @@ HX_TEST(Scene, LoadSceneAsyncWaitsForActivation)
     SceneManager::SetActiveScene(SceneManager::GetSceneAt(0));
     KeepOnlyActive();
 }
+
+HX_TEST(SceneManager, ResetGoesBackToTheStartupState)
+{
+    Scene before = SceneManager::GetActiveScene();
+    Scene a = SceneManager::CreateScene("ResetA");
+    Scene b = SceneManager::CreateScene("ResetB");
+    SceneManager::SetActiveScene(b);
+    GameObject* inB = GameObject::Create("InB");
+    EntityId inBId = inB->GetEntityId();
+    const StringView build[] = {"One.helix"};
+    SceneManager::SetBuildScenes(Span<const StringView>(build, 1));
+    SceneManager::Reset();
+    HX_CHECK(SceneManager::sceneCount() == 1 && SceneManager::sceneCountInBuildSettings() == 0);
+    HX_CHECK(!a.IsValid() && !b.IsValid() && !before.IsValid());
+    HX_CHECK(EntityIdToObject(inBId) == nullptr);
+    Scene now = SceneManager::GetActiveScene();
+    HX_CHECK(now.IsValid() && now.isLoaded() && now.name() == StringView("Untitled") && now.rootCount() == 0);
+    // New objects go into it.
+    GameObject* g = GameObject::Create("After");
+    HX_CHECK(g->scene() == now);
+    DestroyImmediate(g, true);
+}

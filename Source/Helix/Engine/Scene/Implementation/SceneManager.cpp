@@ -735,6 +735,34 @@ namespace helix::engine
             MoveGameObjectToScene(EntityIdToObject<GameObject>(id), scene);
     }
 
+    void SceneManager::Reset()
+    {
+        for (Request* r : gState.queue)
+        {
+            if (r->op)
+                AsyncAccess::Finish(r->op);
+            Delete(r);
+        }
+        gState.queue.Clear();
+        for (u32 slot : Array<u32>(gState.order))
+            UnloadNow(slot, false);
+        // DontDestroyOnLoad objects go too; the scene stays.
+        Array<EntityId> roots;
+        for (TransformHierarchy* h = FirstRootHierarchy(kDontDestroyOnLoadSlot); h; h = h->nextRoot)
+            if (Transform* t = h->transforms[0])
+                if (GameObject* g = t->gameObject())
+                    roots.Push(g->GetEntityId());
+        for (EntityId id : roots)
+            if (GameObject* g = EntityIdToObject<GameObject>(id))
+                DestroyImmediate(g);
+        u32 slot = NewSlot("Untitled", StringView(), -1, SceneState::Loaded);
+        gState.active = slot;
+        TransformAccess::NewRootScene() = slot;
+        gState.buildScenes.Clear();
+        gState.assetFileIds.Clear();
+        gState.source = nullptr;
+    }
+
     void SceneManager::SetBuildScenes(Span<const StringView> paths)
     {
         gState.buildScenes.Clear();

@@ -95,6 +95,8 @@ namespace helix::engine
         static Event<>& quitting();
         static Event<>& unloading();
         static Event<bool>& focusChanged();
+        // The application was paused (true) or resumed (false) by the system (mobile players; scripts' OnApplicationPause).
+        static Event<bool>& pauseChanged();
         static Event<>& lowMemory();
         static Event<StringView>& deepLinkActivated();
         // Every frame, just before rendering.
@@ -112,6 +114,7 @@ namespace helix::engine
         // Waits for the target frame rate (the player loop's FramePacing system).
         static void PaceFrame();
         static void SetFocused(bool focused);
+        static void SetPaused(bool paused);
         static void SetBatchMode(bool batchMode);
         static void SetInternetReachability(NetworkReachability reachability);
         static void SetDataPath(StringView path);

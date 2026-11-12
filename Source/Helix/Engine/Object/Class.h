@@ -32,7 +32,7 @@ namespace helix::engine
     {
         inline constexpr i32 Object = 0, GameObject = 1, Component = 2, Transform = 4, Behaviour = 8, Camera = 20, Material = 21,
                              MeshRenderer = 23, Renderer = 25, Texture = 27, Texture2D = 28, MeshFilter = 33, Mesh = 43, Shader = 48, TextAsset = 49,
-                             Light = 108, MonoBehaviour = 114, RectTransform = 224, PrefabInstance = 1001;
+                             Light = 108, MonoBehaviour = 114, MonoScript = 115, RectTransform = 224, PrefabInstance = 1001;
     }
 
     enum ClassFlags : u32
@@ -46,6 +46,8 @@ namespace helix::engine
         ClassDisallowMultiple = 4,
         // Has the enabled flag of Behaviour.
         ClassBehaviour = 8,
+        // A script class of a game module: its objects are of the script base's class ID (not found by it).
+        ClassScript = 16,
     };
 
     inline constexpr u32 kNoClass = ~0u;
@@ -62,6 +64,13 @@ namespace helix::engine
         Object* (*create)(void* memory) = nullptr;
         // A copy of the object's fields (not its identity) in `memory`.
         Object* (*clone)(void* memory, const Object&) = nullptr;
+        // Script classes of game modules (in place of create and clone): the object as its address.
+        void* (*createScript)(void* memory) = nullptr;
+        void* (*cloneScript)(void* memory, const void* original) = nullptr;
+        // A component is on a GameObject active in the hierarchy (enabled or not), each time that is so.
+        void (*onActivate)(Object&) = nullptr;
+        // The class of the object a scene document makes, when the document decides it (a script's C++ class).
+        u32 (*resolveYaml)(const serialization::yaml::Tree&, u32 root, serialization::ReferenceTable*) = nullptr;
         // Visits every object reference of the object.
         void (*remap)(Object&, ReferenceRemap&) = nullptr;
         // Native hooks, null when the class has none: just before the object goes, and when a component starts or stops
@@ -108,8 +117,10 @@ namespace helix::engine
         extern ClassTables gClassTables;
     }
 
-    // Adds a class; its base must be registered. Returns its index.
+    // Adds a class; its base must be registered. Returns its index. A class with a type keeps it (script classes).
     u32 RegisterClass(ClassInfo info);
+    // No more objects of the class are made (its module was unloaded); the index stays.
+    void DisableClass(u32 index);
     u32 FindClassById(i32 classId);
     u32 FindClassByName(StringView name);
 

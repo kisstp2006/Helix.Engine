@@ -22,6 +22,11 @@
 HX_BINDINGS_EXPORT bool HxBindings_HelixEngine_Register();
 HX_BINDINGS_EXPORT void HxBindings_HelixEngine_Publish();
 
+namespace helix::engine::detail
+{
+    void StartScriptRuntime();
+}
+
 namespace helix::engine
 {
     namespace
@@ -125,19 +130,35 @@ namespace helix::engine
     {
         Registry& r = Classes();
         HX_ASSERT(info.base == kNoClass || info.base < r.classes.Size());
-        HX_ASSERT(!r.byId.Find(info.classId));
+        bool script = (info.flags & ClassScript) != 0;
+        HX_ASSERT(script || !r.byId.Find(info.classId));
         u32 index = u32(r.classes.Size());
-        r.byId.Set(info.classId, index);
+        if (!script)
+            r.byId.Set(info.classId, index);
         // 64 objects a block: small classes share cache lines and pages with their kind.
-        r.pools.Push(HX_OBJECT_POOLS && info.create ? new PoolAllocator(info.size, info.alignment, 64) : nullptr);
+        r.pools.Push(HX_OBJECT_POOLS && (info.create || info.createScript) ? new PoolAllocator(info.size, info.alignment, 64) : nullptr);
         r.classes.Push(Move(info));
         Renumber(r);
         Publish(r);
         Objects().perClass.Resize(r.classes.Size());
         PublishSlots(Objects());
-        // The class is a type of the scripting core too.
-        r.classes[index].type = detail::DeclareScriptingType(index);
+        // The class is a type of the scripting core too (script classes have theirs, of their module).
+        if (!r.classes[index].type.IsValid())
+            r.classes[index].type = detail::DeclareScriptingType(index);
         return index;
+    }
+
+    void DisableClass(u32 index)
+    {
+        Registry& r = Classes();
+        if (index >= r.classes.Size())
+            return;
+        ClassInfo& c = r.classes[index];
+        c.create = nullptr;
+        c.clone = nullptr;
+        c.createScript = nullptr;
+        c.cloneScript = nullptr;
+        Publish(r);
     }
 
 
@@ -149,6 +170,7 @@ namespace helix::engine
         const bool kBindingsProvider = (scripting::AddTypeProvider([] {
                                             HxBindings_HelixEngine_Register();
                                             HxBindings_HelixEngine_Publish();
+                                            detail::StartScriptRuntime();
                                         }),
                                         true);
     }
@@ -223,9 +245,10 @@ namespace helix::engine
         if (klass >= ClassCount())
             return nullptr;
         const ClassInfo& c = GetClass(klass);
-        if (!c.create)
+        if (!c.create && !c.createScript)
             return nullptr;
-        Object* o = c.create(Allocate(klass, c));
+        void* memory = Allocate(klass, c);
+        Object* o = c.create ? c.create(memory) : static_cast<Object*>(c.createScript(memory));
         ObjectAccess::SetPooled(o);
         return AddObject(o, klass);
     }
@@ -234,9 +257,10 @@ namespace helix::engine
     {
         u32 klass = original.ClassIndex();
         const ClassInfo& c = GetClass(klass);
-        if (!c.clone)
+        if (!c.clone && !c.cloneScript)
             return nullptr;
-        Object* o = c.clone(Allocate(klass, c), original);
+        void* memory = Allocate(klass, c);
+        Object* o = c.clone ? c.clone(memory, original) : static_cast<Object*>(c.cloneScript(memory, &original));
         ObjectAccess::SetPooled(o);
         return AddObject(o, klass);
     }

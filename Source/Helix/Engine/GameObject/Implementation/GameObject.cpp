@@ -1,6 +1,7 @@
 #include <Helix/Engine/GameObject/Implementation/GameObjectAccess.h>
 #include <Helix/Engine/Object/Implementation/ObjectAccess.h>
 #include <Helix/Engine/Object/Implementation/ScriptingTypes.h>
+#include <Helix/Engine/Script/ScriptRuntime.h>
 #include <Helix/Engine/Transform/Implementation/TransformAccess.h>
 
 #include <Helix/Core/Logging/Log.h>
@@ -32,6 +33,9 @@ namespace helix::engine
     {
         GameObject* g = c->gameObject();
         const ClassInfo& info = c->Class();
+        // Every time the component is on an active GameObject (scripts awake the first time, enabled or not).
+        if (info.onActivate && g && g->activeInHierarchy() && !ObjectAccess::Destroying(c))
+            info.onActivate(*c);
         if (info.flags & ClassBehaviour)
         {
             Behaviour* b = static_cast<Behaviour*>(c);
@@ -179,12 +183,14 @@ namespace helix::engine
         return components_.Empty() ? nullptr : static_cast<Transform*>(components_[0].component.Get());
     }
 
-    Component* GameObject::AddComponent(u32 klass)
+    Component* GameObject::AddComponent(u32 klass) { return AddComponent(klass, nullptr, nullptr); }
+
+    Component* GameObject::AddComponent(u32 klass, void (*prepare)(Component& component, void* user), void* user)
     {
         if (klass >= ClassCount())
             return nullptr;
         const ClassInfo& info = GetClass(klass);
-        if (!(info.flags & ClassComponent) || !info.create)
+        if (!(info.flags & ClassComponent) || (!info.create && !info.createScript))
         {
             HX_LOG_ERROR(EngineLog, "AddComponent: {} is not a component that can be added.", info.name);
             return nullptr;
@@ -208,6 +214,8 @@ namespace helix::engine
         Component* c = static_cast<Component*>(NewObjectOfClass(klass));
         GameObjectAccess::SetGameObject(*c, this);
         components_.Push({PPtr<Component>(c), klass});
+        if (prepare)
+            prepare(*c, user);
         GameObjectAccess::Notify(c);
         return c;
     }
@@ -237,19 +245,28 @@ namespace helix::engine
     Component* GameObject::AddComponent(scripting::TypeId type)
     {
         u32 klass = ClassOfType(type);
-        if (klass == kNoClass)
-        {
-            const scripting::TypeInfo* t = scripting::GetType(type);
-            HX_LOG_ERROR(EngineLog, "AddComponent: {} is not a component type.", t ? t->fullName : StringView("an unknown type"));
-            return nullptr;
-        }
-        return AddComponent(klass);
+        if (klass != kNoClass)
+            return AddComponent(klass);
+        if (const ScriptClass* script = FindScriptClass(type))
+            return AddScript(this, *script);
+        const scripting::TypeInfo* t = scripting::GetType(type);
+        HX_LOG_ERROR(EngineLog, "AddComponent: {} is not a component type.", t ? t->fullName : StringView("an unknown type"));
+        return nullptr;
     }
 
     Component* GameObject::GetComponent(scripting::TypeId type) const
     {
         u32 klass = ClassOfType(type);
-        return klass == kNoClass ? nullptr : GetComponent(klass);
+        if (klass != kNoClass)
+            return GetComponent(klass);
+        // Scripts of the type or a type deriving from it.
+        u32 behaviours = ClassOf<GameBehaviour>();
+        for (const ComponentEntry& e : components_)
+            if (IsDerivedFrom(e.klass, behaviours))
+                if (auto* b = static_cast<GameBehaviour*>(EntityIdToObject(e.component.Id())))
+                    if (b->script() && scripting::IsAssignableFrom(type, b->script()->type))
+                        return b;
+        return nullptr;
     }
 
     Component* GameObject::GetComponent(StringView className) const

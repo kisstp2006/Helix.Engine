@@ -1,3 +1,4 @@
+#include <Helix/Engine/Script/ScriptRuntime.h>
 #include <Helix/Engine/Application/Application.h>
 #include <Helix/Engine/Asset/Asset.h>
 #include <Helix/Engine/GameObject/Lifecycle.h>
@@ -147,6 +148,10 @@ namespace helix::engine
         }
 
         void WorldMatrices(void*) { UpdateWorldMatrices(); }
+        // The scripts of both languages (pending Starts first).
+        void ScriptsFixedUpdate(void*) { RunScriptPhase(ScriptMessage::FixedUpdate); }
+        void ScriptsUpdate(void*) { RunScriptPhase(ScriptMessage::Update); }
+        void ScriptsLateUpdate(void*) { RunScriptPhase(ScriptMessage::LateUpdate); }
         void BeforeRender(void*) { Application::onBeforeRender().Invoke(); }
         // Renderer data up to date, then every camera (the placeholder renderer until the pipelines).
         void FinishRendering(void*) { Graphics::RenderFrame(); }
@@ -155,7 +160,7 @@ namespace helix::engine
     PlayerLoopSystem PlayerLoop::GetDefaultPlayerLoop()
     {
         PlayerLoopSystem fixedUpdate = Phase("FixedUpdate", {
-            System("ClearLines"), System("NewInputFixedUpdate"), System("AudioFixedUpdate"), System("ScriptRunBehaviourFixedUpdate"),
+            System("ClearLines"), System("NewInputFixedUpdate"), System("AudioFixedUpdate"), System("ScriptRunBehaviourFixedUpdate", &ScriptsFixedUpdate),
             System("DirectorFixedUpdate"), System("LegacyFixedAnimationUpdate"), System("XRFixedUpdate"), System("PhysicsFixedUpdate"),
             System("Physics2DFixedUpdate"), System("PhysicsClothFixedUpdate"), System("DirectorFixedUpdatePostPhysics"),
             System("ScriptRunDelayedFixedFrameRate"),
@@ -180,11 +185,11 @@ namespace helix::engine
             System("UpdateVideo"),
         }));
         root.subSystemList.Push(Phase("Update", {
-            System("ScriptRunBehaviourUpdate"), System("ScriptRunDelayedDynamicFrameRate"), System("ScriptRunDelayedTasks"), System("DirectorUpdate"),
+            System("ScriptRunBehaviourUpdate", &ScriptsUpdate), System("ScriptRunDelayedDynamicFrameRate"), System("ScriptRunDelayedTasks"), System("DirectorUpdate"),
         }));
         root.subSystemList.Push(Phase("PreLateUpdate", {
             System("AIUpdatePostScript"), System("DirectorUpdateAnimationBegin"), System("LegacyAnimationUpdate"),
-            System("DirectorUpdateAnimationEnd"), System("Physics2DLateUpdate"), System("PhysicsLateUpdate"), System("ScriptRunBehaviourLateUpdate"),
+            System("DirectorUpdateAnimationEnd"), System("Physics2DLateUpdate"), System("PhysicsLateUpdate"), System("ScriptRunBehaviourLateUpdate", &ScriptsLateUpdate),
         }));
         root.subSystemList.Push(Phase("PostLateUpdate", {
             // After the update loop, before rendering.

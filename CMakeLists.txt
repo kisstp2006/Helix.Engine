@@ -26,7 +26,7 @@ include("${bindgen_dir}/CMake/HelixBindgen.cmake")
 set(engine_source "${CMAKE_CURRENT_SOURCE_DIR}/Source")
 helix_bindgen(helix_engine MODULE HelixEngine NAMESPACE HelixEngine KIND Engine INCLUDE_ROOTS "${engine_source}"
               HEADERS "${engine_source}/Helix/Engine/Object/EntityId.h" "${engine_source}/Helix/Engine/Object/Object.h"
-                      "${engine_source}/Helix/Engine/GameObject/GameObject.h"
+                      "${engine_source}/Helix/Engine/GameObject/GameObject.h" "${engine_source}/Helix/Engine/Script/GameBehaviour.h"
               CS_OUTPUT engine_cs)
 set(HELIX_ENGINE_BINDINGS_CS "${engine_cs}" CACHE INTERNAL "")
 
@@ -70,8 +70,22 @@ add_custom_command(
 target_sources(helix_engine PRIVATE ${builtin_embedded})
 target_include_directories(helix_engine PRIVATE "${engine_generated}")
 
+set(engine_binding_headers "${engine_source}/Helix/Engine/Object/EntityId.h" "${engine_source}/Helix/Engine/Object/Object.h"
+    "${engine_source}/Helix/Engine/GameObject/GameObject.h" "${engine_source}/Helix/Engine/Script/GameBehaviour.h")
 helix_add_test_suite(helix_engine_tests DEPS Helix::Engine Helix::Jobs)
+# The tests' C++ scripts: a game module of their own (EngineTests), linked into the test program.
+if(TARGET helix_engine_tests)
+    helix_bindgen(helix_engine_tests MODULE EngineTests NAMESPACE EngineTests KIND NativeGame
+                  HEADERS "${CMAKE_CURRENT_SOURCE_DIR}/Tests/Scripts/TestScripts.h" REFERENCES ${engine_binding_headers}
+                  INCLUDE_ROOTS "${CMAKE_CURRENT_SOURCE_DIR}/Tests" "${engine_source}")
+endif()
 helix_add_benchmark_suite(helix_engine_bench DEPS Helix::Engine Helix::Jobs)
+if(TARGET helix_engine_bench)
+    target_include_directories(helix_engine_bench PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/Benchmarks")
+    helix_bindgen(helix_engine_bench MODULE EngineBench NAMESPACE EngineBench KIND NativeGame
+                  HEADERS "${CMAKE_CURRENT_SOURCE_DIR}/Benchmarks/Scripts/BenchScripts.h" REFERENCES ${engine_binding_headers}
+                  INCLUDE_ROOTS "${CMAKE_CURRENT_SOURCE_DIR}/Benchmarks" "${engine_source}")
+endif()
 
 # The test shaders: a C# assembly the tests load as an asset, with its references and debug information next to it.
 if(TARGET helix_engine_tests OR TARGET helix_engine_bench)

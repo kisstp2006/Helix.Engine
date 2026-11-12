@@ -46,6 +46,14 @@ namespace helix::engine
         PPtr<Mesh> owned_;
     };
 
+    class Renderer;
+    namespace detail
+    {
+        // Called when a renderer becomes visible or invisible to the cameras (the script runtime's OnBecameVisible /
+        // OnBecameInvisible).
+        extern void (*gVisibilityChanged)(Renderer* renderer, bool visible);
+    }
+
     class Renderer : public Component
     {
         HX_ENGINE_CLASS(Renderer, Component, ClassId::Renderer, ClassAbstract | ClassDisallowMultiple)

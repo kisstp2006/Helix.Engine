@@ -68,6 +68,10 @@ namespace helix::engine
                 SetSerialization<T>(info);
             }
             info.remap = &Remap<T>;
+            if constexpr (requires(T& t) { t.OnActivateNative(); })
+                info.onActivate = [](Object& o) { static_cast<T&>(o).OnActivateNative(); };
+            if constexpr (requires { &T::ResolveYaml; })
+                info.resolveYaml = &T::ResolveYaml;
             if constexpr (requires(T& t) { t.OnDestroyNative(); })
                 info.onDestroy = [](Object& o) { static_cast<T&>(o).OnDestroyNative(); };
             if constexpr (requires(T& t) { t.OnEnableNative(); })

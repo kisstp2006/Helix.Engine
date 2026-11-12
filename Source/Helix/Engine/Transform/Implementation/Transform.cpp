@@ -8,6 +8,7 @@
 namespace helix::engine
 {
     Array<TransformLinks>* detail::gTransformLinks = nullptr;
+    void (*detail::gHierarchyChanged)(Transform*, Transform*, Transform*) = nullptr;
 
     namespace
     {
@@ -50,6 +51,7 @@ namespace helix::engine
             return true;
         if (!CanRestructure(this, newParent))
             return false;
+        Transform* oldParent = parent();
         if (newParent && newParent->IsChildOf(this))
         {
             HX_LOG_ERROR(TransformLog, "SetParent: {} cannot become a child of its own child {}.", Name(), newParent->Name());
@@ -69,6 +71,8 @@ namespace helix::engine
         }
         if (GameObject* g = gameObject())
             GameObjectAccess::UpdateActive(g);
+        if (detail::gHierarchyChanged)
+            detail::gHierarchyChanged(this, oldParent, newParent);
         return true;
     }
 

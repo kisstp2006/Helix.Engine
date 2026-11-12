@@ -185,9 +185,10 @@ namespace helix::engine
                 TransformAccess::NewRootScene() = scene_;
             }
 
-            Object* Create(i32 classId, i64 fileId, u32 line) override
+            Object* Create(i32 classId, i64 fileId, u32 line) override { return CreateOfClass(FindClassById(classId), classId, fileId, line); }
+
+            Object* CreateOfClass(u32 klass, i32 classId, i64 fileId, u32 line) override
             {
-                u32 klass = FindClassById(classId);
                 if (klass == kNoClass)
                 {
                     Warning(Format("line {}: class ID {} is not known; the object is skipped", line, classId));
@@ -195,7 +196,7 @@ namespace helix::engine
                     return nullptr;
                 }
                 const ClassInfo& info = GetClass(klass);
-                if (!info.create || !info.readYaml)
+                if ((!info.create && !info.createScript) || !info.readYaml)
                 {
                     Error(Format("line {}: {} objects cannot be made", line, info.name));
                     return nullptr;
@@ -816,7 +817,15 @@ namespace helix::engine
                         builder.Error(Format("line {}: a document without a class ID", d.line));
                         continue;
                     }
-                    if (Object* o = builder.Create(i32(d.classID), d.fileID, d.line))
+                    // The class the document decides (a script's C++ class), else the one of its class ID.
+                    u32 klass = FindClassById(i32(d.classID));
+                    if (klass != kNoClass && GetClass(klass).resolveYaml)
+                    {
+                        u32 resolved = GetClass(klass).resolveYaml(tree, d.root, &builder.References());
+                        if (resolved != kNoClass)
+                            klass = resolved;
+                    }
+                    if (Object* o = builder.CreateOfClass(klass, i32(d.classID), d.fileID, d.line))
                         made.Push({o, d.root});
                 }
                 builder.ResolvePrefabInstances();

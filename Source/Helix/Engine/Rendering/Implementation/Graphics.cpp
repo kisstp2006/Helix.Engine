@@ -905,6 +905,15 @@ namespace helix::engine
         if ((++s.frame & 63) == 0)
             ForgetDead();
         RenderCameras();
+        // Renderers that became visible or invisible by any camera this frame.
+        if (detail::gVisibilityChanged)
+            for (u32 i = 0; i < d.visible.Size(); i++)
+                if (d.visible[i] != d.wasVisible[i])
+                {
+                    d.wasVisible[i] = d.visible[i];
+                    if (Renderer* r = EntityIdToObject<Renderer>(d.renderer[i]))
+                        detail::gVisibilityChanged(r, d.visible[i] != 0);
+                }
         if (!s.captures.Empty())
         {
             Array<RenderState::Capture> captures = Move(s.captures);

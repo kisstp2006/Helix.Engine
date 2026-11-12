@@ -115,6 +115,8 @@ namespace helix::engine
         // A new object of the class for the file's fileID; null (warned or reported) for unknown or abstract classes
         // and repeated fileIDs. `line` is for messages (0 when the format has none).
         virtual Object* Create(i32 classId, i64 fileId, u32 line) = 0;
+        // As an object of the class `klass` (decided by the document: a script's C++ class).
+        virtual Object* CreateOfClass(u32 klass, i32 classId, i64 fileId, u32 line) = 0;
         // How many objects the file has (room for them up front).
         virtual void Reserve(u32 objects) = 0;
         // Maps the file's fileIDs to the created objects; pass it to the class's read function.

@@ -1,0 +1,266 @@
+#include <Scripts/TestScripts.h>
+#include <Support/TestClasses.h>
+
+#include <Helix/Engine/Application/Application.h>
+#include <Helix/Engine/Asset/Asset.h>
+#include <Helix/Engine/Scene/SceneFile.h>
+#include <Helix/Engine/Scene/SceneManager.h>
+#include <Helix/Engine/Script/ScriptRuntime.h>
+#include <Helix/Scripting/Bindings/Interop.h>
+#include <Helix/Testing/Test.h>
+
+#include <initializer_list>
+
+HX_BINDINGS_EXPORT void HxBindings_EngineTests_Publish();
+
+using namespace helix;
+using namespace helix::engine;
+using namespace helix::engine::testing;
+
+namespace
+{
+    // The test module registered (through its exports by name, as a module linked into a player is).
+    const ScriptClass& Script(const char* name)
+    {
+        static bool registered = false;
+        if (!registered)
+        {
+            HxBindings_EngineTests_Publish();
+            String error;
+            registered = RegisterLinkedGameModule("EngineTests", error);
+            if (!registered)
+                std::printf("    %.*s\n", int(error.Size()), error.Data());
+        }
+        const ScriptClass* s = FindScriptClass("EngineTests", "EngineTests", name);
+        HX_ASSERT(s != nullptr);
+        return *s;
+    }
+
+    template <class T>
+    T* Add(GameObject* g, const char* name)
+    {
+        return static_cast<T*>(AddScript(g, Script(name)));
+    }
+
+    bool Calls(std::initializer_list<const char*> expected)
+    {
+        Array<String>& calls = ScriptCalls();
+        bool same = calls.Size() == expected.size();
+        usize i = 0;
+        for (const char* e : expected)
+            same = same && i < calls.Size() && calls[i++] == e;
+        if (!same)
+        {
+            std::printf("    calls:");
+            for (const String& c : calls)
+                std::printf(" %.*s", int(c.Size()), c.Data());
+            std::printf("\n");
+        }
+        calls.Clear();
+        return same;
+    }
+
+    void Frame()
+    {
+        RunScriptPhase(ScriptMessage::FixedUpdate);
+        RunScriptPhase(ScriptMessage::Update);
+        RunScriptPhase(ScriptMessage::LateUpdate);
+    }
+}
+
+HX_TEST(Scripts, CppScriptsGetTheReferencesOrder)
+{
+    ScriptCalls().Clear();
+    GameObject* g = GameObject::Create("A");
+    auto* r = Add<Recorder>(g, "Recorder");
+    HX_REQUIRE(r != nullptr && r->script() == &Script("Recorder") && g->GetComponent(Script("Recorder").type) == r);
+    HX_CHECK(Calls({"A:Awake", "A:OnEnable"}));
+    // Start before the first FixedUpdate, once.
+    Frame();
+    HX_CHECK(Calls({"A:Start", "A:FixedUpdate", "A:Update", "A:LateUpdate"}));
+    Frame();
+    HX_CHECK(Calls({"A:FixedUpdate", "A:Update", "A:LateUpdate"}));
+    r->SetEnabled(false);
+    Frame();
+    r->SetEnabled(true);
+    HX_CHECK(Calls({"A:OnDisable", "A:OnEnable"}));
+    // Deactivating the GameObject disables, activating enables (no second Awake).
+    g->SetActive(false);
+    g->SetActive(true);
+    HX_CHECK(Calls({"A:OnDisable", "A:OnEnable"}));
+    DestroyImmediate(g);
+    HX_CHECK(Calls({"A:OnDisable", "A:OnDestroy"}));
+    Cleanup();
+}
+
+HX_TEST(Scripts, InactiveAndDisabledScripts)
+{
+    ScriptCalls().Clear();
+    GameObject* g = GameObject::Create("B");
+    g->SetActive(false);
+    auto* r = Add<Recorder>(g, "Recorder");
+    Frame();
+    HX_CHECK(Calls({}));
+    // Awake when the GameObject first becomes active; a disabled script is awake too, but gets no OnEnable or Start.
+    r->SetEnabled(false);
+    g->SetActive(true);
+    Frame();
+    HX_CHECK(Calls({"B:Awake"}));
+    r->SetEnabled(true);
+    Frame();
+    HX_CHECK(Calls({"B:OnEnable", "B:Start", "B:FixedUpdate", "B:Update", "B:LateUpdate"}));
+    // A script never awake gets no OnDestroy.
+    GameObject* never = GameObject::Create("Never");
+    never->SetActive(false);
+    Add<Recorder>(never, "Recorder");
+    DestroyImmediate(never);
+    DestroyImmediate(g);
+    HX_CHECK(Calls({"B:OnDisable", "B:OnDestroy"}));
+    Cleanup();
+}
+
+HX_TEST(Scripts, ExecutionOrderThenCreation)
+{
+    ScriptCalls().Clear();
+    GameObject* g = GameObject::Create("C");
+    Add<Late>(g, "Late");
+    auto* first = Add<Recorder>(g, "Recorder");
+    Add<Early>(g, "Early");
+    GameObject* h = GameObject::Create("D");
+    auto* second = Add<Recorder>(h, "Recorder");
+    (void)first;
+    (void)second;
+    Frame();
+    ScriptCalls().Clear();
+    RunScriptPhase(ScriptMessage::Update);
+    HX_CHECK(Calls({"C:Early.Update", "C:Update", "D:Update", "C:Late.Update"}));
+    HX_CHECK(Script("Early").defaultOrder == -10 && Script("Late").defaultOrder == 10 && ScriptPhaseCount(ScriptMessage::Update) == 4);
+    DestroyImmediate(g);
+    DestroyImmediate(h);
+    Cleanup();
+}
+
+HX_TEST(Scripts, ScriptsChangedDuringAPhase)
+{
+    ScriptCalls().Clear();
+    GameObject* g = GameObject::Create("E");
+    auto* d = Add<Disabler>(g, "Disabler");
+    auto* r = Add<Recorder>(g, "Recorder");
+    Frame();
+    ScriptCalls().Clear();
+    // Disabled by a script before it in the same phase: not called.
+    d->target = r;
+    RunScriptPhase(ScriptMessage::Update);
+    HX_CHECK(Calls({"E:Disabler.Update", "E:OnDisable"}));
+    r->SetEnabled(true);
+    ScriptCalls().Clear();
+    // Destroyed by a script before it: not called either.
+    d->target = r;
+    d->destroy = true;
+    RunScriptPhase(ScriptMessage::Update);
+    HX_CHECK(Calls({"E:Disabler.Update", "E:OnDisable", "E:OnDestroy"}));
+    // A script that disables itself in its Update.
+    auto* self = Add<Recorder>(g, "Recorder");
+    self->disableInUpdate = true;
+    Frame();
+    Frame();
+    HX_CHECK(Calls({"E:Awake", "E:OnEnable", "E:Start", "E:FixedUpdate", "E:Disabler.Update", "E:Update", "E:OnDisable", "E:Disabler.Update"}));
+    DestroyImmediate(g);
+    Cleanup();
+}
+
+HX_TEST(Scripts, ApplicationAndHierarchyMessages)
+{
+    ScriptCalls().Clear();
+    GameObject* parent = GameObject::Create("P");
+    GameObject* child = GameObject::Create("K");
+    Add<Recorder>(parent, "Recorder");
+    Add<Recorder>(child, "Recorder");
+    Frame();
+    ScriptCalls().Clear();
+    Application::SetFocused(false);
+    Application::SetFocused(true);
+    Application::SetPaused(true);
+    HX_CHECK(Calls({"P:OnApplicationFocus(false)", "K:OnApplicationFocus(false)", "P:OnApplicationFocus(true)", "K:OnApplicationFocus(true)",
+                    "P:OnApplicationPause(true)", "K:OnApplicationPause(true)"}));
+    Application::SetPaused(false);
+    ScriptCalls().Clear();
+    child->transform()->SetParent(parent->transform());
+    HX_CHECK(Calls({"K:OnTransformParentChanged", "P:OnTransformChildrenChanged"}));
+    child->transform()->SetParent(nullptr);
+    HX_CHECK(Calls({"K:OnTransformParentChanged", "P:OnTransformChildrenChanged"}));
+    DestroyImmediate(parent);
+    DestroyImmediate(child);
+    ScriptCalls().Clear();
+    Cleanup();
+}
+
+HX_TEST(Scripts, SceneFilesMakeCppScriptsFromTheirMonoScript)
+{
+    ScriptCalls().Clear();
+    // The script asset, as the asset of a guid.
+    MonoScript* asset = MonoScript::FromScriptClass(Script("Recorder"));
+    Guid guid;
+    Guid::TryParse("d0000000000000000000000000000004", guid);
+    RegisterAssetObject(guid, 11500000, asset, true);
+    const char* file = R"(%YAML 1.1
+%TAG !h! tag:helixengine,2026:
+--- !h!1 &100
+GameObject:
+  m_Component:
+  - component: {fileID: 101}
+  - component: {fileID: 102}
+  m_Name: Loaded
+  m_IsActive: 1
+--- !h!4 &101
+Transform:
+  m_GameObject: {fileID: 100}
+  m_Children: []
+  m_Father: {fileID: 0}
+--- !h!114 &102
+GameBehaviour:
+  m_GameObject: {fileID: 100}
+  m_Enabled: 1
+  m_Script: {fileID: 11500000, guid: d0000000000000000000000000000004, type: 3}
+)";
+    Scene s = SceneManager::CreateScene("Scripted");
+    Array<String> errors;
+    HX_CHECK(ReadSceneFile(Span<const u8>(reinterpret_cast<const u8*>(file), std::strlen(file)), s, errors) && errors.Empty());
+    for (const String& e : errors)
+        std::printf("    %.*s\n", int(e.Size()), e.Data());
+    GameObject* loaded = GameObject::Find("Loaded");
+    HX_REQUIRE(loaded != nullptr);
+    auto* r = static_cast<GameBehaviour*>(loaded->GetComponent(Script("Recorder").type));
+    HX_REQUIRE(r != nullptr);
+    HX_CHECK(r->ClassIndex() == Script("Recorder").engineClass && r->scriptAsset() == asset);
+    HX_CHECK(Calls({"Loaded:Awake", "Loaded:OnEnable"}));
+    // A copy is a script of the same class, with its own lifecycle.
+    Instantiate(loaded);
+    HX_CHECK(Calls({"Loaded(Clone):Awake", "Loaded(Clone):OnEnable"}));
+    SceneManager::UnloadSceneAsync(s);
+    SceneManager::ProcessSceneLoads();
+    ScriptCalls().Clear();
+    Cleanup();
+}
+
+HX_TEST(Scripts, UnloadingTheModuleDestroysItsScripts)
+{
+    ScriptCalls().Clear();
+    GameObject* g = GameObject::Create("U");
+    Add<Recorder>(g, "Recorder");
+    u32 klass = Script("Recorder").engineClass;
+    ScriptCalls().Clear();
+    UnloadGameModule("EngineTests");
+    HX_CHECK(Calls({"U:OnDisable", "U:OnDestroy"}) && g->GetComponentCount() == 1);
+    HX_CHECK(FindScriptClass("EngineTests", "EngineTests", "Recorder") == nullptr && NewObjectOfClass(klass) == nullptr);
+    // Registered again: new classes, scripts work again.
+    String error;
+    HX_CHECK(RegisterLinkedGameModule("EngineTests", error));
+    const ScriptClass* again = FindScriptClass("EngineTests", "EngineTests", "Recorder");
+    HX_REQUIRE(again != nullptr);
+    HX_CHECK(again->engineClass != klass && AddScript(g, *again) != nullptr);
+    HX_CHECK(Calls({"U:Awake", "U:OnEnable"}));
+    DestroyImmediate(g);
+    ScriptCalls().Clear();
+    Cleanup();
+}

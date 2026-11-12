@@ -28,6 +28,8 @@ namespace helix::engine
     {
         // Set by the scene builder while it reads a file (main thread only).
         extern Array<TransformLinks>* gTransformLinks;
+        // Called after SetParent moved a Transform (the script runtime's OnTransformParentChanged / ChildrenChanged).
+        extern void (*gHierarchyChanged)(Transform* moved, Transform* oldParent, Transform* newParent);
     }
 
     class Transform final : public Component

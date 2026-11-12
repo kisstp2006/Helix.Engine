@@ -43,6 +43,8 @@ namespace helix::engine
             Query<> wantsToQuit;
             Event<> quitting, unloading, lowMemory, onBeforeRender;
             Event<bool> focusChanged;
+            Event<bool> pauseChanged;
+            bool paused = false;
             Event<StringView> deepLinkActivated;
             Event<StringView, StringView, LogType> logMessageReceived, logMessageReceivedThreaded;
         };
@@ -199,6 +201,7 @@ namespace helix::engine
     Event<>& Application::quitting() { return App().quitting; }
     Event<>& Application::unloading() { return App().unloading; }
     Event<bool>& Application::focusChanged() { return App().focusChanged; }
+    Event<bool>& Application::pauseChanged() { return App().pauseChanged; }
     Event<>& Application::lowMemory() { return App().lowMemory; }
     Event<StringView>& Application::deepLinkActivated() { return App().deepLinkActivated; }
     Event<>& Application::onBeforeRender() { return App().onBeforeRender; }
@@ -265,6 +268,15 @@ namespace helix::engine
             return;
         a.focused = focused;
         a.focusChanged.Invoke(focused);
+    }
+
+    void Application::SetPaused(bool paused)
+    {
+        AppState& a = App();
+        if (a.paused == paused)
+            return;
+        a.paused = paused;
+        a.pauseChanged.Invoke(paused);
     }
 
     void Application::SetBatchMode(bool batchMode) { App().batchMode = batchMode; }

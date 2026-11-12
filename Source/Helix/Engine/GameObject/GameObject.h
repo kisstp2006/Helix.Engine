@@ -67,6 +67,8 @@ namespace helix::engine
         // AddComponent adds the classes the new one requires first; null for abstract classes, classes that are not
         // components, a second component of a DisallowMultipleComponent class or a second Transform.
         Component* AddComponent(u32 klass);
+        // With `prepare` run on the new component before it hears of its GameObject's state (a script's C# object).
+        Component* AddComponent(u32 klass, void (*prepare)(Component& component, void* user), void* user);
         template <class T>
         T* AddComponent()
         {

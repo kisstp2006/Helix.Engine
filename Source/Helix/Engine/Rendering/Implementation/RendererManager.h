@@ -23,6 +23,8 @@ namespace helix::engine
         Array<u8> drawn = Array<u8>();
         // Written by the renderer: some camera drew it.
         Array<u8> visible = Array<u8>();
+        // Visible in the frame before (OnBecameVisible / OnBecameInvisible are the changes).
+        Array<u8> wasVisible = Array<u8>();
 
         u32 Count() const { return u32(renderer.Size()); }
         BoundsSoA Bounds() const

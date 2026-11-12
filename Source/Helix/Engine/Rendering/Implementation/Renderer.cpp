@@ -6,6 +6,8 @@
 
 namespace helix::engine
 {
+    void (*detail::gVisibilityChanged)(Renderer*, bool) = nullptr;
+
     // ---------------------------------------------------------------------------------------------- bounds
 
     Bounds TransformBounds(const Bounds& local, const Matrix4x4& m)
@@ -65,6 +67,7 @@ namespace helix::engine
         d.sortingOrder.Push(0);
         d.drawn.Push(0);
         d.visible.Push(0);
+        d.wasVisible.Push(0);
         Refresh(index, r);
     }
 
@@ -123,6 +126,7 @@ namespace helix::engine
         SwapRemove(d.sortingOrder, i);
         SwapRemove(d.drawn, i);
         SwapRemove(d.visible, i);
+        SwapRemove(d.wasVisible, i);
     }
 
     void RendererManager::Touch(const Renderer& r)

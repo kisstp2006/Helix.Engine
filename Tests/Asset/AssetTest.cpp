@@ -3,8 +3,10 @@
 #include <Helix/Engine/Asset/AssetLoader.h>
 #include <Helix/Engine/Asset/Resources.h>
 #include <Helix/Engine/GameObject/Lifecycle.h>
+#include <Helix/Engine/Material/Material.h>
 #include <Helix/Engine/Mesh/Mesh.h>
 #include <Helix/Engine/Prefab/Prefab.h>
+#include <Helix/Engine/Rendering/Renderer.h>
 #include <Helix/Engine/Scene/SceneFile.h>
 #include <Helix/Engine/Scene/SceneManager.h>
 #include <Helix/Engine/Settings/Settings.h>
@@ -508,4 +510,105 @@ BuildSettings:
     SceneManager::SetSceneSource(nullptr);
     SceneManager::SetBuildScenes(Span<const StringView>());
     RemoveAssetSource(&data);
+}
+
+HX_TEST(Asset, ALoadNowMakesTheAssetsBeforeTheScene)
+{
+    // A parent with a material file and a child whose mesh comes from a glTF file: the files a scene refers to are read
+    // before or around its build without losing the scene's own hierarchy (the material's builder, ending in the
+    // middle of the scene's, dropped the Transforms read after it from the hierarchy).
+    Folder f;
+    f.Write("Tri/tri.gltf", kGltf);
+    Array<u8> bin = TriangleBuffer();
+    f.Write("Tri/tri.bin", Span<const u8>(bin.Data(), bin.Size()));
+    Array<u8> albedo = Png(4, 4, Color32(200, 100, 50, 255)), bump = Png(4, 4, Color32(128, 128, 255, 255));
+    f.Write("Tri/albedo.png", Span<const u8>(albedo.Data(), albedo.Size()));
+    f.Write("Tri/bump.png", Span<const u8>(bump.Data(), bump.Size()));
+    // A material file the child's renderer uses: a serialized asset made in the middle of the build too.
+    {
+        Material* m = Material::Create(Shader::ErrorShader());
+        m->SetName("Plain");
+        Array<u8> mat;
+        String error;
+        Object* const objects[] = {m};
+        HX_REQUIRE(WriteAssetFile(Span<Object* const>(objects, 1), mat, error));
+        f.Write("Plain.mat", Span<const u8>(mat.Data(), mat.Size()));
+        DestroyImmediate(m, true);
+    }
+    f.Open();
+    Guid guid = FindAssetAtPath("Tri/tri.gltf")->guid;
+    char text[33];
+    guid.ToChars(text);
+    char matText[33];
+    FindAssetAtPath("Plain.mat")->guid.ToChars(matText);
+    String scene = Format(R"(%YAML 1.1
+%TAG !h! tag:helixengine,2026:
+--- !h!1 &10
+GameObject:
+  m_Component:
+  - component: {{fileID: 11}}
+  - component: {{fileID: 12}}
+  m_Name: Parent
+  m_IsActive: 1
+--- !h!4 &11
+Transform:
+  m_GameObject: {{fileID: 10}}
+  m_LocalRotation: {{x: 0, y: 0, z: 0, w: 1}}
+  m_LocalPosition: {{x: -2, y: 0, z: 0}}
+  m_LocalScale: {{x: 1, y: 1, z: 1}}
+  m_Children:
+  - {{fileID: 21}}
+  m_Father: {{fileID: 0}}
+--- !h!23 &12
+MeshRenderer:
+  m_GameObject: {{fileID: 10}}
+  m_Enabled: 1
+  m_Materials:
+  - {{fileID: 2100000, guid: {}, type: 2}}
+--- !h!1 &20
+GameObject:
+  m_Component:
+  - component: {{fileID: 21}}
+  - component: {{fileID: 22}}
+  - component: {{fileID: 23}}
+  m_Name: Child
+  m_IsActive: 1
+--- !h!4 &21
+Transform:
+  m_GameObject: {{fileID: 20}}
+  m_LocalRotation: {{x: 0, y: 0, z: 0, w: 1}}
+  m_LocalPosition: {{x: 0, y: 1, z: 0}}
+  m_LocalScale: {{x: 1, y: 1, z: 1}}
+  m_Children: []
+  m_Father: {{fileID: 11}}
+--- !h!33 &22
+MeshFilter:
+  m_GameObject: {{fileID: 20}}
+  m_Mesh: {{fileID: {}, guid: {}, type: 3}}
+--- !h!23 &23
+MeshRenderer:
+  m_GameObject: {{fileID: 20}}
+  m_Enabled: 1
+  m_Materials:
+  - {{fileID: 2100000, guid: {}, type: 2}}
+)",
+                          StringView(matText, 32), AssetObjectFileId(ClassId::Mesh, "TriMesh"), StringView(text, 32), StringView(matText, 32));
+    MemorySceneSource memory;
+    memory.Set("Linked.helix", StringView(scene));
+    SceneManager::SetSceneSource(&memory);
+    Scene loaded = SceneManager::LoadScene("Linked.helix", LoadSceneParameters{LoadSceneMode::Additive});
+    SceneManager::ProcessSceneLoads();
+    SceneManager::SetSceneSource(nullptr);
+    HX_REQUIRE(loaded.isLoaded());
+    Array<GameObject*> roots = loaded.GetRootGameObjects();
+    HX_REQUIRE(roots.Size() == 1 && roots[0]->Name() == StringView("Parent"));
+    Transform* child = roots[0]->transform()->GetChild(0);
+    HX_REQUIRE(child != nullptr);
+    HX_CHECK(child->position() == Vector3(-2, 1, 0));
+    MeshFilter* filter = child->gameObject()->GetComponent<MeshFilter>();
+    HX_CHECK(filter && filter->sharedMesh() && filter->sharedMesh()->Name() == StringView("TriMesh"));
+    MeshRenderer* renderer = child->gameObject()->GetComponent<MeshRenderer>();
+    HX_CHECK(renderer && renderer->sharedMaterial() && renderer->sharedMaterial()->Name() == StringView("Plain"));
+    SceneManager::UnloadSceneAsync(loaded);
+    SceneManager::ProcessSceneLoads();
 }

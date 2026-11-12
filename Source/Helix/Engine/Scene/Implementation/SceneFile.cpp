@@ -173,12 +173,15 @@ namespace helix::engine
                     lastRoot_ = h;
                 table_.errors = &errors;
                 TransformAccess::NewRootScene() = slot;
+                // A file read while this one builds (a material or prefab it refers to) has a builder of its own: the
+                // links go back to this one's when it ends.
+                previousLinks_ = detail::gTransformLinks;
                 detail::gTransformLinks = &links_;
             }
 
             ~Builder() override
             {
-                detail::gTransformLinks = nullptr;
+                detail::gTransformLinks = previousLinks_;
                 TransformAccess::NewRootScene() = scene_;
             }
 
@@ -710,6 +713,7 @@ namespace helix::engine
             u32 scene_;
             ReadTable table_;
             Array<TransformLinks> links_;
+            Array<TransformLinks>* previousLinks_ = nullptr;
             Array<PPtr<Transform>> roots_;
             Array<EntityId> created_;
             Array<i64> fileIds_;

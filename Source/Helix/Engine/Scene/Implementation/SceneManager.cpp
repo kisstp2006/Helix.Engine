@@ -364,6 +364,16 @@ namespace helix::engine
                 SetActive(r.slot);
                 Time::LevelLoaded();
             }
+            // A load now (not async) makes the assets the file refers to first, as an async load does: an asset made
+            // in the middle of the build (a model with its own Transforms) must not run inside it.
+            if (!r.async)
+            {
+                Array<Guid> dependencies;
+                r.format->Dependencies(*r.parsed, dependencies);
+                for (const Guid& g : dependencies)
+                    if (!IsAssetLoaded(g) && FindAsset(g))
+                        LoadAsset(g);
+            }
             Array<String> errors;
             if (!SceneAccess::Build(*r.format, *r.parsed, r.slot, errors))
                 for (const String& e : errors)

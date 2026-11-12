@@ -1,3 +1,4 @@
+#include <Helix/Engine/Object/Implementation/BuiltinClasses.h>
 #include <Helix/Engine/Object/Implementation/ObjectAccess.h>
 
 #include <Helix/Core/Basics/Assert.h>
@@ -135,12 +136,14 @@ namespace helix::engine
 
     u32 FindClassById(i32 classId)
     {
+        RegisterBuiltinClasses();
         const u32* i = Classes().byId.Find(classId);
         return i ? *i : kNoClass;
     }
 
     u32 FindClassByName(StringView name)
     {
+        RegisterBuiltinClasses();
         const Registry& r = Classes();
         for (u32 i = 0; i < r.classes.Size(); i++)
             if (r.classes[i].name == name)

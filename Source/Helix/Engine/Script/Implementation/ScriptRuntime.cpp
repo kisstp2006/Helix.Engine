@@ -25,7 +25,7 @@ namespace helix::engine
         struct ManagedScripts
         {
             i32 (*create)(u64 objectId, u32 scriptIndex, u64* handle) = nullptr;
-            void (*runBatch)(u32 message, const u64* handles, const u8* live, i32 count) = nullptr;
+            void (*runBatch)(u32 message, const u64* handles, const u32* scripts, const u8* live, i32 count) = nullptr;
             void (*runOne)(u64 handle, u32 message, u8 argument) = nullptr;
         };
         ManagedScripts gManaged;
@@ -53,6 +53,7 @@ namespace helix::engine
             u8* batchLive = nullptr;
             i32 batchCount = 0;
             Array<u64> handles;
+            Array<u32> scripts;
             Array<u8> live;
             bool hooked = false;
             bool warnedNoManaged = false;
@@ -329,6 +330,7 @@ namespace helix::engine
                 else if (gManaged.runBatch)
                 {
                     rt.handles.Clear();
+                    rt.scripts.Clear();
                     rt.live.Clear();
                     for (usize k = i; k < end; k++)
                     {
@@ -336,6 +338,7 @@ namespace helix::engine
                         if (b && b->started_ && Handle(b))
                         {
                             rt.handles.Push(Handle(b));
+                            rt.scripts.Push(b->script_->index);
                             rt.live.Push(1);
                         }
                     }
@@ -344,7 +347,7 @@ namespace helix::engine
                         rt.batchHandles = rt.handles.Data();
                         rt.batchLive = rt.live.Data();
                         rt.batchCount = i32(rt.handles.Size());
-                        gManaged.runBatch(u32(m), rt.handles.Data(), rt.live.Data(), i32(rt.handles.Size()));
+                        gManaged.runBatch(u32(m), rt.handles.Data(), rt.scripts.Data(), rt.live.Data(), i32(rt.handles.Size()));
                         rt.batchHandles = nullptr;
                         rt.batchLive = nullptr;
                         rt.batchCount = 0;

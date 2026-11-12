@@ -7,9 +7,19 @@
 // forward slashes), through the asset runtime.
 namespace helix::engine
 {
+    HX_CLASS(Namespace = "HelixEngine")
     class Resources
     {
     public:
+        // The script API's members (LoadAsync and UnloadUnusedAssets are written in C# over SceneNative).
+        HX_FUNCTION(Name = "Load") static Object* LoadApi(StringView path) { return Load(path); }
+        HX_FUNCTION(Name = "Load", Generic = "T : Object") static Object* LoadOfType(StringView path, scripting::TypeId systemTypeInstance);
+        HX_FUNCTION(Name = "LoadAll") static Array<Object*> LoadAllApi(StringView path);
+        HX_FUNCTION(Name = "LoadAll", Generic = "T : Object") static Array<Object*> LoadAllOfType(StringView path, scripting::TypeId systemTypeInstance);
+        HX_FUNCTION(Name = "UnloadAsset") static void UnloadAssetApi(Object* assetToUnload) { UnloadAsset(assetToUnload); }
+        HX_FUNCTION(Name = "FindObjectsOfTypeAll", Generic = "T : Object") static Array<Object*> FindObjectsOfTypeAllApi(scripting::TypeId type);
+        HX_FUNCTION(Name = "EntityIdToObject") static Object* EntityIdToObjectApi(EntityId entityId) { return EntityIdToObject(entityId); }
+
         // The asset's main object; null when there is no asset at the path.
         static Object* Load(StringView path);
         // The main object when it is of the class, else the asset's first object of it.

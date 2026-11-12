@@ -422,8 +422,8 @@ namespace helix::engine
         TransformHierarchy* h = NewHierarchy(1);
         h->count = 1;
         // Identity local values: the world values are known, the node starts clean.
-        h->world[0] = Matrix4x4::identity();
-        h->worldRotation[0] = Quaternion::identity();
+        h->world[0] = Matrix4x4::identity;
+        h->worldRotation[0] = Quaternion::identity;
         h->local[0] = LocalTRS();
         h->transforms[0] = t;
         h->parent[0] = -1;
@@ -557,8 +557,8 @@ namespace helix::engine
         {
             u32 oi = originals[k]->index_;
             map[oi - base] = k;
-            h->world[k] = Matrix4x4::identity();
-            h->worldRotation[k] = Quaternion::identity();
+            h->world[k] = Matrix4x4::identity;
+            h->worldRotation[k] = Quaternion::identity;
             h->local[k] = o.local[oi];
             h->transforms[k] = clones[k];
             h->parent[k] = k ? i32(map[u32(o.parent[oi]) - base]) : -1;
@@ -592,8 +592,8 @@ namespace helix::engine
         {
             Transform* t = nodes[k];
             TransformHierarchy* own = t->hierarchy_;
-            h->world[k] = Matrix4x4::identity();
-            h->worldRotation[k] = Quaternion::identity();
+            h->world[k] = Matrix4x4::identity;
+            h->worldRotation[k] = Quaternion::identity;
             h->local[k] = own->local[t->index_];
             h->transforms[k] = t;
             h->parent[k] = k ? parents[k] : -1;

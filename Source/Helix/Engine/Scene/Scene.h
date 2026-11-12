@@ -1,5 +1,6 @@
 #pragma once
 
+#include <Helix/Core/Basics/Tags.h>
 #include <Helix/Core/Containers/Array.h>
 #include <Helix/Core/Strings/StringView.h>
 #include <Helix/Engine/Scene/LoadableSceneId.h>
@@ -11,46 +12,54 @@ namespace helix::engine
     class GameObject;
 
     // A scene slot and its generation: a handle of an unloaded scene never names a new one.
+    HX_STRUCT(Namespace = "HelixEngine.SceneManagement", Internal)
     struct SceneHandle
     {
-        u32 value = 0;
+        HX_FIELD() u32 value = 0;
         bool operator==(const SceneHandle&) const = default;
     };
 
-    enum class LoadSceneMode : u8
+    HX_ENUM(Namespace = "HelixEngine.SceneManagement")
+    enum class LoadSceneMode : i32
     {
         // Every loaded scene but the DontDestroyOnLoad scene is unloaded first.
         Single = 0,
         Additive = 1,
     };
 
-    enum class LocalPhysicsMode : u8
+    HX_ENUM(Namespace = "HelixEngine.SceneManagement", Attributes = "[System.Flags]")
+    enum class LocalPhysicsMode : i32
     {
         None = 0,
         Physics2D = 1,
         Physics3D = 2,
     };
 
-    enum class UnloadSceneOptions : u8
+    HX_ENUM(Namespace = "HelixEngine.SceneManagement", Attributes = "[System.Flags]")
+    enum class UnloadSceneOptions : i32
     {
         None = 0,
         UnloadAllEmbeddedSceneObjects = 1,
     };
 
+    HX_STRUCT(Namespace = "HelixEngine.SceneManagement")
     struct LoadSceneParameters
     {
-        LoadSceneMode loadSceneMode = LoadSceneMode::Single;
-        LocalPhysicsMode localPhysicsMode = LocalPhysicsMode::None;
+        HX_FIELD() LoadSceneMode loadSceneMode = LoadSceneMode::Single;
+        HX_FIELD() LocalPhysicsMode localPhysicsMode = LocalPhysicsMode::None;
     };
 
+    HX_STRUCT(Namespace = "HelixEngine.SceneManagement")
     struct CreateSceneParameters
     {
-        LocalPhysicsMode localPhysicsMode = LocalPhysicsMode::None;
+        HX_FIELD() LocalPhysicsMode localPhysicsMode = LocalPhysicsMode::None;
     };
 
+    // A loaded scene by its handle (C#: the private m_Handle; its members are written in C# over SceneNative).
+    HX_STRUCT(Namespace = "HelixEngine.SceneManagement")
     struct Scene
     {
-        SceneHandle handle;
+        HX_FIELD(Name = "m_Handle", Private) SceneHandle handle;
 
         bool IsValid() const;
         StringView name() const;

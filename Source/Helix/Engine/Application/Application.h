@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Helix/Core/Strings/String.h>
+#include <Helix/Core/Basics/Tags.h>
 #include <Helix/Engine/Event/Event.h>
 
 // Application: the running player as scripts see it (product, platform, paths, frame rate, focus, quitting). The host
@@ -8,6 +9,7 @@
 // with RunFrame until it returns false.
 namespace helix::engine
 {
+    HX_ENUM(Namespace = "HelixEngine")
     enum class RuntimePlatform : i32
     {
         OSXEditor = 0,
@@ -21,6 +23,7 @@ namespace helix::engine
         WebGLPlayer = 17,
     };
 
+    HX_ENUM(Namespace = "HelixEngine")
     enum class NetworkReachability : i32
     {
         NotReachable = 0,
@@ -28,6 +31,7 @@ namespace helix::engine
         ReachableViaLocalAreaNetwork = 2,
     };
 
+    HX_ENUM(Namespace = "HelixEngine")
     enum class ThreadPriority : i32
     {
         Low = 0,
@@ -36,6 +40,7 @@ namespace helix::engine
         High = 4,
     };
 
+    HX_ENUM(Namespace = "HelixEngine")
     enum class LogType : i32
     {
         Error = 0,
@@ -45,65 +50,66 @@ namespace helix::engine
         Exception = 4,
     };
 
+    HX_CLASS(Namespace = "HelixEngine")
     class Application
     {
     public:
         // ---------------------------------------------------------------------------------------------- state
-        static bool isPlaying();
-        static bool isEditor();
-        static bool isBatchMode();
-        static bool isFocused();
-        static bool isMobilePlatform();
-        static bool isConsolePlatform();
-        static RuntimePlatform platform();
-        static bool runInBackground();
+        HX_PROPERTY(ReadOnly) static bool isPlaying();
+        HX_PROPERTY(ReadOnly) static bool isEditor();
+        HX_PROPERTY(ReadOnly) static bool isBatchMode();
+        HX_PROPERTY(ReadOnly) static bool isFocused();
+        HX_PROPERTY(ReadOnly) static bool isMobilePlatform();
+        HX_PROPERTY(ReadOnly) static bool isConsolePlatform();
+        HX_PROPERTY(ReadOnly) static RuntimePlatform platform();
+        HX_PROPERTY() static bool runInBackground();
         static void SetRunInBackground(bool value);
         // Frames per second to aim for; -1 is the platform's default (as fast as the display allows).
-        static i32 targetFrameRate();
+        HX_PROPERTY() static i32 targetFrameRate();
         static void SetTargetFrameRate(i32 framesPerSecond);
-        static NetworkReachability internetReachability();
+        HX_PROPERTY(ReadOnly) static NetworkReachability internetReachability();
         // The main thread time a frame gives to making the objects of background loads: Low 2 ms, BelowNormal 4 ms,
         // Normal 10 ms, High 50 ms.
-        static ThreadPriority backgroundLoadingPriority();
+        HX_PROPERTY() static ThreadPriority backgroundLoadingPriority();
         static void SetBackgroundLoadingPriority(ThreadPriority value);
 
         // ---------------------------------------------------------------------------------------------- product
-        static StringView companyName();
-        static StringView productName();
-        static StringView version();
-        static StringView identifier();
+        HX_PROPERTY(ReadOnly) static StringView companyName();
+        HX_PROPERTY(ReadOnly) static StringView productName();
+        HX_PROPERTY(ReadOnly) static StringView version();
+        HX_PROPERTY(ReadOnly) static StringView identifier();
         // The engine's version.
-        static StringView helixVersion();
+        HX_PROPERTY(ReadOnly) static StringView helixVersion();
 
         // ---------------------------------------------------------------------------------------------- paths
         // The player's data folder (set by the host; next to the executable by default).
-        static StringView dataPath();
-        static StringView streamingAssetsPath();
+        HX_PROPERTY(ReadOnly) static StringView dataPath();
+        HX_PROPERTY(ReadOnly) static StringView streamingAssetsPath();
         // Per user and product: <LocalLow on Windows, ~/.config elsewhere>/<company>/<product>.
-        static StringView persistentDataPath();
-        static StringView temporaryCachePath();
-        static StringView consoleLogPath();
-        static StringView absoluteURL();
+        HX_PROPERTY(ReadOnly) static StringView persistentDataPath();
+        HX_PROPERTY(ReadOnly) static StringView temporaryCachePath();
+        HX_PROPERTY(ReadOnly) static StringView consoleLogPath();
+        HX_PROPERTY(ReadOnly) static StringView absoluteURL();
 
         // ---------------------------------------------------------------------------------------------- quitting
         // Quits at the end of the frame: wantsToQuit is asked (any false cancels), then quitting, then every scene
         // unloads (disable and destroy hooks), then unloading.
-        static void Quit(i32 exitCode = 0);
+        HX_FUNCTION() static void Quit(i32 exitCode = 0);
 
         // ---------------------------------------------------------------------------------------------- events
-        static Query<>& wantsToQuit();
-        static Event<>& quitting();
-        static Event<>& unloading();
-        static Event<bool>& focusChanged();
+        HX_EVENT() static Query<>& wantsToQuit();
+        HX_EVENT() static Event<>& quitting();
+        HX_EVENT() static Event<>& unloading();
+        HX_EVENT() static Event<bool>& focusChanged();
         // The application was paused (true) or resumed (false) by the system (mobile players; scripts' OnApplicationPause).
         static Event<bool>& pauseChanged();
-        static Event<>& lowMemory();
-        static Event<StringView>& deepLinkActivated();
+        HX_EVENT(Delegate = "global::HelixEngine.Application.LowMemoryCallback") static Event<>& lowMemory();
+        HX_EVENT() static Event<StringView>& deepLinkActivated();
         // Every frame, just before rendering.
         static Event<>& onBeforeRender();
         // Log messages of the main thread; the threaded one gets every thread's (its callbacks must be thread safe).
-        static Event<StringView, StringView, LogType>& logMessageReceived();
-        static Event<StringView, StringView, LogType>& logMessageReceivedThreaded();
+        HX_EVENT(Delegate = "global::HelixEngine.Application.LogCallback") static Event<StringView, StringView, LogType>& logMessageReceived();
+        HX_EVENT(Delegate = "global::HelixEngine.Application.LogCallback") static Event<StringView, StringView, LogType>& logMessageReceivedThreaded();
 
         // ---------------------------------------------------------------------------------------------- host
         // One frame of the player loop and the quit flow; false once the application has quit.

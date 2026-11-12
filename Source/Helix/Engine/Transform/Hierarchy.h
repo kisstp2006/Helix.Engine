@@ -15,7 +15,7 @@ namespace helix::engine
     struct LocalTRS
     {
         Vector3 position = Vector3(0, 0, 0);
-        Quaternion rotation = Quaternion::identity();
+        Quaternion rotation = Quaternion::identity;
         Vector3 scale = Vector3(1, 1, 1);
     };
 

@@ -50,6 +50,8 @@ reports it.
 | `Source/Helix/Engine/Script/GameBehaviour.h` | `GameBehaviour` (class 114): the base of scripts in C++ and C# |
 | `Source/Helix/Engine/Script/MonoScript.h` | `MonoScript` (class 115): the script asset (assembly or game module, namespace, class, execution order) |
 | `Source/Helix/Engine/Script/ScriptClass.h` | `ScriptClass`, `ScriptMessage`, the registry of script classes of both languages |
+| `Source/Helix/Engine/Debug/Debug.h` | `Debug`: the log of scripts (`Log`, `LogWarning`, `LogError`, `LogAssertion`, `Assert`), `isDebugBuild`, `Break`, `DrawLine` / `DrawRay` (accepted until the gizmo renderer) |
+| `Source/Helix/Engine/Math/MathNative.h`, `Scene/SceneNative.h` | The calls the C# value types and operation classes make into Helix.Math and the engine (internal in C#) |
 | `Source/Helix/Engine/Script/ScriptRuntime.h` | The scheduler of scripts (`RunScriptPhase`, `CallScriptMessage`, `BroadcastScriptMessage`), `AddScript`, `SendScriptMessage` (`SendMessage`, `BroadcastMessage`, `SendMessageUpwards`), C++ game modules (`LoadGameModule`, `RegisterLinkedGameModule`, `UnloadGameModule`) |
 | `Shaders/` | The built in shaders in C# (`Hidden/InternalErrorShader`, `Hidden/InternalClear`, the engine's shader variables and vertex input locations), built with the .NET SDK and embedded |
 | `Tests/Shaders/` | C# test shaders, embedded into the tests |
@@ -369,6 +371,10 @@ walking the same tree instead of the compiled list takes 2.8 times as long.
   OnApplicationFocus, Pause and Quit, the hierarchy and visibility messages. Within one execution order (Script
   Execution Order of the MonoScript, then DefaultExecutionOrder) the C++ scripts of a phase run first through
   function pointers of dense lists, then the C# ones in one call into C#.
+- The script API: Object, GameObject, Component, Behaviour, Transform, Time, Application, Screen, Debug, Resources,
+  SceneManager and the value types of Helix.Math are tagged; Helix.Bindgen makes their C# (HelixEngine.CoreModule)
+  and the C++ script API (`<HelixEngine/HelixEngineApi.h>`: value handles of the engine's objects over the same
+  function table, the class C++ scripts derive from), so both languages have the same members.
 - `HelixEngine` is also built as one shared library (`helix_engine_shared`, `Helix::EngineShared`:
   `HelixEngine.dll`, `libHelixEngine.so`) on Windows, Linux and Android: the player and the game modules it loads link
   it, so a module uses the engine of its process.

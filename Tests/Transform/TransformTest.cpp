@@ -154,16 +154,16 @@ HX_TEST(Transform, Movement)
     t->Translate(Vector3(0, 0, 1), Space::World);
     HX_CHECK(Near(t->position(), Vector3(1, 0, 2)));
     // Around the world axis or the local one.
-    t->SetRotation(Quaternion::identity());
+    t->SetRotation(Quaternion::identity);
     t->Rotate(Vector3(1, 0, 0), 90, Space::World);
     HX_CHECK(Near(t->forward(), Vector3(0, -1, 0)));
     t->Rotate(Vector3(0, 1, 0), 90, Space::Self);
     HX_CHECK(Near(t->rotation(), Quaternion::Euler(90, 0, 0) * Quaternion::Euler(0, 90, 0)));
-    t->SetRotation(Quaternion::identity());
+    t->SetRotation(Quaternion::identity);
     t->Rotate(Vector3(0, 0, 90), Space::World);
     HX_CHECK(Near(t->right(), Vector3(0, 1, 0)));
     // RotateAround moves and turns.
-    t->SetPositionAndRotation(Vector3(1, 0, 0), Quaternion::identity());
+    t->SetPositionAndRotation(Vector3(1, 0, 0), Quaternion::identity);
     t->RotateAround(Vector3(0, 0, 0), Vector3(0, 1, 0), 90);
     HX_CHECK(Near(t->position(), Vector3(0, 0, -1)) && Near(t->forward(), Vector3(1, 0, 0)));
     // LookAt, also along the up axis.
@@ -194,7 +194,7 @@ HX_TEST(Transform, Movement)
     other->GetPositionAndRotation(p, q);
     HX_CHECK(Near(q, Quaternion::Euler(0, 90, 0)));
     t->SetParent(other, false);
-    t->SetLocalPositionAndRotation(Vector3(0, 0, 1), Quaternion::identity());
+    t->SetLocalPositionAndRotation(Vector3(0, 0, 1), Quaternion::identity);
     t->GetLocalPositionAndRotation(p, q);
     HX_CHECK(Near(p, Vector3(0, 0, 1)) && Near(t->position(), Vector3(1, 0, 0)));
     t->SetLocalEulerAngles(Vector3(0, 0, 30));

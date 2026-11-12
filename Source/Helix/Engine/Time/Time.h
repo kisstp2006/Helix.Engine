@@ -1,5 +1,7 @@
 #pragma once
 
+#include <Helix/Core/Basics/Tags.h>
+
 #include <Helix/Core/Basics/Types.h>
 
 // Time: the frame's clock as scripts see it. The player loop's TimeUpdate system starts each frame (BeginFrame) and the
@@ -15,42 +17,43 @@ namespace helix::engine
         virtual double Now() = 0;
     };
 
+    HX_CLASS(Namespace = "HelixEngine")
     class Time
     {
     public:
         // The game time at the start of the frame (the fixed time inside a fixed step).
-        static f32 time() { return f32(timeAsDouble()); }
-        static double timeAsDouble();
+        HX_PROPERTY(ReadOnly) static f32 time() { return f32(timeAsDouble()); }
+        HX_PROPERTY(ReadOnly) static double timeAsDouble();
         // The scaled frame time, capped by maximumDeltaTime (fixedDeltaTime inside a fixed step; 0 with timeScale 0).
-        static f32 deltaTime();
-        static f32 unscaledDeltaTime();
-        static f32 unscaledTime() { return f32(unscaledTimeAsDouble()); }
-        static double unscaledTimeAsDouble();
-        static f32 smoothDeltaTime();
-        static f32 fixedDeltaTime();
+        HX_PROPERTY(ReadOnly) static f32 deltaTime();
+        HX_PROPERTY(ReadOnly) static f32 unscaledDeltaTime();
+        HX_PROPERTY(ReadOnly) static f32 unscaledTime() { return f32(unscaledTimeAsDouble()); }
+        HX_PROPERTY(ReadOnly) static double unscaledTimeAsDouble();
+        HX_PROPERTY(ReadOnly) static f32 smoothDeltaTime();
+        HX_PROPERTY() static f32 fixedDeltaTime();
         static void SetFixedDeltaTime(f32 seconds);
-        static f32 fixedUnscaledDeltaTime();
-        static f32 fixedTime() { return f32(fixedTimeAsDouble()); }
-        static double fixedTimeAsDouble();
-        static f32 fixedUnscaledTime() { return f32(fixedUnscaledTimeAsDouble()); }
-        static double fixedUnscaledTimeAsDouble();
-        static f32 maximumDeltaTime();
+        HX_PROPERTY(ReadOnly) static f32 fixedUnscaledDeltaTime();
+        HX_PROPERTY(ReadOnly) static f32 fixedTime() { return f32(fixedTimeAsDouble()); }
+        HX_PROPERTY(ReadOnly) static double fixedTimeAsDouble();
+        HX_PROPERTY(ReadOnly) static f32 fixedUnscaledTime() { return f32(fixedUnscaledTimeAsDouble()); }
+        HX_PROPERTY(ReadOnly) static double fixedUnscaledTimeAsDouble();
+        HX_PROPERTY() static f32 maximumDeltaTime();
         static void SetMaximumDeltaTime(f32 seconds);
-        static f32 maximumParticleDeltaTime();
+        HX_PROPERTY() static f32 maximumParticleDeltaTime();
         static void SetMaximumParticleDeltaTime(f32 seconds);
-        static f32 timeScale();
+        HX_PROPERTY() static f32 timeScale();
         static void SetTimeScale(f32 scale);
         // Real time since the start, read now (not at the start of the frame).
-        static f32 realtimeSinceStartup() { return f32(realtimeSinceStartupAsDouble()); }
-        static double realtimeSinceStartupAsDouble();
-        static f32 timeSinceLevelLoad() { return f32(timeSinceLevelLoadAsDouble()); }
-        static double timeSinceLevelLoadAsDouble();
-        static i32 frameCount();
-        static bool inFixedTimeStep();
+        HX_PROPERTY(ReadOnly) static f32 realtimeSinceStartup() { return f32(realtimeSinceStartupAsDouble()); }
+        HX_PROPERTY(ReadOnly) static double realtimeSinceStartupAsDouble();
+        HX_PROPERTY(ReadOnly) static f32 timeSinceLevelLoad() { return f32(timeSinceLevelLoadAsDouble()); }
+        HX_PROPERTY(ReadOnly) static double timeSinceLevelLoadAsDouble();
+        HX_PROPERTY(ReadOnly) static i32 frameCount();
+        HX_PROPERTY(ReadOnly) static bool inFixedTimeStep();
         // A fixed frame time regardless of real time (0: off); captureFramerate is its reciprocal.
-        static f32 captureDeltaTime();
+        HX_PROPERTY() static f32 captureDeltaTime();
         static void SetCaptureDeltaTime(f32 seconds);
-        static i32 captureFramerate();
+        HX_PROPERTY() static i32 captureFramerate();
         static void SetCaptureFramerate(i32 framesPerSecond);
 
         // ------------------------------------------------------------------ for the player loop and the host

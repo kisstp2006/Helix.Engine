@@ -129,7 +129,7 @@ namespace helix::engine
         if (customView_)
             return view_;
         Transform* t = transform();
-        Matrix4x4 world = t ? Matrix4x4::TRS(t->position(), t->rotation(), Vector3::one()) : Matrix4x4::identity();
+        Matrix4x4 world = t ? Matrix4x4::TRS(t->position(), t->rotation(), Vector3::one) : Matrix4x4::identity;
         // Camera space looks along -z.
         return Matrix4x4::Scale(Vector3(1, 1, -1)) * world.inverse();
     }

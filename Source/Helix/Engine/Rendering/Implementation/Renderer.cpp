@@ -42,7 +42,7 @@ namespace helix::engine
         index = u32(renderers_.Size());
         renderers_.Push(r.GetEntityId());
         transforms_.Push(t ? t->GetEntityId() : EntityId());
-        world_.Push(t ? t->localToWorldMatrix() : Matrix4x4::identity());
+        world_.Push(t ? t->localToWorldMatrix() : Matrix4x4::identity);
         localBounds_.Push(Bounds());
         worldBounds_.Push(Bounds());
         meshes_.Push(EntityId());
@@ -60,7 +60,7 @@ namespace helix::engine
         RenderData& d = render_;
         for (Array<f32>* a : {&d.centerX, &d.centerY, &d.centerZ, &d.extentX, &d.extentY, &d.extentZ})
             a->Push(0.0f);
-        d.world.Push(Matrix4x4::identity());
+        d.world.Push(Matrix4x4::identity);
         d.renderer.Push(r.GetEntityId());
         d.mesh.Push(EntityId());
         d.layerMask.Push(0);
@@ -314,13 +314,13 @@ namespace helix::engine
     Matrix4x4 Renderer::localToWorldMatrix() const
     {
         Transform* t = transform();
-        return t ? t->localToWorldMatrix() : Matrix4x4::identity();
+        return t ? t->localToWorldMatrix() : Matrix4x4::identity;
     }
 
     Matrix4x4 Renderer::worldToLocalMatrix() const
     {
         Transform* t = transform();
-        return t ? t->worldToLocalMatrix() : Matrix4x4::identity();
+        return t ? t->worldToLocalMatrix() : Matrix4x4::identity;
     }
 
     void Renderer::SetSharedMaterial(Material* material)

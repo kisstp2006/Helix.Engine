@@ -522,7 +522,7 @@ namespace helix::engine
             if (n)
                 CullBoundsSoAParallel(planes, d.Bounds(), inside.Data());
             Vector3 eye = camera.transform() ? camera.transform()->position() : Vector3();
-            Vector3 forward = camera.transform() ? camera.transform()->forward() : Vector3::forward();
+            Vector3 forward = camera.transform() ? camera.transform()->forward() : Vector3::forward;
             Array<DrawItem> items;
             u32 cullingMask = camera.cullingMask();
             for (u32 i = 0; i < n; i++)

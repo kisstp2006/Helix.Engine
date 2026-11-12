@@ -3,6 +3,7 @@
 #include <Helix/Core/Strings/Format.h>
 #include <Helix/Engine/GameObject/Lifecycle.h>
 #include <Helix/Engine/Script/GameBehaviour.h>
+#include <HelixEngine/HelixEngineApi.h>
 
 // C++ scripts of the tests (a game module of their own, EngineTests): each writes the messages it gets to one list.
 namespace helix::engine::testing
@@ -94,6 +95,22 @@ namespace helix::engine::testing
     {
         void Ping() { Note(this, "Ping"); }
         void Toggle(bool on) { Note(this, on ? "Toggle(true)" : "Toggle(false)"); }
+    };
+
+    // A script on the C++ script API (value handles, properties as in C#).
+    HX_CLASS(Namespace = "EngineTests")
+    class ApiScript : public ::HelixEngine::GameBehaviour
+    {
+    public:
+        void Start()
+        {
+            ::HelixEngine::GameObject g = gameObject;
+            ScriptCalls().Push(Format("api.Start:{}:{}", String(g.name), enabled ? "on" : "off"));
+            ::HelixEngine::Behaviour self = g.GetComponent<::HelixEngine::Behaviour>();
+            ScriptCalls().Push(Format("api.self:{}", self.GetEntityId() == GetEntityId() ? "same" : "other"));
+            enabled = false;
+        }
+        void OnDisable() { ScriptCalls().Push(Format("api.OnDisable:{}", isActiveAndEnabled ? "active" : "inactive")); }
     };
 
     // A script that counts its Updates (the benchmark).

@@ -230,7 +230,7 @@ namespace helix::engine
             return;
         // Looking along the up axis: the shortest turn of the forward axis instead.
         if (Vector3::Cross(forward, worldUp).sqrMagnitude() <= 1e-12f * forward.sqrMagnitude() * worldUp.sqrMagnitude())
-            SetRotation(Quaternion::FromToRotation(Vector3::forward(), forward / length));
+            SetRotation(Quaternion::FromToRotation(Vector3::forward, forward / length));
         else
             SetRotation(Quaternion::LookRotation(forward, worldUp));
     }

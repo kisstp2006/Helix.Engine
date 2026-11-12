@@ -2,8 +2,8 @@
 
 #include <Helix/Core/Containers/Array.h>
 
-// Events of the engine (scene loads, the application's life): callbacks as a function and a user pointer. Invoked on the
-// main thread unless an event says otherwise.
+// Events of the engine (scene loads, the application's life): callbacks as a function and a user pointer, removed by
+// the id Add gives or by both. Invoked on the main thread unless an event says otherwise.
 namespace helix::engine
 {
     template <class... Args>
@@ -23,6 +23,17 @@ namespace helix::engine
         {
             for (usize i = 0; i < entries_.Size(); i++)
                 if (entries_[i].id == id)
+                {
+                    entries_.RemoveAt(i);
+                    return;
+                }
+        }
+
+        // The first entry of the callback and user (reflection removes handlers this way).
+        void Remove(Callback callback, void* user)
+        {
+            for (usize i = 0; i < entries_.Size(); i++)
+                if (entries_[i].callback == callback && entries_[i].user == user)
                 {
                     entries_.RemoveAt(i);
                     return;
@@ -69,6 +80,17 @@ namespace helix::engine
         {
             for (usize i = 0; i < entries_.Size(); i++)
                 if (entries_[i].id == id)
+                {
+                    entries_.RemoveAt(i);
+                    return;
+                }
+        }
+
+        // The first entry of the callback and user (reflection removes handlers this way).
+        void Remove(Callback callback, void* user)
+        {
+            for (usize i = 0; i < entries_.Size(); i++)
+                if (entries_[i].callback == callback && entries_[i].user == user)
                 {
                     entries_.RemoveAt(i);
                     return;

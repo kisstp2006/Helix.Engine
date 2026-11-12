@@ -60,6 +60,7 @@ namespace helix::engine
         Array<Array<u8>> bytes_;
     };
 
+    HX_CLASS(Namespace = "HelixEngine.SceneManagement")
     class SceneManager
     {
     public:
@@ -113,9 +114,33 @@ namespace helix::engine
         // new empty active scene, no build scenes and files as the scene source (a host that runs again, tests).
         static void Reset();
 
-        static SceneEvent<Scene, Scene>& activeSceneChanged();
-        static SceneEvent<Scene, LoadSceneMode>& sceneLoaded();
-        static SceneEvent<Scene>& sceneUnloaded();
+        HX_EVENT(Delegate = "global::HelixEngine.Events.HelixAction<global::HelixEngine.SceneManagement.Scene, global::HelixEngine.SceneManagement.Scene>")
+        static Event<Scene, Scene>& activeSceneChanged();
+        HX_EVENT(Delegate = "global::HelixEngine.Events.HelixAction<global::HelixEngine.SceneManagement.Scene, global::HelixEngine.SceneManagement.LoadSceneMode>")
+        static Event<Scene, LoadSceneMode>& sceneLoaded();
+        HX_EVENT(Delegate = "global::HelixEngine.Events.HelixAction<global::HelixEngine.SceneManagement.Scene>")
+        static Event<Scene>& sceneUnloaded();
+
+        // The script API's members (the C# signatures over the members above; the operations through SceneNative).
+        HX_PROPERTY(Name = "sceneCount", ReadOnly) static i32 SceneCountApi() { return i32(sceneCount()); }
+        HX_PROPERTY(Name = "loadedSceneCount", ReadOnly) static i32 LoadedSceneCountApi() { return i32(loadedSceneCount()); }
+        HX_PROPERTY(Name = "sceneCountInBuildSettings", ReadOnly) static i32 SceneCountInBuildSettingsApi() { return i32(sceneCountInBuildSettings()); }
+        HX_FUNCTION(Name = "GetActiveScene") static Scene GetActiveSceneApi() { return GetActiveScene(); }
+        HX_FUNCTION(Name = "SetActiveScene") static bool SetActiveSceneApi(Scene scene) { return SetActiveScene(scene); }
+        HX_FUNCTION(Name = "GetSceneAt") static Scene GetSceneAtApi(i32 index) { return index >= 0 ? GetSceneAt(u32(index)) : Scene(); }
+        HX_FUNCTION(Name = "GetSceneByName") static Scene GetSceneByNameApi(StringView name) { return GetSceneByName(name); }
+        HX_FUNCTION(Name = "GetSceneByPath") static Scene GetSceneByPathApi(StringView scenePath) { return GetSceneByPath(scenePath); }
+        HX_FUNCTION(Name = "GetSceneByBuildIndex") static Scene GetSceneByBuildIndexApi(i32 buildIndex) { return GetSceneByBuildIndex(buildIndex); }
+        HX_FUNCTION(Name = "CreateScene") static Scene CreateSceneApi(StringView sceneName) { return CreateScene(sceneName); }
+        HX_FUNCTION(Name = "CreateScene") static Scene CreateSceneApi(StringView sceneName, CreateSceneParameters parameters) { return CreateScene(sceneName, parameters); }
+        HX_FUNCTION(Name = "LoadScene") static void LoadSceneApi(StringView sceneName) { LoadScene(sceneName, LoadSceneMode::Single); }
+        HX_FUNCTION(Name = "LoadScene") static void LoadSceneApi(StringView sceneName, LoadSceneMode mode) { LoadScene(sceneName, mode); }
+        HX_FUNCTION(Name = "LoadScene") static Scene LoadSceneApi(StringView sceneName, LoadSceneParameters parameters) { return LoadScene(sceneName, parameters); }
+        HX_FUNCTION(Name = "LoadScene") static void LoadSceneApi(i32 sceneBuildIndex) { LoadScene(sceneBuildIndex, LoadSceneMode::Single); }
+        HX_FUNCTION(Name = "LoadScene") static void LoadSceneApi(i32 sceneBuildIndex, LoadSceneMode mode) { LoadScene(sceneBuildIndex, mode); }
+        HX_FUNCTION(Name = "LoadScene") static Scene LoadSceneApi(i32 sceneBuildIndex, LoadSceneParameters parameters) { return LoadScene(sceneBuildIndex, parameters); }
+        HX_FUNCTION(Name = "MergeScenes") static void MergeScenesApi(Scene sourceScene, Scene destinationScene) { MergeScenes(sourceScene, destinationScene); }
+        HX_FUNCTION(Name = "MoveGameObjectToScene") static void MoveGameObjectToSceneApi(GameObject* go, Scene scene) { MoveGameObjectToScene(go, scene); }
     };
 
     // The scene DontDestroyOnLoad objects live in.

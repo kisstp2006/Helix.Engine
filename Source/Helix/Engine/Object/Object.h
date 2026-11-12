@@ -5,6 +5,7 @@
 #include <Helix/Core/Strings/String.h>
 #include <Helix/Engine/Object/Class.h>
 #include <Helix/Engine/Object/EntityId.h>
+#include <Helix/Math/Quaternion.h>
 #include <Helix/Scripting/Bindings/Interop.h>
 #include <Helix/Scripting/Bindings/Tags.h>
 #include <Helix/Serialization/SerializedFile/SerializedFile.h>
@@ -17,7 +18,8 @@
 // EntityId names, and each class keeps a dense list of its objects. The object model runs on the main thread.
 namespace helix::engine
 {
-    enum class HideFlags : u32
+    HX_ENUM(Namespace = "HelixEngine", Attributes = "[System.Flags]")
+    enum class HideFlags : i32
     {
         None = 0,
         HideInHierarchy = 1,
@@ -103,6 +105,10 @@ public:                                                                         
         return index;                                                                               \
     }
 
+    class Transform;
+    enum class FindObjectsInactive : i32;
+    enum class FindObjectsSortMode : i32;
+
     HX_CLASS(Root)
     class Object
     {
@@ -126,7 +132,26 @@ public:                                                                         
         HX_PROPERTY(Name = "name") virtual StringView Name() const { return name_; }
         virtual void SetName(StringView name) { name_ = name; }
 
-        HideFlags hideFlags = HideFlags::None;
+        HX_FIELD() HideFlags hideFlags = HideFlags::None;
+
+        // The script API's statics (Lifecycle.h has the engine's functions they call).
+        HX_FUNCTION() static Object* Instantiate(Object* original);
+        HX_FUNCTION() static Object* Instantiate(Object* original, Transform* parent);
+        HX_FUNCTION() static Object* Instantiate(Object* original, Transform* parent, bool instantiateInWorldSpace);
+        HX_FUNCTION() static Object* Instantiate(Object* original, Vector3 position, Quaternion rotation);
+        HX_FUNCTION() static Object* Instantiate(Object* original, Vector3 position, Quaternion rotation, Transform* parent);
+        HX_FUNCTION() static void Destroy(Object* obj);
+        HX_FUNCTION() static void Destroy(Object* obj, f32 t);
+        HX_FUNCTION() static void DestroyImmediate(Object* obj);
+        HX_FUNCTION() static void DestroyImmediate(Object* obj, bool allowDestroyingAssets);
+        HX_FUNCTION() static void DontDestroyOnLoad(Object* target);
+        HX_FUNCTION(Generic = "T : Object", Lists) static Array<Object*> FindObjectsByType(scripting::TypeId type, FindObjectsSortMode sortMode);
+        HX_FUNCTION(Generic = "T : Object", Lists)
+        static Array<Object*> FindObjectsByType(scripting::TypeId type, FindObjectsInactive findObjectsInactive, FindObjectsSortMode sortMode);
+        HX_FUNCTION(Generic = "T : Object") static Object* FindAnyObjectByType(scripting::TypeId type);
+        HX_FUNCTION(Generic = "T : Object") static Object* FindAnyObjectByType(scripting::TypeId type, FindObjectsInactive findObjectsInactive);
+        HX_FUNCTION(Generic = "T : Object") static Object* FindFirstObjectByType(scripting::TypeId type);
+        HX_FUNCTION(Generic = "T : Object") static Object* FindFirstObjectByType(scripting::TypeId type, FindObjectsInactive findObjectsInactive);
 
         // Assets (loaded or created as assets) as opposed to objects of scenes.
         bool IsPersistent() const { return persistent_; }
@@ -235,10 +260,19 @@ public:                                                                         
     void EntityIdsToValidArray(Span<const EntityId> ids, Array<EntityId>& out);
     u32 ObjectCount();
 
-    enum class FindObjectsInactive : u8
+    HX_ENUM(Namespace = "HelixEngine")
+    enum class FindObjectsInactive : i32
     {
         Exclude,
         Include,
+    };
+
+    // The order of FindObjectsByType's results: none (the fastest), or by id.
+    HX_ENUM(Namespace = "HelixEngine")
+    enum class FindObjectsSortMode : i32
+    {
+        None,
+        InstanceID,
     };
 
     // Loaded objects of the class or a subclass, unsorted: no assets, no objects with DontSave, objects on inactive

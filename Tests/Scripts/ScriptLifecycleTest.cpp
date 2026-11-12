@@ -3,6 +3,7 @@
 #include <Support/TestShaders.h>
 
 #include <Helix/Engine/Application/Application.h>
+#include <Helix/Engine/Time/Time.h>
 #include <Helix/Engine/Asset/Asset.h>
 #include <Helix/Engine/Material/Material.h>
 #include <Helix/Engine/Mesh/Mesh.h>
@@ -413,6 +414,67 @@ GameBehaviour:
     HX_CHECK(Calls({"Ordered:Late.Update", "Ordered:Early.Update"}));
     SceneManager::UnloadSceneAsync(s);
     SceneManager::ProcessSceneLoads();
+    ScriptCalls().Clear();
+    Cleanup();
+}
+
+HX_TEST(Scripts, TheCppScriptApi)
+{
+    using ::HelixEngine::GameObject;
+    ScriptCalls().Clear();
+    (void)Script("ApiScript");
+    // Handles of engine objects: properties, methods, null semantics.
+    GameObject g = GameObject::New("Api");
+    HX_REQUIRE(g && g != nullptr);
+    HX_CHECK(String(g.name) == "Api" && g.activeSelf && g.activeInHierarchy);
+    g.name = "Renamed";
+    engine::GameObject* native = EntityIdToObject<engine::GameObject>(g.GetEntityId());
+    HX_REQUIRE(native != nullptr);
+    HX_CHECK(native->Name() == StringView("Renamed"));
+    g.SetActive(false);
+    HX_CHECK(!g.activeSelf);
+    g.SetActive(true);
+    // A script added through the API: its handle members reach the engine.
+    auto script = g.AddComponent<ApiScript>();
+    HX_REQUIRE(script && script.Get() != nullptr);
+    RunScriptPhase(ScriptMessage::Update);
+    HX_CHECK(Calls({"api.Start:Renamed:on", "api.self:same", "api.OnDisable:inactive"}));
+    HX_CHECK(!script.Get()->enabled && g.GetComponent<ApiScript>().Get() == script.Get());
+    GameObject copy = g;
+    HX_CHECK(copy == g);
+    DestroyImmediate(native);
+    HX_CHECK(!g && g == nullptr && copy == GameObject() && !script);
+    // A static class over the engine's generator: one sequence for the API and Helix.Math.
+    ::HelixEngine::Random::InitState(77);
+    f32 a = ::HelixEngine::Random::value;
+    i32 b = ::HelixEngine::Random::Range(0, 100);
+    Random::InitState(77);
+    HX_CHECK(a == Random::value() && b == Random::Range(0, 100));
+    // Events take a callback and answer a token; statics of Time, Application and Debug.
+    static i32 focusChanges = 0;
+    u64 token = ::HelixEngine::Application::focusChanged.Add({[](void*, bool focused) { focusChanges += focused ? 10 : 1; }, nullptr});
+    HX_CHECK(token != 0);
+    Application::SetFocused(false);
+    Application::SetFocused(true);
+    ::HelixEngine::Application::focusChanged.Remove(token);
+    Application::SetFocused(false);
+    Application::SetFocused(true);
+    HX_CHECK(focusChanges == 11);
+    HX_CHECK(f32(::HelixEngine::Time::deltaTime) == Time::deltaTime() && i32(::HelixEngine::Time::frameCount) == Time::frameCount());
+    ::HelixEngine::Time::timeScale = 0.5f;
+    HX_CHECK(Time::timeScale() == 0.5f);
+    ::HelixEngine::Time::timeScale = 1.0f;
+    HX_CHECK(String(::HelixEngine::Application::productName) == String(Application::productName()));
+    struct Lines
+    {
+        Array<String> texts;
+    } lines{Array<String>()};
+    LogSink sink = [](const LogMessage& m, void* user) { static_cast<Lines*>(user)->texts.Push(String(m.text)); };
+    AddLogSink(sink, &lines);
+    ::HelixEngine::Debug::Log("from the api");
+    ::HelixEngine::Debug::Assert(false, "checked");
+    RemoveLogSink(sink, &lines);
+    HX_CHECK(lines.texts.Size() == 2 && lines.texts[0] == "from the api" && lines.texts[1] == "Assertion failed: checked");
     ScriptCalls().Clear();
     Cleanup();
 }

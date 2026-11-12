@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Helix/Core/Basics/Span.h>
+#include <Helix/Core/Basics/Tags.h>
 #include <Helix/Core/Containers/Array.h>
 #include <Helix/Core/Strings/String.h>
 #include <Helix/Engine/Async/AsyncOperation.h>
@@ -11,6 +12,7 @@
 // mode, window moves, orientation, sleep timeout, brightness).
 namespace helix::engine
 {
+    HX_ENUM(Namespace = "HelixEngine")
     enum class FullScreenMode : i32
     {
         // The display switched to the resolution (Windows; elsewhere FullScreenWindow).
@@ -21,6 +23,7 @@ namespace helix::engine
         Windowed = 3,
     };
 
+    HX_ENUM(Namespace = "HelixEngine")
     enum class ScreenOrientation : i32
     {
         Portrait = 1,
@@ -36,21 +39,23 @@ namespace helix::engine
         static constexpr i32 SystemSetting = -2;
     };
 
+    HX_STRUCT(Namespace = "HelixEngine")
     struct RefreshRate
     {
-        u32 numerator = 0;
-        u32 denominator = 1;
+        HX_FIELD() u32 numerator = 0;
+        HX_FIELD() u32 denominator = 1;
 
         // Hertz.
         f64 value() const { return denominator != 0 ? f64(numerator) / f64(denominator) : 0.0; }
         bool operator==(const RefreshRate&) const = default;
     };
 
+    HX_STRUCT(Namespace = "HelixEngine")
     struct Resolution
     {
-        i32 width = 0;
-        i32 height = 0;
-        RefreshRate refreshRateRatio;
+        HX_FIELD() i32 width = 0;
+        HX_FIELD() i32 height = 0;
+        HX_FIELD() RefreshRate refreshRateRatio;
 
         bool operator==(const Resolution&) const = default;
     };
@@ -114,52 +119,53 @@ namespace helix::engine
         i32 msaaSamplesValue = 1;
     };
 
+    HX_CLASS(Namespace = "HelixEngine")
     class Screen
     {
     public:
-        static i32 width();
-        static i32 height();
+        HX_PROPERTY(ReadOnly) static i32 width();
+        HX_PROPERTY(ReadOnly) static i32 height();
         // 0 when the system does not tell.
-        static f32 dpi();
+        HX_PROPERTY(ReadOnly) static f32 dpi();
 
         // ---------------------------------------------------------------------------------------------- modes
-        static bool fullScreen();
+        HX_PROPERTY() static bool fullScreen();
         // True goes to FullScreenWindow (or keeps the full screen mode in use), false to Windowed.
         static void SetFullScreen(bool value);
-        static FullScreenMode fullScreenMode();
+        HX_PROPERTY() static FullScreenMode fullScreenMode();
         static void SetFullScreenMode(FullScreenMode mode);
         // The display's current mode (the window's size when windowed).
-        static Resolution currentResolution();
+        HX_PROPERTY(ReadOnly) static Resolution currentResolution();
         // The modes of the window's display.
         static Span<const Resolution> resolutions();
         // Applied at the end of the frame.
-        static void SetResolution(i32 width, i32 height, FullScreenMode fullscreenMode, RefreshRate preferredRefreshRate);
-        static void SetResolution(i32 width, i32 height, FullScreenMode fullscreenMode);
-        static void SetResolution(i32 width, i32 height, bool fullscreen);
-        static i32 msaaSamples();
-        static void SetMSAASamples(i32 numSamples);
+        HX_FUNCTION() static void SetResolution(i32 width, i32 height, FullScreenMode fullscreenMode, RefreshRate preferredRefreshRate);
+        HX_FUNCTION() static void SetResolution(i32 width, i32 height, FullScreenMode fullscreenMode);
+        HX_FUNCTION() static void SetResolution(i32 width, i32 height, bool fullscreen);
+        HX_PROPERTY(ReadOnly) static i32 msaaSamples();
+        HX_FUNCTION() static void SetMSAASamples(i32 numSamples);
 
         // ---------------------------------------------------------------------------------------------- mobile
-        static ScreenOrientation orientation();
+        HX_PROPERTY() static ScreenOrientation orientation();
         static void SetOrientation(ScreenOrientation value);
-        static bool autorotateToPortrait();
+        HX_PROPERTY() static bool autorotateToPortrait();
         static void SetAutorotateToPortrait(bool value);
-        static bool autorotateToPortraitUpsideDown();
+        HX_PROPERTY() static bool autorotateToPortraitUpsideDown();
         static void SetAutorotateToPortraitUpsideDown(bool value);
-        static bool autorotateToLandscapeLeft();
+        HX_PROPERTY() static bool autorotateToLandscapeLeft();
         static void SetAutorotateToLandscapeLeft(bool value);
-        static bool autorotateToLandscapeRight();
+        HX_PROPERTY() static bool autorotateToLandscapeRight();
         static void SetAutorotateToLandscapeRight(bool value);
-        static Rect safeArea();
+        HX_PROPERTY(ReadOnly) static Rect safeArea();
         static Span<const Rect> cutouts();
         // Seconds of no input before the screen dims, or a SleepTimeout value.
-        static i32 sleepTimeout();
+        HX_PROPERTY() static i32 sleepTimeout();
         static void SetSleepTimeout(i32 value);
-        static f32 brightness();
+        HX_PROPERTY() static f32 brightness();
         static void SetBrightness(f32 value);
 
         // ---------------------------------------------------------------------------------------------- window
-        static Vector2Int mainWindowPosition();
+        HX_PROPERTY(ReadOnly) static Vector2Int mainWindowPosition();
         static DisplayInfo mainWindowDisplayInfo();
         // Moves the window to a position relative to the display's top left; done when the window is there.
         static AsyncOperation MoveMainWindowTo(const DisplayInfo& display, Vector2Int position);

@@ -24,9 +24,19 @@ helix_add_library(helix_engine ALIAS Engine PUBLIC_DEPS Helix::Core Helix::Math 
 helix_dependency_dir(bindgen_dir Bindgen)
 include("${bindgen_dir}/CMake/HelixBindgen.cmake")
 set(engine_source "${CMAKE_CURRENT_SOURCE_DIR}/Source")
-helix_bindgen(helix_engine MODULE HelixEngine NAMESPACE HelixEngine KIND Engine INCLUDE_ROOTS "${engine_source}"
-              HEADERS "${engine_source}/Helix/Engine/Object/EntityId.h" "${engine_source}/Helix/Engine/Object/Object.h"
-                      "${engine_source}/Helix/Engine/GameObject/GameObject.h" "${engine_source}/Helix/Engine/Script/GameBehaviour.h"
+# The value types of Helix.Math are the script API's too (their fields bound, Random over the engine's generator).
+helix_dependency_dir(engine_math_dir Math)
+set(math_source "${engine_math_dir}/Source")
+set(HELIX_ENGINE_MATH_HEADERS "${math_source}/Helix/Math/Vector.h" "${math_source}/Helix/Math/Quaternion.h" "${math_source}/Helix/Math/Matrix4x4.h"
+    "${math_source}/Helix/Math/Color.h" "${math_source}/Helix/Math/Geometry.h" "${math_source}/Helix/Math/Random.h" CACHE INTERNAL "")
+helix_bindgen(helix_engine MODULE HelixEngine NAMESPACE HelixEngine KIND Engine API INCLUDE_ROOTS "${engine_source}" "${math_source}"
+              HEADERS ${HELIX_ENGINE_MATH_HEADERS} "${engine_source}/Helix/Engine/Math/MathNative.h" "${engine_source}/Helix/Engine/Object/EntityId.h" "${engine_source}/Helix/Engine/Object/Object.h"
+                      "${engine_source}/Helix/Engine/GameObject/GameObject.h" "${engine_source}/Helix/Engine/Transform/Transform.h"
+                      "${engine_source}/Helix/Engine/Script/GameBehaviour.h" "${engine_source}/Helix/Engine/Debug/Debug.h"
+                      "${engine_source}/Helix/Engine/Time/Time.h" "${engine_source}/Helix/Engine/Application/Application.h"
+                      "${engine_source}/Helix/Engine/Screen/Screen.h" "${engine_source}/Helix/Engine/Scene/Scene.h"
+                      "${engine_source}/Helix/Engine/Scene/SceneManager.h" "${engine_source}/Helix/Engine/Asset/Resources.h"
+                      "${engine_source}/Helix/Engine/Scene/SceneNative.h"
               CS_OUTPUT engine_cs)
 set(HELIX_ENGINE_BINDINGS_CS "${engine_cs}" CACHE INTERNAL "")
 
@@ -76,8 +86,9 @@ add_custom_command(
 target_sources(helix_engine PRIVATE ${builtin_embedded})
 target_include_directories(helix_engine PRIVATE "${engine_generated}")
 
-set(engine_binding_headers "${engine_source}/Helix/Engine/Object/EntityId.h" "${engine_source}/Helix/Engine/Object/Object.h"
-    "${engine_source}/Helix/Engine/GameObject/GameObject.h" "${engine_source}/Helix/Engine/Script/GameBehaviour.h")
+set(engine_binding_headers ${HELIX_ENGINE_MATH_HEADERS} "${engine_source}/Helix/Engine/Object/EntityId.h" "${engine_source}/Helix/Engine/Object/Object.h"
+    "${engine_source}/Helix/Engine/GameObject/GameObject.h" "${engine_source}/Helix/Engine/Transform/Transform.h"
+    "${engine_source}/Helix/Engine/Script/GameBehaviour.h")
 helix_add_test_suite(helix_engine_tests DEPS Helix::Engine Helix::Jobs)
 # The tests' C++ scripts: a game module of their own (EngineTests), linked into the test program.
 if(TARGET helix_engine_tests)

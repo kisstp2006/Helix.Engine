@@ -112,6 +112,29 @@ namespace helix::engine
         // Many GameObjects at once.
         static void SetGameObjectsActive(Span<const EntityId> ids, bool value);
 
+        // The script API's members (the C# signatures over the members above).
+        HX_PROPERTY(Name = "layer", Setter = "SetLayerApi") i32 LayerApi() const { return i32(layer_); }
+        void SetLayerApi(i32 value) { SetLayer(u32(value)); }
+        HX_PROPERTY(Name = "tag", Setter = "SetTagApi") StringView TagApi() const { return TagString(); }
+        void SetTagApi(StringView value) { SetTag(value); }
+        HX_PROPERTY(Name = "isStatic", ReadOnly) bool IsStaticApi() const { return isStatic(); }
+        HX_PROPERTY(Name = "transform", ReadOnly) Transform* TransformApi() const { return transform(); }
+        HX_FUNCTION(Name = "CompareTag") bool CompareTagApi(StringView tag) const { return CompareTag(tag); }
+        HX_FUNCTION(Name = "GetComponent") Component* GetComponentByName(StringView type) const { return GetComponent(type); }
+        HX_FUNCTION(Generic = "T : Component", Lists) Array<Component*> GetComponents(scripting::TypeId type) const;
+        HX_FUNCTION(Generic = "T : Component") Component* GetComponentInChildren(scripting::TypeId type, bool includeInactive = false) const;
+        HX_FUNCTION(Generic = "T : Component", Lists) Array<Component*> GetComponentsInChildren(scripting::TypeId type, bool includeInactive = false) const;
+        HX_FUNCTION(Generic = "T : Component") Component* GetComponentInParent(scripting::TypeId type, bool includeInactive = false) const;
+        HX_FUNCTION(Generic = "T : Component", Lists) Array<Component*> GetComponentsInParent(scripting::TypeId type, bool includeInactive = false) const;
+        HX_FUNCTION(Out = "component", Generic = "T : Component") bool TryGetComponent(scripting::TypeId type, Component*& component) const;
+        HX_FUNCTION(Name = "GetComponentAtIndex") Component* GetComponentAtIndexApi(i32 index) const;
+        HX_FUNCTION(Name = "GetComponentCount") i32 GetComponentCountApi() const { return i32(GetComponentCount()); }
+        HX_FUNCTION(Name = "GetComponentIndex") i32 GetComponentIndexApi(Component* component) const { return GetComponentIndex(component); }
+        HX_FUNCTION(Name = "Find") static GameObject* FindApi(StringView name) { return Find(name); }
+        HX_FUNCTION(Name = "FindWithTag") static GameObject* FindWithTagApi(StringView tag) { return FindWithTag(tag); }
+        HX_FUNCTION(Name = "FindGameObjectWithTag") static GameObject* FindGameObjectWithTagApi(StringView tag) { return FindWithTag(tag); }
+        HX_FUNCTION(Name = "FindGameObjectsWithTag") static Array<GameObject*> FindGameObjectsWithTagApi(StringView tag);
+
         template <class V>
         void Transfer(V& v)
         {
@@ -185,6 +208,21 @@ namespace helix::engine
             GameObject* g = gameObject();
             return g ? g->GetComponent<T>() : nullptr;
         }
+
+        // The script API's members: as the GameObject's.
+        HX_PROPERTY(Name = "transform", ReadOnly) Transform* TransformApi() const { return transform(); }
+        HX_PROPERTY(Name = "tag", Setter = "SetTagApi") StringView TagApi() const { return TagString(); }
+        void SetTagApi(StringView value);
+        HX_FUNCTION(Name = "CompareTag") bool CompareTagApi(StringView tag) const { return CompareTag(tag); }
+        HX_FUNCTION(Name = "GetComponentIndex") i32 GetComponentIndexApi() const { return GetComponentIndex(); }
+        HX_FUNCTION(Generic = "T : Component") Component* GetComponent(scripting::TypeId type) const;
+        HX_FUNCTION(Name = "GetComponent") Component* GetComponentByName(StringView type) const;
+        HX_FUNCTION(Generic = "T : Component", Lists) Array<Component*> GetComponents(scripting::TypeId type) const;
+        HX_FUNCTION(Generic = "T : Component") Component* GetComponentInChildren(scripting::TypeId type, bool includeInactive = false) const;
+        HX_FUNCTION(Generic = "T : Component", Lists) Array<Component*> GetComponentsInChildren(scripting::TypeId type, bool includeInactive = false) const;
+        HX_FUNCTION(Generic = "T : Component") Component* GetComponentInParent(scripting::TypeId type, bool includeInactive = false) const;
+        HX_FUNCTION(Generic = "T : Component", Lists) Array<Component*> GetComponentsInParent(scripting::TypeId type, bool includeInactive = false) const;
+        HX_FUNCTION(Out = "component", Generic = "T : Component") bool TryGetComponent(scripting::TypeId type, Component*& component) const;
 
         template <class V>
         void Transfer(V& v)

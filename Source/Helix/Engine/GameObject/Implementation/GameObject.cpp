@@ -392,7 +392,7 @@ namespace helix::engine
             slash--;
         StringView last = path.Substr(slash);
         Array<GameObject*> all;
-        FindObjectsByType(all);
+        engine::FindObjectsByType(all);
         for (GameObject* g : all)
         {
             if (g->Name() != last)
@@ -424,7 +424,7 @@ namespace helix::engine
             return nullptr;
         }
         Array<GameObject*> all;
-        FindObjectsByType(all);
+        engine::FindObjectsByType(all);
         for (GameObject* g : all)
             if (g->tag_ == h)
                 return g;
@@ -441,7 +441,7 @@ namespace helix::engine
             return;
         }
         Array<GameObject*> all;
-        FindObjectsByType(all);
+        engine::FindObjectsByType(all);
         for (GameObject* g : all)
             if (g->tag_ == h)
                 out.Push(g);

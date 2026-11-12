@@ -458,7 +458,7 @@ namespace helix::engine
             {
                 where.placed = true;
                 where.position = op.positions[i % op.positions.Size()];
-                where.rotation = op.rotations.Empty() ? Quaternion::identity() : op.rotations[i % op.rotations.Size()];
+                where.rotation = op.rotations.Empty() ? Quaternion::identity : op.rotations[i % op.rotations.Size()];
             }
             Object* c = CloneHierarchy(original, where);
             if (!c)

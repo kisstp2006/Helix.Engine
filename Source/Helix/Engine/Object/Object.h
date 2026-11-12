@@ -326,6 +326,7 @@ public:                                                                         
         info.applyProperty = [](Object& o, StringView path, StringView value, const AssetReference& reference, ReferenceTable* refs, String& error) {
             return ApplyProperty(static_cast<T&>(o), path, value, reference, refs, error);
         };
+        info.readProperty = [](Object& o, StringView path, String& text, String& error) { return ReadProperty(static_cast<T&>(o), path, text, error); };
     }
 
     // A reference to an object: its EntityId, so a reference to a destroyed object reads null.

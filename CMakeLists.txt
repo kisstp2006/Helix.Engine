@@ -15,7 +15,8 @@ helix_require(Image)
 helix_require(Model)
 helix_require(ShaderCompiler)
 helix_require(RHI)
-helix_add_library(helix_engine ALIAS Engine PUBLIC_DEPS Helix::Core Helix::Math Helix::Serialization Helix::Image Helix::ShaderCompiler Helix::RHI
+helix_require(Scripting)
+helix_add_library(helix_engine ALIAS Engine PUBLIC_DEPS Helix::Core Helix::Math Helix::Serialization Helix::Image Helix::ShaderCompiler Helix::RHI Helix::Scripting
                   PRIVATE_DEPS Helix::Jobs Helix::Platform Helix::Model)
 
 # The built in shaders are C#: built with the .NET SDK and embedded with the shader library they call into. The C#

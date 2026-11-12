@@ -11,7 +11,7 @@ reports it.
 | Path | Content |
 |---|---|
 | `Source/Helix/Engine/Object/EntityId.h` | `EntityId`: a 64-bit object id (slot and generation), no order or sign meaning |
-| `Source/Helix/Engine/Object/Class.h` | `ClassInfo`, the class registry, `ClassOf<T>()`, `IsDerivedFrom` |
+| `Source/Helix/Engine/Object/Class.h` | `ClassInfo`, the class registry, `ClassOf<T>()`, `IsDerivedFrom`; every class is also a type of the scripting core (Helix.Scripting, module HelixEngine, with its ClassId as an attribute and its serialized fields by property path through `Object.ReadSerializedProperty` and `ApplySerializedProperty`) |
 | `Source/Helix/Engine/Object/Object.h` | `Object`, `HideFlags`, `HX_ENGINE_CLASS`, `EntityIdToObject`, `FindObjectsByType`, `FindAnyObjectByType`, `PPtr<T>`, `ReferenceRemap` |
 | `Source/Helix/Engine/Object/SmallArray.h` | `SmallArray<T, N>`: inline storage for small lists |
 | `Source/Helix/Engine/GameObject/GameObject.h` | `GameObject`, `Component`, `Behaviour` |

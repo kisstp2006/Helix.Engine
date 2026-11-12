@@ -2,6 +2,7 @@
 
 #include <Helix/Core/Containers/Array.h>
 #include <Helix/Core/Strings/String.h>
+#include <Helix/Scripting/Types/Type.h>
 
 #include <type_traits>
 
@@ -79,9 +80,13 @@ namespace helix::engine
         bool (*readYaml)(Object&, const serialization::yaml::Tree&, u32 root, Array<String>& errors, serialization::ReferenceTable*) = nullptr;
         void (*writeBinary)(Object&, serialization::SerializedFileWriter&, i64 fileID, serialization::ReferenceTable*) = nullptr;
         bool (*readBinary)(Object&, const serialization::SerializedFile&, u32 index, String& error, serialization::ReferenceTable*) = nullptr;
-        // One field by its property path (prefab modifications).
+        // One field by its property path (prefab modifications), and read as text.
         bool (*applyProperty)(Object&, StringView path, StringView value, const serialization::AssetReference& reference,
                               serialization::ReferenceTable*, String& error) = nullptr;
+        bool (*readProperty)(Object&, StringView path, String& text, String& error) = nullptr;
+
+        // The class's type in the scripting core's registry (module HelixEngine), set by RegisterClass.
+        scripting::TypeId type;
 
         // Filled by the registry: the depth first number and the end of the subtree.
         u32 order = 0, orderEnd = 0;

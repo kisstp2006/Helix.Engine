@@ -1,4 +1,6 @@
 #include <Helix/Engine/Object/Implementation/BuiltinClasses.h>
+#include <Helix/Engine/Object/Implementation/ScriptingTypes.h>
+#include <Helix/Scripting/Types/TypeBuilder.h>
 #include <Helix/Engine/Object/Implementation/ObjectAccess.h>
 
 #include <Helix/Core/Basics/Assert.h>
@@ -130,9 +132,17 @@ namespace helix::engine
         Publish(r);
         Objects().perClass.Resize(r.classes.Size());
         PublishSlots(Objects());
+        // The class is a type of the scripting core too.
+        r.classes[index].type = detail::DeclareScriptingType(index);
         return index;
     }
 
+
+    namespace
+    {
+        // The scripting core asks for the engine's classes before its first lookup (they register on first use).
+        const bool kScriptingProvider = (scripting::AddTypeProvider(&RegisterBuiltinClasses), true);
+    }
 
     u32 FindClassById(i32 classId)
     {

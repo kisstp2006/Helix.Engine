@@ -114,7 +114,7 @@ namespace helix::engine
             const u32* byOrder = nullptr;
             u32 count = 0;
         };
-        extern ClassTables gClassTables;
+        extern HX_IMPORT_DATA ClassTables gClassTables;
     }
 
     // Adds a class; its base must be registered. Returns its index. A class with a type keeps it (script classes).

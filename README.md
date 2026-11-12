@@ -47,6 +47,10 @@ reports it.
 | `Source/Helix/Engine/Rendering/Light.h` | `Light`, `LightType`, `LightShadows`, `LightRenderMode` |
 | `Source/Helix/Engine/Rendering/Graphics.h` | `Graphics` (device, target, `RenderFrame`), `RenderTarget`, `RenderStats`: the placeholder renderer |
 | `Source/Helix/Engine/Rendering/ScreenCapture.h` | `ScreenCapture::CaptureScreenshot`: the frame drawn again into a texture and written as PNG |
+| `Source/Helix/Engine/Script/GameBehaviour.h` | `GameBehaviour` (class 114): the base of scripts in C++ and C# |
+| `Source/Helix/Engine/Script/MonoScript.h` | `MonoScript` (class 115): the script asset (assembly or game module, namespace, class, execution order) |
+| `Source/Helix/Engine/Script/ScriptClass.h` | `ScriptClass`, `ScriptMessage`, the registry of script classes of both languages |
+| `Source/Helix/Engine/Script/ScriptRuntime.h` | The scheduler of scripts (`RunScriptPhase`, `CallScriptMessage`, `BroadcastScriptMessage`), `AddScript`, `SendScriptMessage` (`SendMessage`, `BroadcastMessage`, `SendMessageUpwards`), C++ game modules (`LoadGameModule`, `RegisterLinkedGameModule`, `UnloadGameModule`) |
 | `Shaders/` | The built in shaders in C# (`Hidden/InternalErrorShader`, `Hidden/InternalClear`, the engine's shader variables and vertex input locations), built with the .NET SDK and embedded |
 | `Tests/Shaders/` | C# test shaders, embedded into the tests |
 | `Tests/`, `Benchmarks/` | Ids, the class tree, components, hierarchies, enable and destroy order, clones, world math, change dispatch, scenes and scene files, assets, meshes and textures; throughput |
@@ -354,6 +358,20 @@ Materials of the C# test shader Tests/Surface (Direct3D target):
 
 The player loop: an empty frame of the engine's loop (its own systems run with nothing to do) takes about 170 ns;
 walking the same tree instead of the compiled list takes 2.8 times as long.
+
+## Scripts
+
+- Scripts of both languages derive from `GameBehaviour`. A C++ script is an `HX_CLASS` class of a game module whose
+  generated registration (Helix.Bindgen) adds it as a script class; its messages (Awake, Start, Update, ...) are
+  found by name in the header, without virtual. A C# script is a GameBehaviour whose C# object is its wrapper.
+- One scheduler in the reference's order: Awake when the GameObject first becomes active, OnEnable, pending Starts
+  before the first FixedUpdate or Update, the phases at their player loop systems, OnDisable, OnDestroy;
+  OnApplicationFocus, Pause and Quit, the hierarchy and visibility messages. Within one execution order (Script
+  Execution Order of the MonoScript, then DefaultExecutionOrder) the C++ scripts of a phase run first through
+  function pointers of dense lists, then the C# ones in one call into C#.
+- `HelixEngine` is also built as one shared library (`helix_engine_shared`, `Helix::EngineShared`:
+  `HelixEngine.dll`, `libHelixEngine.so`) on Windows, Linux and Android: the player and the game modules it loads link
+  it, so a module uses the engine of its process.
 
 ## Build
 

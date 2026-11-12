@@ -51,7 +51,7 @@ namespace helix::engine
     {
         // Called when a renderer becomes visible or invisible to the cameras (the script runtime's OnBecameVisible /
         // OnBecameInvisible).
-        extern void (*gVisibilityChanged)(Renderer* renderer, bool visible);
+        extern HX_IMPORT_DATA void (*gVisibilityChanged)(Renderer* renderer, bool visible);
     }
 
     class Renderer : public Component

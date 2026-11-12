@@ -131,7 +131,14 @@ namespace helix::engine
         Registry& r = Classes();
         HX_ASSERT(info.base == kNoClass || info.base < r.classes.Size());
         bool script = (info.flags & ClassScript) != 0;
-        HX_ASSERT(script || !r.byId.Find(info.classId));
+        // A class registered again is the copy of its inline registration in another binary (a game module built
+        // against the shared engine): it finds the class the engine has.
+        if (!script)
+            if (const u32* known = r.byId.Find(info.classId))
+            {
+                HX_ASSERT(r.classes[*known].name == info.name);
+                return *known;
+            }
         u32 index = u32(r.classes.Size());
         if (!script)
             r.byId.Set(info.classId, index);

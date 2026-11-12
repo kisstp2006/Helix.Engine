@@ -179,7 +179,7 @@ public:                                                                         
             // The objects made as each class (by class index), dense.
             const Array<Object*>* perClass = nullptr;
         };
-        extern ObjectTables gObjectTables;
+        extern HX_IMPORT_DATA ObjectTables gObjectTables;
     }
 
     // Calls f(Object*) for every object of the class and its subclasses until it returns false.

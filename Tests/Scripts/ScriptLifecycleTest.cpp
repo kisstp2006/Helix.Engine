@@ -1,8 +1,14 @@
 #include <Scripts/TestScripts.h>
 #include <Support/TestClasses.h>
+#include <Support/TestShaders.h>
 
 #include <Helix/Engine/Application/Application.h>
 #include <Helix/Engine/Asset/Asset.h>
+#include <Helix/Engine/Material/Material.h>
+#include <Helix/Engine/Mesh/Mesh.h>
+#include <Helix/Engine/Rendering/Camera.h>
+#include <Helix/Engine/Rendering/Graphics.h>
+#include <Helix/Engine/Rendering/Renderer.h>
 #include <Helix/Engine/Scene/SceneFile.h>
 #include <Helix/Engine/Scene/SceneManager.h>
 #include <Helix/Engine/Script/ScriptRuntime.h>
@@ -301,6 +307,112 @@ HX_TEST(Scripts, SendMessageReachesCppScriptsByName)
     RemoveLogSink(&CountErrors, nullptr);
     HX_CHECK(gErrors == 1);
     DestroyImmediate(top);
+    ScriptCalls().Clear();
+    Cleanup();
+}
+
+HX_TEST(Scripts, VisibilityMessagesFollowTheCameras)
+{
+    rhi::Device* device = nullptr;
+    for (rhi::Backend b : {rhi::Backend::D3D11, rhi::Backend::OpenGL})
+        if (!device && rhi::Device::IsBackendAvailable(b))
+            device = rhi::Device::Create({.backend = b, .vsync = false});
+    if (!device)
+    {
+        std::printf("    no device here, skipped\n");
+        return;
+    }
+    {
+        TestShaderFolder shaders;
+        constexpr u32 size = 16;
+        rhi::TextureHandle color =
+            device->CreateTexture({.format = rhi::Format::RGBA8Unorm, .width = size, .height = size, .usage = rhi::TextureRenderTarget | rhi::TextureSampled});
+        rhi::TextureHandle depth = device->CreateTexture({.format = rhi::Format::D32Float, .width = size, .height = size, .usage = rhi::TextureDepthStencil});
+        Graphics::SetDevice(device);
+        Graphics::SetTarget({color, depth, size, size, rhi::Format::RGBA8Unorm, rhi::Format::D32Float});
+        GameObject* camera = GameObject::Create("Camera");
+        camera->transform()->SetPosition(Vector3(0, 0, -10));
+        Camera* c = camera->AddComponent<Camera>();
+        c->SetOrthographic(true);
+        c->SetOrthographicSize(2);
+        Mesh* quad = NewObject<Mesh>();
+        const Vector3 v[] = {{-0.5f, -0.5f, 0}, {-0.5f, 0.5f, 0}, {0.5f, 0.5f, 0}, {0.5f, -0.5f, 0}};
+        const i32 t[] = {0, 1, 2, 0, 2, 3};
+        quad->SetVertices(Span<const Vector3>(v, 4));
+        quad->SetTriangles(Span<const i32>(t, 6));
+        GameObject* g = GameObject::Create("Seen");
+        g->AddComponent<MeshFilter>()->SetSharedMesh(quad);
+        g->AddComponent<MeshRenderer>()->SetSharedMaterial(Material::Create(Shader::Find("Tests/Unlit")));
+        Add<Watcher>(g, "Watcher");
+        ScriptCalls().Clear();
+        // Seen by the camera, still seen, out of its view, back.
+        Graphics::RenderFrame();
+        HX_CHECK(Calls({"Seen:OnBecameVisible"}));
+        Graphics::RenderFrame();
+        HX_CHECK(Calls({}));
+        g->transform()->SetPosition(Vector3(100, 0, 0));
+        Graphics::RenderFrame();
+        HX_CHECK(Calls({"Seen:OnBecameInvisible"}));
+        g->transform()->SetPosition(Vector3(0, 0, 0));
+        Graphics::RenderFrame();
+        HX_CHECK(Calls({"Seen:OnBecameVisible"}));
+        Graphics::ReleaseResources();
+        device->Destroy(color);
+        device->Destroy(depth);
+    }
+    Graphics::SetDevice(nullptr);
+    rhi::Device::Destroy(device);
+    ScriptCalls().Clear();
+    Cleanup();
+}
+
+HX_TEST(Scripts, TheScriptAssetsOrderComesBeforeTheClasses)
+{
+    ScriptCalls().Clear();
+    // Script Execution Order (the MonoScript's) over DefaultExecutionOrder: Late (10 by its class) runs at -20.
+    MonoScript* early = MonoScript::FromScriptClass(Script("Early"));
+    MonoScript* late = MonoScript::FromScriptClass(Script("Late"));
+    late->executionOrder = -20;
+    Guid earlyGuid, lateGuid;
+    Guid::TryParse("d0000000000000000000000000000005", earlyGuid);
+    Guid::TryParse("d0000000000000000000000000000006", lateGuid);
+    RegisterAssetObject(earlyGuid, 11500000, early, true);
+    RegisterAssetObject(lateGuid, 11500000, late, true);
+    const char* file = R"(%YAML 1.1
+%TAG !h! tag:helixengine,2026:
+--- !h!1 &100
+GameObject:
+  m_Component:
+  - component: {fileID: 101}
+  - component: {fileID: 102}
+  - component: {fileID: 103}
+  m_Name: Ordered
+  m_IsActive: 1
+--- !h!4 &101
+Transform:
+  m_GameObject: {fileID: 100}
+  m_Children: []
+  m_Father: {fileID: 0}
+--- !h!114 &102
+GameBehaviour:
+  m_GameObject: {fileID: 100}
+  m_Enabled: 1
+  m_Script: {fileID: 11500000, guid: d0000000000000000000000000000005, type: 3}
+--- !h!114 &103
+GameBehaviour:
+  m_GameObject: {fileID: 100}
+  m_Enabled: 1
+  m_Script: {fileID: 11500000, guid: d0000000000000000000000000000006, type: 3}
+)";
+    Scene s = SceneManager::CreateScene("Ordered");
+    Array<String> errors;
+    HX_CHECK(ReadSceneFile(Span<const u8>(reinterpret_cast<const u8*>(file), std::strlen(file)), s, errors) && errors.Empty());
+    Frame();
+    ScriptCalls().Clear();
+    RunScriptPhase(ScriptMessage::Update);
+    HX_CHECK(Calls({"Ordered:Late.Update", "Ordered:Early.Update"}));
+    SceneManager::UnloadSceneAsync(s);
+    SceneManager::ProcessSceneLoads();
     ScriptCalls().Clear();
     Cleanup();
 }

@@ -47,6 +47,14 @@ namespace helix::engine::testing
         void OnTransformChildrenChanged() { Note(this, "OnTransformChildrenChanged"); }
     };
 
+    // The visibility messages of the renderers of its GameObject.
+    HX_CLASS(Namespace = "EngineTests")
+    class Watcher : public GameBehaviour
+    {
+        void OnBecameVisible() { Note(this, "OnBecameVisible"); }
+        void OnBecameInvisible() { Note(this, "OnBecameInvisible"); }
+    };
+
     HX_CLASS(Namespace = "EngineTests", Order = -10)
     class Early : public GameBehaviour
     {

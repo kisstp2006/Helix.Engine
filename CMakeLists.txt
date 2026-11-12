@@ -30,6 +30,12 @@ helix_bindgen(helix_engine MODULE HelixEngine NAMESPACE HelixEngine KIND Engine 
               CS_OUTPUT engine_cs)
 set(HELIX_ENGINE_BINDINGS_CS "${engine_cs}" CACHE INTERNAL "")
 
+# HelixEngine: the engine and the libraries it links as one shared library (Windows, Linux, Android), which the player
+# and the C++ game modules it loads link, so a module uses the engine of its process.
+if(NOT HELIX_PLATFORM STREQUAL "web")
+    helix_add_shared_runtime(helix_engine_shared ROOT helix_engine ALIAS EngineShared OUTPUT_NAME HelixEngine)
+endif()
+
 # The built in shaders are C#: built with the .NET SDK and embedded with the shader library they call into. The C#
 # shader library and the embedding script are found where their repos are (this repo may be a dependency itself).
 find_program(HELIX_DOTNET NAMES dotnet HINTS "$ENV{HELIX_DOTNET_ROOT}" "$ENV{DOTNET_ROOT}" REQUIRED)

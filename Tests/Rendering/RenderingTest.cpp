@@ -1,6 +1,7 @@
 #include <Support/Golden.h>
 #include <Support/TestShaders.h>
 
+#include <Helix/Core/Logging/Log.h>
 #include <Helix/Engine/Rendering/Graphics.h>
 #include <Helix/Engine/Rendering/Light.h>
 #include <Helix/Engine/Rendering/Renderer.h>
@@ -337,7 +338,17 @@ HX_TEST(Rendering, BackFacesAreCulledOnEveryDevice)
         red->SetColor("color", Color(1, 0, 0, 1));
         Thing("Front", front, red, Vector3(-1, 0, 0), 2);
         Thing("Back", back, red, Vector3(1, 0, 0), 2);
+        // A mesh scripts may not read (as model files make them) is drawn without an error in the log.
+        front->UploadMeshData(true);
+        u32 errors = 0;
+        LogSink count = [](const LogMessage& m, void* user) {
+            if (m.level >= LogLevel::Error)
+                ++*static_cast<u32*>(user);
+        };
+        AddLogSink(count, &errors);
         Graphics::RenderFrame();
+        RemoveLogSink(count, &errors);
+        HX_CHECK(errors == 0 && !front->isReadable());
         Array<u32> pixels;
         pixels.Resize(size * size);
         HX_REQUIRE(device.ReadTexture(color, 0, pixels.Data(), pixels.Size() * 4));

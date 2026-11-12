@@ -148,11 +148,11 @@ namespace helix::engine
             {
                 SubMeshDescriptor d = mesh.GetSubMesh(k);
                 Array<i32> list;
-                mesh.GetIndices(list, k, false);
-                if (!mesh.isReadable())
+                if (mesh.isReadable())
+                    mesh.GetIndices(list, k, false);
+                else
                 {
-                    // Not readable: the index block as it is.
-                    list.Clear();
+                    // Not readable (scripts may not read it, the renderer may): the index block as it is.
                     Span<const u8> block = mesh.IndexData();
                     bool wide = mesh.indexFormat() == IndexFormat::UInt32;
                     for (i32 i = 0; i < d.indexCount; i++)

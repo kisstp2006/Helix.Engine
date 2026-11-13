@@ -6,6 +6,7 @@
 #include <Helix/Math/Simd.h>
 
 #include <cstring>
+#include <mutex>
 
 // Under AddressSanitizer every block gets its own allocation, so a stale node pointer is reported.
 #if defined(__SANITIZE_ADDRESS__)
@@ -535,6 +536,24 @@ namespace helix::engine
             changedMask[j] = c;
             changed |= c;
         }
+        if (!h.worldDirty || h.worldSlot == ~0u)
+            NoteState(h, true, 0);
+        if (changed)
+            NoteState(h, false, changed);
+    }
+
+    void TransformAccess::MarkChangedFromWorker(TransformHierarchy& h, u32 i)
+    {
+        static std::mutex lock;
+        u32 changed = 0;
+        for (u32 j = i, end = i + h.size[i]; j < end; j++)
+        {
+            h.flags[j] |= TransformFlags::WorldDirty | TransformFlags::HasChanged;
+            u32 c = h.changed[j] | h.interest[j];
+            h.changed[j] = c;
+            changed |= c;
+        }
+        std::lock_guard<std::mutex> guard(lock);
         if (!h.worldDirty || h.worldSlot == ~0u)
             NoteState(h, true, 0);
         if (changed)

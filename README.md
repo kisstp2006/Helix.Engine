@@ -41,6 +41,8 @@ reports it.
 | `Source/Helix/Engine/Asset/AssetLoader.h` | `AssetLoader`, `RegisterAssetLoader`: loaders by file extension, decode and integrate halves |
 | `Source/Helix/Engine/Asset/Resources.h` | `Resources`: `Load`, `LoadAll`, `LoadAsync`, `UnloadAsset`, `UnloadUnusedAssets` |
 | `Source/Helix/Engine/Mesh/Mesh.h` | `Mesh`, `VertexAttributeDescriptor`, `SubMeshDescriptor`, `VertexAttribute`, `VertexAttributeFormat`, `IndexFormat`, `MeshTopology` |
+| `Source/Helix/Engine/Mesh/MeshData.h` | `MeshDataNative`: the meshes of C#'s `Mesh.MeshData` for jobs (hidden copies and new meshes, applied with `SetMeshData`) |
+| `Source/Helix/Engine/Jobs/ManagedJobs.h` | `JobsNative`, `TransformAccessNative`: C# jobs on Helix.Jobs (one entry point per job type, dependencies, parallel batches, the frame's `Temp` memory, `TempJob` and `Persistent` allocations), transform arrays and the transform job's reads and writes on the workers |
 | `Source/Helix/Engine/Texture/Texture.h` | `Texture`, `Texture2D`, `TextureFormat`, `FilterMode`, `TextureWrapMode` |
 | `Source/Helix/Engine/Shader/Shader.h` | `Shader`, `ShaderVariant`, `ShaderPropertyType`, `ShaderPropertyFlags`: shaders of C# assemblies, variants on demand, global keywords and properties |
 | `Source/Helix/Engine/Material/Material.h` | `Material`, `MaterialPropertyBlock`, `MaterialPassData` (block bytes and textures per pass and variant) |
@@ -387,7 +389,8 @@ walking the same tree instead of the compiled list takes 2.8 times as long.
   SceneManager, ScriptableObject, Shader and its keywords, Material, Mesh, Texture, Texture2D, MeshFilter, Renderer,
   MeshRenderer, Camera, Light, GeometryUtility, ScreenCapture and the value types of Helix.Math are tagged (members
   C# needs in another shape go through internal functions: MaterialPropertyBlock's block table, RenderParams and
-  `Graphics.RenderMesh`); Helix.Bindgen makes their C# (HelixEngine.CoreModule)
+  `Graphics.RenderMesh`; the job system, transform access and mesh data of C# jobs); spans of plain values also take
+  C#'s `NativeArray<T>` as it is; Helix.Bindgen makes their C# (HelixEngine.CoreModule)
   and the C++ script API (`<HelixEngine/HelixEngineApi.h>`: value handles of the engine's objects over the same
   function table, the class C++ scripts derive from), so both languages have the same members.
 - Script fields: a script's serialized fields go after `m_Script` in every visitor of its GameBehaviour (scene and

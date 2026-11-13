@@ -233,37 +233,37 @@ namespace helix::engine
             return out;
         }
         // A generic buffer write (C#'s SetVertexBufferData<T> / SetIndexBufferData<T>); starts and count in bytes.
-        HX_FUNCTION(Internal, Void) bool SetVertexBufferRaw(Span<const u8> data, i32 dataStart, i32 meshBufferStart, i32 count, i32 stream, MeshUpdateFlags flags)
+        HX_FUNCTION(Internal, Void, NativeArrays) bool SetVertexBufferRaw(Span<const u8> data, i32 dataStart, i32 meshBufferStart, i32 count, i32 stream, MeshUpdateFlags flags)
         {
             return SetVertexBufferBytes(data.Data(), data.Size(), usize(dataStart), usize(meshBufferStart), usize(count), stream, flags);
         }
-        HX_FUNCTION(Internal, Void) bool SetIndexBufferRaw(Span<const u8> data, i32 dataStart, i32 meshBufferStart, i32 count, MeshUpdateFlags flags)
+        HX_FUNCTION(Internal, Void, NativeArrays) bool SetIndexBufferRaw(Span<const u8> data, i32 dataStart, i32 meshBufferStart, i32 count, MeshUpdateFlags flags)
         {
             return SetIndexBufferBytes(data.Data(), data.Size(), usize(dataStart), usize(meshBufferStart), usize(count), flags);
         }
 
         // Positions; a different count resizes every attribute (new vertices zero). False with an error when the
         // indices use more vertices than given. Recalculates the bounds.
-        HX_FUNCTION(Void) bool SetVertices(Span<const Vector3> vertices);
+        HX_FUNCTION(Void, NativeArrays) bool SetVertices(Span<const Vector3> vertices);
         void GetVertices(Array<Vector3>& out) const;
         Array<Vector3> vertices() const;
         // The other attributes need one value per vertex; an empty list removes the attribute.
-        HX_FUNCTION(Void) bool SetNormals(Span<const Vector3> normals);
+        HX_FUNCTION(Void, NativeArrays) bool SetNormals(Span<const Vector3> normals);
         void GetNormals(Array<Vector3>& out) const;
         Array<Vector3> normals() const;
-        HX_FUNCTION(Void) bool SetTangents(Span<const Vector4> tangents);
+        HX_FUNCTION(Void, NativeArrays) bool SetTangents(Span<const Vector4> tangents);
         void GetTangents(Array<Vector4>& out) const;
         Array<Vector4> tangents() const;
-        HX_FUNCTION(Void) bool SetColors(Span<const Color> colors);
+        HX_FUNCTION(Void, NativeArrays) bool SetColors(Span<const Color> colors);
         void GetColors(Array<Color>& out) const;
         Array<Color> colors() const;
-        HX_FUNCTION(Void) bool SetColors(Span<const Color32> colors);
+        HX_FUNCTION(Void, NativeArrays) bool SetColors(Span<const Color32> colors);
         void GetColors(Array<Color32>& out) const;
         Array<Color32> colors32() const;
         // Texture coordinates of set 0 to 7 with 2, 3 or 4 components.
-        HX_FUNCTION(Void) bool SetUVs(i32 channel, Span<const Vector2> uvs);
-        HX_FUNCTION(Void) bool SetUVs(i32 channel, Span<const Vector3> uvs);
-        HX_FUNCTION(Void) bool SetUVs(i32 channel, Span<const Vector4> uvs);
+        HX_FUNCTION(Void, NativeArrays) bool SetUVs(i32 channel, Span<const Vector2> uvs);
+        HX_FUNCTION(Void, NativeArrays) bool SetUVs(i32 channel, Span<const Vector3> uvs);
+        HX_FUNCTION(Void, NativeArrays) bool SetUVs(i32 channel, Span<const Vector4> uvs);
         void GetUVs(i32 channel, Array<Vector2>& out) const;
         void GetUVs(i32 channel, Array<Vector3>& out) const;
         void GetUVs(i32 channel, Array<Vector4>& out) const;
@@ -275,7 +275,7 @@ namespace helix::engine
         HX_FUNCTION(Void) bool SetTriangles(Span<const i32> triangles, i32 submesh, bool calculateBounds = true, i32 baseVertex = 0);
         void GetTriangles(Array<i32>& out, i32 submesh, bool applyBaseVertex = true) const;
         HX_FUNCTION() Array<i32> GetTriangles(i32 submesh, bool applyBaseVertex = true) const;
-        HX_FUNCTION(Void) bool SetIndices(Span<const i32> indices, MeshTopology topology, i32 submesh, bool calculateBounds = true, i32 baseVertex = 0);
+        HX_FUNCTION(Void, NativeArrays) bool SetIndices(Span<const i32> indices, MeshTopology topology, i32 submesh, bool calculateBounds = true, i32 baseVertex = 0);
         void GetIndices(Array<i32>& out, i32 submesh, bool applyBaseVertex = true) const;
         HX_FUNCTION() Array<i32> GetIndices(i32 submesh, bool applyBaseVertex = true) const;
         HX_FUNCTION() u32 GetIndexStart(i32 submesh) const;
@@ -296,7 +296,7 @@ namespace helix::engine
         // ---------------------------------------------------------------------------------------------- advanced API
         // The vertex count and layout; data of attributes in both layouts is kept (converted), new ones are zero.
         // C# takes the attributes as params (a partial).
-        HX_FUNCTION(Void, Internal, Name = "SetVertexBufferParamsNative") bool SetVertexBufferParams(i32 vertexCount, Span<const VertexAttributeDescriptor> attributes);
+        HX_FUNCTION(Void, Internal, NativeArrays, Name = "SetVertexBufferParamsNative") bool SetVertexBufferParams(i32 vertexCount, Span<const VertexAttributeDescriptor> attributes);
         // `count` elements of T from data[dataStart] to element `meshBufferStart` of the stream (elements of T).
         template <class T>
         bool SetVertexBufferData(Span<const T> data, i32 dataStart, i32 meshBufferStart, i32 count, i32 stream = 0,
@@ -313,7 +313,7 @@ namespace helix::engine
                                        usize(meshBufferStart) * sizeof(T), usize(count) * sizeof(T), flags);
         }
         HX_FUNCTION(Void) bool SetSubMesh(i32 index, const SubMeshDescriptor& descriptor, MeshUpdateFlags flags = MeshUpdateFlags::Default);
-        HX_FUNCTION(Void) bool SetSubMeshes(Span<const SubMeshDescriptor> descriptors, MeshUpdateFlags flags = MeshUpdateFlags::Default);
+        HX_FUNCTION(Void, NativeArrays) bool SetSubMeshes(Span<const SubMeshDescriptor> descriptors, MeshUpdateFlags flags = MeshUpdateFlags::Default);
         HX_FUNCTION() SubMeshDescriptor GetSubMesh(i32 index) const;
 
         HX_PROPERTY(ReadOnly) i32 vertexBufferCount() const;

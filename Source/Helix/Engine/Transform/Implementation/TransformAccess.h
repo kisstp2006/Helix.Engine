@@ -26,6 +26,8 @@ namespace helix::engine
         static void SetWorld(Transform* t, const Matrix4x4& world, Quaternion rotation);
         // The changed and world dirty marks over the subtree of node i.
         static void MarkChanged(TransformHierarchy& h, u32 i);
+        // The same from a worker that owns the hierarchy for a job (the lists of all hierarchies under a lock).
+        static void MarkChangedFromWorker(TransformHierarchy& h, u32 i);
         // A hierarchy for `clones`, a copy of `originals` (whole subtrees of one hierarchy, in node order, live nodes
         // only): parents, local values and order; a new root at the end of the roots.
         static void BuildClone(Span<Transform* const> originals, Span<Transform* const> clones, u32 scene);

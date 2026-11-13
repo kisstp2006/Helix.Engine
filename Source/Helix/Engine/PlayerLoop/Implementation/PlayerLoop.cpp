@@ -3,6 +3,7 @@
 #include <Helix/Engine/Application/Application.h>
 #include <Helix/Engine/Asset/Asset.h>
 #include <Helix/Engine/GameObject/Lifecycle.h>
+#include <Helix/Engine/Jobs/ManagedJobs.h>
 #include <Helix/Engine/PlayerLoop/PlayerLoop.h>
 #include <Helix/Engine/Rendering/Graphics.h>
 #include <Helix/Engine/Scene/SceneManager.h>
@@ -156,7 +157,12 @@ namespace helix::engine
         // Coroutines and waits at their points of the frame.
         void DelayedFixed(void*) { RunCoroutines(CoroutinePoint::FixedUpdate); }
         void DelayedDynamic(void*) { RunCoroutines(CoroutinePoint::Update); }
-        void EndOfFrame(void*) { RunCoroutines(CoroutinePoint::EndOfFrame); }
+        // Coroutines waiting for the end of the frame, then the frame's Temp memory goes.
+        void EndOfFrame(void*)
+        {
+            RunCoroutines(CoroutinePoint::EndOfFrame);
+            JobsNative::EndFrame();
+        }
         void DelayedTasks(void*) { RunDelayedTasks(); }
         void BeforeRender(void*) { Application::onBeforeRender().Invoke(); }
         // Renderer data up to date, then every camera (the placeholder renderer until the pipelines).

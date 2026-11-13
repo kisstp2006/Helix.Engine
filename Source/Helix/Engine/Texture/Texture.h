@@ -278,7 +278,16 @@ namespace helix::engine
         }
         // Every mip one after the other.
         Span<u8> GetRawTextureData() const;
-        HX_FUNCTION(Void) bool LoadRawTextureData(Span<const u8> data);
+        HX_FUNCTION(Void, NativeArrays) bool LoadRawTextureData(Span<const u8> data);
+        // Where the bytes of a mip and of every mip are (C# views them as NativeArrays); 0 when there are none.
+        HX_FUNCTION(Internal) u64 PixelDataAddress(i32 mipLevel) const { return u64(uptr(MipBytes(mipLevel).Data())); }
+        HX_FUNCTION(Internal) i32 PixelDataSize(i32 mipLevel) const { return i32(MipBytes(mipLevel).Size()); }
+        HX_FUNCTION(Internal) u64 RawTextureDataAddress() const { return u64(uptr(GetRawTextureData().Data())); }
+        HX_FUNCTION(Internal) i32 RawTextureDataSize() const { return i32(GetRawTextureData().Size()); }
+        HX_FUNCTION(Internal, Void, NativeArrays) bool SetPixelDataRaw(Span<const u8> data, i32 mipLevel)
+        {
+            return SetPixelBytes(data.Data(), data.Size(), mipLevel);
+        }
         // The raw bytes as a result (the reference's byte[] GetRawTextureData()).
         HX_FUNCTION(Name = "GetRawTextureData") Array<u8> RawTextureData() const
         {

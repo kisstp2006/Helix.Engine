@@ -165,7 +165,7 @@ namespace helix::engine
         }
         void DelayedTasks(void*) { RunDelayedTasks(); }
         void BeforeRender(void*) { Application::onBeforeRender().Invoke(); }
-        // Renderer data up to date, then every camera (the placeholder renderer until the pipelines).
+        // Renderer data up to date, then every camera through the render pipeline.
         void FinishRendering(void*) { Graphics::RenderFrame(); }
     }
 

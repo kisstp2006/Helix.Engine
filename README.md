@@ -3,8 +3,8 @@
 The runtime of the Helix engine: the object model, GameObjects and components, tags and layers, the lifecycle of
 objects (instantiate, InstantiateAsync, destroy), the transform hierarchy, scenes and scene files, prefabs and pools,
 time, the player loop, the application and settings assets, the asset runtime with meshes and textures, shaders and
-materials, the rendering components with a placeholder renderer on Helix.RHI, and the screen as a player host
-reports it.
+materials, the rendering components with the scriptable pipeline API on Helix.RHI (pipeline assets and pipelines
+of C++ and C# scripts, a fallback pipeline without an asset), and the screen as a player host reports it.
 
 ## Contents
 
@@ -50,7 +50,12 @@ reports it.
 | `Source/Helix/Engine/Rendering/Renderer.h` | `MeshFilter`, `Renderer`, `MeshRenderer`, `ShadowCastingMode` |
 | `Source/Helix/Engine/Rendering/Camera.h` | `Camera`, `CameraClearFlags`, `CameraType`, `DepthTextureMode`, `GeometryUtility` |
 | `Source/Helix/Engine/Rendering/Light.h` | `Light`, `LightType`, `LightShadows`, `LightRenderMode` |
-| `Source/Helix/Engine/Rendering/Graphics.h` | `Graphics` (device, target, `RenderFrame`, `RenderMesh`), `RenderParams`, `RenderTarget`, `RenderStats`: the placeholder renderer |
+| `Source/Helix/Engine/Rendering/Graphics.h` | `Graphics` (device, target, `RenderFrame`, `RenderMesh`, `ExecuteCommandBuffer`), `RenderParams`, `RenderTarget`, `RenderStats` |
+| `Source/Helix/Engine/Rendering/Pipeline/RenderPipeline.h` | `RenderPipeline`, `RenderPipelineManager` (events, the current pipeline), `GraphicsSettings` and `QualitySettings` pipeline assets, the factories of pipelines by script language |
+| `Source/Helix/Engine/Rendering/Pipeline/ScriptableRenderContext.h` | `ScriptableRenderContext`: `Cull`, `DrawRenderers`, `SetupCameraProperties`, `ExecuteCommandBuffer`, `InvokeOnRenderObjectCallback`, `Submit` |
+| `Source/Helix/Engine/Rendering/Pipeline/CommandBuffer.h` | `CommandBuffer`: clears, viewport and scissor, view and projection, globals and keywords, `DrawMesh`, `DrawRenderer`, samples |
+| `Source/Helix/Engine/Rendering/Pipeline/RenderStates.h` | `SortingSettings`, `DrawingSettings`, `FilteringSettings`, `RenderQueueRange`, `RenderStateBlock` and its states, `ScriptableCullingParameters`, `CullingResults`, `VisibleLight`, the rendering enums |
+| `Source/Helix/Engine/Rendering/Pipeline/RenderPipelineNative.h` | `RenderPipelineNative`, `DrawRendererData`: what C#'s pipeline API calls |
 | `Source/Helix/Engine/Rendering/ScreenCapture.h` | `ScreenCapture::CaptureScreenshot`: the frame drawn again into a texture and written as PNG |
 | `Source/Helix/Engine/Script/GameBehaviour.h` | `GameBehaviour` (class 114): the base of scripts in C++ and C# |
 | `Source/Helix/Engine/Script/ScriptableObject.h` | `ScriptableObject`: script objects of both languages that are no components (`CreateInstance`; class 114 documents) |
@@ -172,11 +177,23 @@ reports it.
 - Cameras keep the reference's matrices (camera space looks along -z, clip depth -1 to 1); the renderer gives the GPU
   the projection with depth 0 to 1. Vertex inputs are [Location(n)] for VertexAttribute n; the engine's blocks take
   slots 9 (camera: view, projection, position, the main light, ambient) and 10 (draw: object to world and back).
-- The placeholder renderer (until the pipelines): the host sets a device and a target; each frame every enabled
-  camera by depth culls by frustum (on jobs) and culling mask, sorts opaque queues by variant and front to back and
-  transparent ones back to front, and draws each submesh with the first pass of its material that is no shadow, depth
-  or meta pass (the error shader for missing materials). A camera with a viewport smaller than the target clears it by
-  drawing (Hidden/InternalClear). GPU meshes (formats the GPU lacks widened to float, missing attributes read zero),
+- Rendering: the host sets a device and a target; each frame the active pipeline renders every enabled camera by
+  depth. A pipeline asset is a ScriptableObject whose script makes the pipeline (a C# RenderPipelineAsset, or a C++
+  script with `RenderPipeline* CreatePipeline()`), set in `GraphicsSettings::SetDefaultRenderPipeline` or
+  `QualitySettings::SetRenderPipeline` (the quality level's wins); the pipeline is made once, disposed when the asset
+  changes, is reset or the device changes, and the manager's events (context and camera rendering, asset and type
+  changes) reach both languages. `ScriptableRenderContext::Cull` culls the renderers and Graphics.RenderMesh's meshes
+  by the parameters' planes (on jobs) and culling mask, and the lights by their layer and range, and tells the
+  camera's visible renderers OnWillRenderObject; `DrawRenderers` draws the filtered ones (queue range, layer and
+  rendering layer masks) with their materials' passes of the settings' tags (a pass without a LightMode tag is
+  SRPDefaultUnlit), sorted by the criteria, with override materials or shaders and a RenderStateBlock's blend, depth
+  and cull state over the pass's; the other calls and command buffers are recorded and run on the device at
+  `Submit`, in order. Clears take the whole target as a render pass clear, a smaller viewport by drawing
+  (Hidden/InternalClear). The camera block (slot 9) holds the camera's matrices and position, the brightest
+  directional light it sees and the ambient color. Without an asset the fallback pipeline draws each camera, cleared
+  by its flags, with each material's first pass that is no shadow, depth, meta or motion pass, opaque queues by
+  variant and front to back, transparent ones back to front, with the camera messages (OnPreCull, OnPreRender,
+  OnPostRender, OnRenderObject). GPU meshes (formats the GPU lacks widened to float, missing attributes read zero),
   textures, samplers, shaders and pipelines are cached by the versions of their sources; meshes and textures that are
   not readable drop their CPU copy once uploaded.
 - Screen keeps what the host reports (render size, dpi, mode, displays, window position) and queues what scripts ask

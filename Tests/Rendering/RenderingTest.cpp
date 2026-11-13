@@ -3,6 +3,10 @@
 
 #include <Helix/Core/Logging/Log.h>
 #include <Helix/Engine/Rendering/Graphics.h>
+#include <Helix/Engine/Rendering/Pipeline/RenderPipeline.h>
+#include <Scripts/TestScripts.h>
+#include <Helix/Engine/Script/ScriptRuntime.h>
+#include <Helix/Scripting/Bindings/Interop.h>
 #include <Helix/Engine/Rendering/Light.h>
 #include <Helix/Engine/Rendering/Renderer.h>
 #include <Helix/Engine/Rendering/ScreenCapture.h>
@@ -200,22 +204,17 @@ HX_TEST(Rendering, RenderersFollowTheirTransforms)
     HX_CHECK(EntityIdToObject(ownId) == nullptr);
 }
 
-HX_TEST(Rendering, PlaceholderRendererDrawsOnEveryDevice)
+namespace
 {
-    constexpr u32 size = 32;
-    u32 devices = 0;
-    ForEachDevice([&](rhi::Device& device) {
-        devices++;
-        // The scene and the shaders go with each device (the folder's end destroys every object).
-        TestShaderFolder shaders;
-        HX_REQUIRE(Shader::Find("Tests/Unlit") && Shader::Find("Tests/Lambert"));
-        rhi::TextureHandle color =
-            device.CreateTexture({.format = rhi::Format::RGBA8Unorm, .width = size, .height = size, .usage = rhi::TextureRenderTarget | rhi::TextureSampled});
-        rhi::TextureHandle depth = device.CreateTexture({.format = rhi::Format::D32Float, .width = size, .height = size, .usage = rhi::TextureDepthStencil});
-        Graphics::SetDevice(&device);
-        Graphics::SetTarget({color, depth, size, size, rhi::Format::RGBA8Unorm, rhi::Format::D32Float});
-        Graphics::SetAmbientLight(Color(0.25f, 0.25f, 0.25f, 1));
+    struct GoldenScene
+    {
+        Mesh* quad;
+        Material* red;
+    };
 
+    // Two cameras and six quads of the golden image (32 pixels square).
+    GoldenScene MakeGoldenScene()
+    {
         // An orthographic camera 8 units wide at z -10 looking along +z: one unit is 4 pixels.
         MakeCamera(Vector3(0, 0, -10), 4);
         Mesh* quad = Quad();
@@ -257,6 +256,26 @@ HX_TEST(Rendering, PlaceholderRendererDrawsOnEveryDevice)
         corner->SetRect(Rect{0.75f, 0.75f, 0.25f, 0.25f});
         corner->SetCullingMask(1u << 8);
         corner->SetBackgroundColor(Color(0, 1, 0, 1));
+        return {quad, red};
+    }
+}
+
+HX_TEST(Rendering, FallbackPipelineDrawsOnEveryDevice)
+{
+    constexpr u32 size = 32;
+    u32 devices = 0;
+    ForEachDevice([&](rhi::Device& device) {
+        devices++;
+        // The scene and the shaders go with each device (the folder's end destroys every object).
+        TestShaderFolder shaders;
+        HX_REQUIRE(Shader::Find("Tests/Unlit") && Shader::Find("Tests/Lambert"));
+        rhi::TextureHandle color =
+            device.CreateTexture({.format = rhi::Format::RGBA8Unorm, .width = size, .height = size, .usage = rhi::TextureRenderTarget | rhi::TextureSampled});
+        rhi::TextureHandle depth = device.CreateTexture({.format = rhi::Format::D32Float, .width = size, .height = size, .usage = rhi::TextureDepthStencil});
+        Graphics::SetDevice(&device);
+        Graphics::SetTarget({color, depth, size, size, rhi::Format::RGBA8Unorm, rhi::Format::D32Float});
+        Graphics::SetAmbientLight(Color(0.25f, 0.25f, 0.25f, 1));
+        MakeGoldenScene();
 
         Graphics::RenderFrame();
         const RenderStats& stats = Graphics::LastStats();
@@ -276,7 +295,7 @@ HX_TEST(Rendering, PlaceholderRendererDrawsOnEveryDevice)
         // The corner camera: green with the layer 8 quad (the center) in it.
         HX_CHECK(NearColor(Pixel(pixels, size, 31, 0), Rgba(0, 255, 0)) && NearColor(Pixel(pixels, size, 28, 4), Rgba(255, 0, 0)));
         HX_CHECK(NearColor(Pixel(pixels, size, 16, 16), Rgba(0, 0, 0)));
-        HX_CHECK(MatchGolden("PlaceholderScene", pixels.Data(), size, size));
+        HX_CHECK(MatchGolden("FallbackScene", pixels.Data(), size, size));
         // A second frame makes nothing new.
         Graphics::RenderFrame();
         HX_CHECK(Graphics::LastStats().pipelinesCreated == 0 && Graphics::LastStats().uploads == 0);
@@ -358,4 +377,220 @@ HX_TEST(Rendering, BackFacesAreCulledOnEveryDevice)
         device.Destroy(color);
         device.Destroy(depth);
     });
+}
+
+HX_BINDINGS_EXPORT void HxBindings_EngineTests_Publish();
+
+namespace
+{
+    // The C++ pipeline asset of the test module (registered as a module linked into a player is, unloaded after).
+    ScriptableObject* MakePipelineAsset(bool& registered)
+    {
+        if (!registered)
+        {
+            HxBindings_EngineTests_Publish();
+            String error;
+            registered = RegisterLinkedGameModule("EngineTests", error);
+            if (!registered)
+                std::printf("    %.*s\n", int(error.Size()), error.Data());
+        }
+        return ScriptableObject::CreateInstanceByName("TestPipelineAsset");
+    }
+
+    struct EventLog
+    {
+        Array<String> lines;
+        u32 tokens[6] = {};
+
+        EventLog()
+        {
+            tokens[0] = RenderPipelineManager::beginContextRendering().Add(
+                [](void* u, ScriptableRenderContext&, Span<Camera* const> c) { static_cast<EventLog*>(u)->lines.Push(Format("beginContext:{}", c.Size())); }, this);
+            tokens[1] = RenderPipelineManager::endContextRendering().Add(
+                [](void* u, ScriptableRenderContext&, Span<Camera* const> c) { static_cast<EventLog*>(u)->lines.Push(Format("endContext:{}", c.Size())); }, this);
+            tokens[2] = RenderPipelineManager::beginCameraRendering().Add(
+                [](void* u, ScriptableRenderContext&, Camera* c) { static_cast<EventLog*>(u)->lines.Push(Format("beginCamera:{}", i32(c->depth()))); }, this);
+            tokens[3] = RenderPipelineManager::endCameraRendering().Add(
+                [](void* u, ScriptableRenderContext&, Camera* c) { static_cast<EventLog*>(u)->lines.Push(Format("endCamera:{}", i32(c->depth()))); }, this);
+            tokens[4] = RenderPipelineManager::activeRenderPipelineAssetChanged().Add(
+                [](void* u, ScriptableObject* from, ScriptableObject* to) {
+                    static_cast<EventLog*>(u)->lines.Push(Format("asset:{}>{}", from ? "asset" : "none", to ? "asset" : "none"));
+                },
+                this);
+            tokens[5] = RenderPipelineManager::activeRenderPipelineTypeChanged().Add([](void* u) { static_cast<EventLog*>(u)->lines.Push("type"); }, this);
+        }
+
+        ~EventLog()
+        {
+            RenderPipelineManager::beginContextRendering().Remove(tokens[0]);
+            RenderPipelineManager::endContextRendering().Remove(tokens[1]);
+            RenderPipelineManager::beginCameraRendering().Remove(tokens[2]);
+            RenderPipelineManager::endCameraRendering().Remove(tokens[3]);
+            RenderPipelineManager::activeRenderPipelineAssetChanged().Remove(tokens[4]);
+            RenderPipelineManager::activeRenderPipelineTypeChanged().Remove(tokens[5]);
+        }
+
+        bool Take(std::initializer_list<const char*> expected)
+        {
+            bool same = lines.Size() == expected.size();
+            usize i = 0;
+            for (const char* e : expected)
+                same = same && i < lines.Size() && lines[i++] == StringView(e);
+            if (!same)
+                for (const String& l : lines)
+                    std::printf("    %.*s\n", int(l.Size()), l.Data());
+            lines.Clear();
+            return same;
+        }
+    };
+}
+
+HX_TEST(Rendering, ACppScriptablePipelineDrawsTheGoldenSceneOnEveryDevice)
+{
+    constexpr u32 size = 32;
+    u32 devices = 0;
+    bool registered = false;
+    ForEachDevice([&](rhi::Device& device) {
+        devices++;
+        TestShaderFolder shaders;
+        rhi::TextureHandle color =
+            device.CreateTexture({.format = rhi::Format::RGBA8Unorm, .width = size, .height = size, .usage = rhi::TextureRenderTarget | rhi::TextureSampled});
+        rhi::TextureHandle depth = device.CreateTexture({.format = rhi::Format::D32Float, .width = size, .height = size, .usage = rhi::TextureDepthStencil});
+        Graphics::SetDevice(&device);
+        Graphics::SetTarget({color, depth, size, size, rhi::Format::RGBA8Unorm, rhi::Format::D32Float});
+        Graphics::SetAmbientLight(Color(0.25f, 0.25f, 0.25f, 1));
+        GoldenScene scene = MakeGoldenScene();
+        ScriptableObject* asset = MakePipelineAsset(registered);
+        HX_REQUIRE(asset != nullptr);
+        TestPipeline::made = TestPipeline::disposed = 0;
+        EventLog events;
+
+        // The asset's pipeline draws what the fallback drew: the golden image of the fallback test.
+        GraphicsSettings::SetDefaultRenderPipeline(asset);
+        HX_CHECK(GraphicsSettings::currentRenderPipeline() == asset && QualitySettings::GetRenderPipelineAssetAt(0) == nullptr);
+        Graphics::RenderFrame();
+        HX_CHECK(TestPipeline::made == 1 && RenderPipelineManager::currentAsset() == asset);
+        HX_CHECK(events.Take({"asset:none>asset", "type", "beginContext:2", "beginCamera:0", "endCamera:0", "beginCamera:1", "endCamera:1", "endContext:2"}));
+        HX_CHECK(Graphics::LastStats().cameras == 2 && Graphics::LastStats().drawCalls == 6);
+        Array<u32> pixels;
+        pixels.Resize(size * size);
+        HX_REQUIRE(device.ReadTexture(color, 0, pixels.Data(), pixels.Size() * 4));
+        HX_CHECK(MatchGolden("FallbackScene", pixels.Data(), size, size));
+        // The sun is visible to the main camera (its layer 0 is not in the corner camera's mask): white at half intensity.
+        HX_CHECK(TestPipeline::visibleLights == 1 && Near(TestPipeline::lightColor.r, 0.5f) && Near(TestPipeline::lightColor.b, 0.5f));
+
+        // The same pipeline the next frame; results of the frame before are no longer valid.
+        Graphics::RenderFrame();
+        HX_CHECK(TestPipeline::made == 1 && !TestPipeline::lastWasValid);
+        events.lines.Clear();
+
+        // An override material: every quad red; a state block culling front faces: nothing.
+        TestPipeline::overrideMaterial = scene.red;
+        Graphics::RenderFrame();
+        HX_REQUIRE(device.ReadTexture(color, 0, pixels.Data(), pixels.Size() * 4));
+        HX_CHECK(NearColor(Pixel(pixels, size, 20, 10), Rgba(255, 0, 0)) && NearColor(Pixel(pixels, size, 26, 26), Rgba(255, 0, 0)));
+        TestPipeline::overrideMaterial = nullptr;
+        TestPipeline::state = RenderStateBlock(RenderStateMask::Raster);
+        TestPipeline::state.rasterState.cullingMode = CullMode::Front;
+        Graphics::RenderFrame();
+        HX_REQUIRE(device.ReadTexture(color, 0, pixels.Data(), pixels.Size() * 4));
+        HX_CHECK(NearColor(Pixel(pixels, size, 5, 5), Rgba(0, 0, 0)) && Graphics::LastStats().drawCalls == 6);
+        TestPipeline::state = RenderStateBlock();
+        // A layer mask without the default layer: only the corner's quad of layer 8.
+        TestPipeline::layerMask = 1 << 8;
+        Graphics::RenderFrame();
+        HX_CHECK(Graphics::LastStats().drawCalls == 1);
+        TestPipeline::layerMask = -1;
+
+        // Commands run where the context runs them: globals and keywords change at Submit, meshes draw over the scene.
+        CommandBuffer extra;
+        extra.SetName("Extra");
+        i32 value = PropertyToID("_PipelineTestValue");
+        extra.SetGlobalFloat(value, 3);
+        extra.EnableShaderKeyword("PIPELINE_TEST");
+        extra.SetViewport(Rect{0, 0, f32(size), f32(size)});
+        extra.DrawMesh(scene.quad, Matrix4x4::TRS(Vector3(2, -2, 0), Quaternion::identity, Vector3(2, 2, 2)), scene.red, 0, 0);
+        extra.BeginSample("Extra");
+        extra.EndSample("Extra");
+        HX_CHECK(extra.name() == StringView("Extra") && extra.sizeInBytes() > 0);
+        Shader::SetGlobalFloat(value, 0);
+        Shader::DisableKeyword("PIPELINE_TEST");
+        TestPipeline::extra = &extra;
+        Graphics::RenderFrame();
+        TestPipeline::extra = nullptr;
+        HX_CHECK(Shader::GetGlobalFloat(value) == 3 && Shader::IsKeywordEnabled("PIPELINE_TEST"));
+        HX_REQUIRE(device.ReadTexture(color, 0, pixels.Data(), pixels.Size() * 4));
+        HX_CHECK(NearColor(Pixel(pixels, size, 26, 26), Rgba(255, 0, 0)));
+        Shader::DisableKeyword("PIPELINE_TEST");
+        extra.Clear();
+        HX_CHECK(extra.sizeInBytes() == 0);
+
+        // Graphics.ExecuteCommandBuffer runs at once over the whole target.
+        CommandBuffer now;
+        now.ClearRenderTarget(true, true, Color(0, 0, 1, 1));
+        Graphics::ExecuteCommandBuffer(now);
+        HX_REQUIRE(device.ReadTexture(color, 0, pixels.Data(), pixels.Size() * 4));
+        HX_CHECK(NearColor(Pixel(pixels, size, 5, 5), Rgba(0, 0, 255)) && NearColor(Pixel(pixels, size, 31, 0), Rgba(0, 0, 255)));
+
+        events.lines.Clear();
+        // No asset: the fallback renders again (the old pipeline disposed), the asset and the type changed.
+        GraphicsSettings::SetDefaultRenderPipeline(nullptr);
+        Graphics::RenderFrame();
+        HX_CHECK(TestPipeline::disposed == 1 && RenderPipelineManager::currentAsset() == nullptr);
+        HX_CHECK(events.Take({"asset:asset>none", "type"}));
+        HX_REQUIRE(device.ReadTexture(color, 0, pixels.Data(), pixels.Size() * 4));
+        HX_CHECK(MatchGolden("FallbackScene", pixels.Data(), size, size));
+        // The quality level's asset wins over the default.
+        QualitySettings::SetRenderPipeline(asset);
+        HX_CHECK(GraphicsSettings::currentRenderPipeline() == asset && QualitySettings::GetRenderPipelineAssetAt(0) == asset);
+        Graphics::RenderFrame();
+        HX_CHECK(TestPipeline::made == 2);
+        QualitySettings::SetRenderPipeline(nullptr);
+        Graphics::RenderFrame();
+        HX_CHECK(TestPipeline::disposed == 2);
+        events.lines.Clear();
+
+        Object::DestroyImmediate(asset);
+        Graphics::ReleaseResources();
+        device.Destroy(color);
+        device.Destroy(depth);
+    });
+    if (registered)
+        UnloadGameModule("EngineTests");
+    std::printf("    %u devices\n", devices);
+}
+
+HX_TEST(Rendering, CullingAndCommandBuffersCheckTheirArguments)
+{
+    // Without a device nothing runs, the values still hold.
+    ScriptableRenderContext context;
+    ScriptableCullingParameters p;
+    p.cullingPlaneCount = 11;
+    u32 errors = 0;
+    LogSink count = [](const LogMessage& m, void* user) {
+        if (m.level >= LogLevel::Error)
+            ++*static_cast<u32*>(user);
+    };
+    AddLogSink(count, &errors);
+    CullingResults bad = context.Cull(p);
+    HX_CHECK(!bad.IsValid() && errors == 1);
+    context.DrawRenderers(bad, DrawingSettings(), FilteringSettings());
+    HX_CHECK(errors == 2);
+    p.cullingPlaneCount = 0;
+    CullingResults all = context.Cull(p);
+    HX_CHECK(all.IsValid());
+    CommandBuffer b;
+    b.DrawMesh(nullptr, Matrix4x4::identity, nullptr);
+    b.EndSample("none");
+    HX_CHECK(errors == 3 && b.sizeInBytes() > 0);
+    RemoveLogSink(count, &errors);
+    HX_CHECK(CommandBuffer::Find(b.Id()) == &b && ScriptableRenderContext::Find(context.Id()) == &context);
+    // Defaults as the reference has them.
+    DrawingSettings d(ShaderTagId("SRPDefaultUnlit"), SortingSettings());
+    HX_CHECK(d.GetShaderPassName(0) == ShaderTagId("SRPDefaultUnlit") && d.GetShaderPassName(1).id == 0 && d.enableInstancing && d.mainLightIndex == -1);
+    FilteringSettings f = FilteringSettings::defaultValue();
+    HX_CHECK(f.renderQueueRange.lowerBound == 0 && f.renderQueueRange.upperBound == 5000 && f.layerMask == -1 && f.renderingLayerMask == ~0u);
+    HX_CHECK(RenderQueueRange::opaque().upperBound == 2500 && RenderQueueRange::transparent().lowerBound == 2501);
+    RenderStateBlock state(RenderStateMask::Depth);
+    HX_CHECK(state.depthState.writeEnabled && state.depthState.compareFunction == CompareFunction::Less && state.rasterState.cullingMode == CullMode::Back);
 }

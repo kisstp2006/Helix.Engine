@@ -2,6 +2,7 @@
 
 #include <Helix/Core/Strings/Format.h>
 #include <Helix/Engine/GameObject/Lifecycle.h>
+#include <Helix/Engine/Rendering/Pipeline/RenderPipeline.h>
 #include <Helix/Engine/Script/GameBehaviour.h>
 #include <HelixEngine/HelixEngineApi.h>
 
@@ -261,5 +262,82 @@ namespace helix::engine::testing
     public:
         static inline u64 updates = 0;
         void Update() { updates++; }
+    };
+
+    // A scriptable pipeline in C++: per camera culling, the camera's properties, a clear from a command buffer, the
+    // opaque then the transparent queues with the unlit and forward passes, what the test sets in between.
+    class TestPipeline final : public RenderPipeline
+    {
+    public:
+        static inline u32 made = 0, disposed = 0;
+        // What the next frames do on top: an override material, a state block, a filter's layer mask, extra commands.
+        static inline Material* overrideMaterial = nullptr;
+        static inline RenderStateBlock state = RenderStateBlock();
+        static inline i32 layerMask = -1;
+        static inline CommandBuffer* extra = nullptr;
+        // What the last frame saw.
+        static inline u32 visibleLights = 0;
+        static inline Color lightColor = Color();
+        static inline CullingResults last = CullingResults();
+        static inline bool lastWasValid = true;
+
+        TestPipeline() { made++; }
+
+        void Render(ScriptableRenderContext& context, Span<Camera* const> cameras) override
+        {
+            // Results of an earlier frame are no longer valid.
+            lastWasValid = last.IsValid();
+            visibleLights = 0;
+            BeginContextRendering(context, cameras);
+            for (Camera* camera : cameras)
+            {
+                BeginCameraRendering(context, camera);
+                ScriptableCullingParameters parameters;
+                if (!camera->TryGetCullingParameters(parameters))
+                    continue;
+                CullingResults culling = context.Cull(parameters);
+                last = culling;
+                Span<const VisibleLight> lights = culling.visibleLights();
+                visibleLights += u32(lights.Size());
+                if (!lights.Empty())
+                    lightColor = lights[0].finalColor;
+                context.SetupCameraProperties(camera);
+                CommandBuffer clear;
+                clear.SetName("Clear");
+                clear.ClearRenderTarget(true, true, camera->backgroundColor());
+                context.ExecuteCommandBuffer(clear);
+                SortingSettings sorting(camera);
+                sorting.criteria = SortingCriteria::CommonOpaque;
+                DrawingSettings drawing(ShaderTagId("SRPDefaultUnlit"), sorting);
+                drawing.SetShaderPassName(1, ShaderTagId("ForwardBase"));
+                drawing.overrideMaterial = overrideMaterial;
+                FilteringSettings filtering(RenderQueueRange::opaque(), layerMask);
+                context.DrawRenderers(culling, drawing, filtering, state);
+                sorting.criteria = SortingCriteria::CommonTransparent;
+                drawing.sortingSettings = sorting;
+                filtering.renderQueueRange = RenderQueueRange::transparent();
+                context.DrawRenderers(culling, drawing, filtering, state);
+                if (extra)
+                    context.ExecuteCommandBuffer(*extra);
+                context.Submit();
+                EndCameraRendering(context, camera);
+            }
+            EndContextRendering(context, cameras);
+        }
+
+    protected:
+        void Dispose(bool disposing) override
+        {
+            if (disposing)
+                disposed++;
+        }
+    };
+
+    // Its asset: a ScriptableObject script whose CreatePipeline the engine calls.
+    HX_CLASS(Namespace = "EngineTests")
+    class TestPipelineAsset : public ScriptableObject
+    {
+    protected:
+        RenderPipeline* CreatePipeline() { return new TestPipeline(); }
     };
 }

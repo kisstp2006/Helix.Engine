@@ -1,6 +1,8 @@
 #include <Helix/Engine/Material/Material.h>
 #include <Helix/Engine/Rendering/Graphics.h>
+#include <Helix/Engine/Rendering/Implementation/RenderCore.h>
 #include <Helix/Engine/Rendering/Implementation/RendererManager.h>
+#include <Helix/Engine/Rendering/Pipeline/RenderPipeline.h>
 #include <Helix/Engine/Application/Application.h>
 #include <Helix/Engine/Rendering/Light.h>
 #include <Helix/Engine/Rendering/ScreenCapture.h>
@@ -23,34 +25,9 @@ namespace helix::engine
     namespace
     {
         LogChannel RenderLog{"Engine"};
-        constexpr u32 kNone = ~0u;
-
-        struct GpuMesh
-        {
-            u32 version = ~0u;
-            rhi::BufferHandle vertices;
-            u32 offsets[kVertexAttributeCount];
-            u32 strides[kVertexAttributeCount];
-            rhi::VertexFormat formats[kVertexAttributeCount];
-            rhi::BufferHandle indices;
-            rhi::BufferHandle zeros;
-            u32 vertexCount = 0;
-            // Each submesh as the GPU draws it (quads made triangles); count 0 skips it.
-            struct Sub
-            {
-                u32 start, count;
-                i32 baseVertex;
-                rhi::PrimitiveTopology topology;
-            };
-            Array<Sub> subs = Array<Sub>();
-        };
-
-        struct GpuTexture
-        {
-            u32 version = ~0u;
-            rhi::TextureHandle texture;
-            rhi::SamplerHandle sampler;
-        };
+        using render::GpuMesh;
+        using render::GpuTexture;
+        using render::kNone;
 
         struct GpuShader
         {
@@ -75,24 +52,100 @@ namespace helix::engine
                 i32 superSize = 1;
             };
             Array<Capture> captures = Array<Capture>();
-            // Graphics.RenderMesh's meshes for the frame.
-            struct Queued
-            {
-                EntityId mesh, material, camera;
-                u32 submesh = 0;
-                u32 layerMask = 1;
-                Matrix4x4 world;
-                Bounds bounds;
-                bool hasBlock = false;
-                PropertySheet block;
-            };
-            Array<Queued> queued = Array<Queued>();
+            Array<render::Queued> queued = Array<render::Queued>();
+            // RenderFrame's first camera clears the whole target.
+            bool clearFirst = false;
         };
 
         RenderState& R()
         {
             static RenderState s;
             return s;
+        }
+
+        // ------------------------------------------------------------------------------------------------ pipelines
+
+        const GpuShader& ShaderOf(const ShaderVariant& v)
+        {
+            RenderState& s = R();
+            if (GpuShader* g = s.shaders.Find(v.serial))
+                return *g;
+            GpuShader g;
+            for (u32 stage = 0; stage < 2; stage++)
+            {
+                const CompiledShader& c = stage == 0 ? v.vertex : v.fragment;
+                Array<rhi::ShaderBinding> bindings;
+                for (const GlslBinding& b : c.bindings)
+                    bindings.Push({b.name, b.kind == GlobalKind::Uniform ? rhi::BindingKind::UniformBuffer
+                                                                         : b.kind == GlobalKind::Storage ? rhi::BindingKind::StorageBuffer
+                                                                                                         : rhi::BindingKind::Texture,
+                                   b.slot});
+                rhi::ShaderDesc d;
+                d.stage = stage == 0 ? rhi::ShaderStage::Vertex : rhi::ShaderStage::Fragment;
+                if (c.target == ShaderTarget::Dxbc)
+                {
+                    d.bytecode = c.code.Data();
+                    d.bytecodeSize = c.code.Size();
+                }
+                else
+                {
+                    d.source = c.Text();
+                    d.bindings = bindings.Data();
+                    d.bindingCount = u32(bindings.Size());
+                }
+                d.debugName = v.description ? StringView(v.description->name) : StringView();
+                (stage == 0 ? g.vertex : g.fragment) = s.device->CreateShader(d);
+            }
+            return s.shaders.Set(v.serial, g);
+        }
+
+        rhi::CompareFunction Compare(shadercompiler::CompareFunction f) { return rhi::CompareFunction(u8(f)); }
+
+        rhi::BlendFactor Blend(BlendFactor f)
+        {
+            switch (f)
+            {
+            case BlendFactor::Zero: return rhi::BlendFactor::Zero;
+            case BlendFactor::SrcColor: return rhi::BlendFactor::SrcColor;
+            case BlendFactor::OneMinusSrcColor: return rhi::BlendFactor::OneMinusSrcColor;
+            case BlendFactor::DstColor: return rhi::BlendFactor::DstColor;
+            case BlendFactor::OneMinusDstColor: return rhi::BlendFactor::OneMinusDstColor;
+            case BlendFactor::SrcAlpha: return rhi::BlendFactor::SrcAlpha;
+            case BlendFactor::OneMinusSrcAlpha: return rhi::BlendFactor::OneMinusSrcAlpha;
+            case BlendFactor::DstAlpha: return rhi::BlendFactor::DstAlpha;
+            case BlendFactor::OneMinusDstAlpha: return rhi::BlendFactor::OneMinusDstAlpha;
+            default: return rhi::BlendFactor::One;
+            }
+        }
+
+        rhi::BlendOp BlendOperation(shadercompiler::BlendOperation o) { return rhi::BlendOp(u8(o)); }
+
+    }
+
+    namespace render
+    {
+        rhi::Device* Device() { return R().device; }
+        const RenderTarget& Target() { return R().target; }
+        Color Ambient() { return R().ambient; }
+        RenderStats& Stats() { return R().stats; }
+        Span<const Queued> QueuedMeshes() { return Span<const Queued>(R().queued.Data(), R().queued.Size()); }
+        bool ClearFirstCamera() { return R().clearFirst; }
+
+        Matrix4x4 GpuProjection(const Matrix4x4& projection)
+        {
+            // Clip depth -1..1 to 0..1: z' = (z + w) / 2.
+            Matrix4x4 p = projection;
+            p.m20 = 0.5f * (p.m20 + p.m30);
+            p.m21 = 0.5f * (p.m21 + p.m31);
+            p.m22 = 0.5f * (p.m22 + p.m32);
+            p.m23 = 0.5f * (p.m23 + p.m33);
+            return p;
+        }
+
+        ShaderTagId PassTag(const ShaderDescription& description, u32 descriptionPass)
+        {
+            StringView mode = description.passes[descriptionPass].lightMode;
+            return ShaderTagId(mode.Empty() ? StringView("SRPDefaultUnlit") : mode);
         }
 
         // ------------------------------------------------------------------------------------------------ meshes
@@ -302,7 +355,7 @@ namespace helix::engine
             const image::TextureData& d = texture.Data();
             if (d.data.Empty() || d.subresources.Empty())
                 return g;
-            // The top mip (the placeholder renderer samples without a chain), widened where the GPU lacks the format.
+            // The top mip (the renderer samples without a chain until the render core), widened where the GPU lacks the format.
             const image::Subresource& top = d.At(0, 0, 0);
             Array<u8> converted;
             const u8* pixels = d.data.Data() + top.offset;
@@ -340,65 +393,8 @@ namespace helix::engine
             return g;
         }
 
-        // ------------------------------------------------------------------------------------------------ pipelines
-
-        const GpuShader& ShaderOf(const ShaderVariant& v)
-        {
-            RenderState& s = R();
-            if (GpuShader* g = s.shaders.Find(v.serial))
-                return *g;
-            GpuShader g;
-            for (u32 stage = 0; stage < 2; stage++)
-            {
-                const CompiledShader& c = stage == 0 ? v.vertex : v.fragment;
-                Array<rhi::ShaderBinding> bindings;
-                for (const GlslBinding& b : c.bindings)
-                    bindings.Push({b.name, b.kind == GlobalKind::Uniform ? rhi::BindingKind::UniformBuffer
-                                                                         : b.kind == GlobalKind::Storage ? rhi::BindingKind::StorageBuffer
-                                                                                                         : rhi::BindingKind::Texture,
-                                   b.slot});
-                rhi::ShaderDesc d;
-                d.stage = stage == 0 ? rhi::ShaderStage::Vertex : rhi::ShaderStage::Fragment;
-                if (c.target == ShaderTarget::Dxbc)
-                {
-                    d.bytecode = c.code.Data();
-                    d.bytecodeSize = c.code.Size();
-                }
-                else
-                {
-                    d.source = c.Text();
-                    d.bindings = bindings.Data();
-                    d.bindingCount = u32(bindings.Size());
-                }
-                d.debugName = v.description ? StringView(v.description->name) : StringView();
-                (stage == 0 ? g.vertex : g.fragment) = s.device->CreateShader(d);
-            }
-            return s.shaders.Set(v.serial, g);
-        }
-
-        rhi::CompareFunction Compare(shadercompiler::CompareFunction f) { return rhi::CompareFunction(u8(f)); }
-
-        rhi::BlendFactor Blend(BlendFactor f)
-        {
-            switch (f)
-            {
-            case BlendFactor::Zero: return rhi::BlendFactor::Zero;
-            case BlendFactor::SrcColor: return rhi::BlendFactor::SrcColor;
-            case BlendFactor::OneMinusSrcColor: return rhi::BlendFactor::OneMinusSrcColor;
-            case BlendFactor::DstColor: return rhi::BlendFactor::DstColor;
-            case BlendFactor::OneMinusDstColor: return rhi::BlendFactor::OneMinusDstColor;
-            case BlendFactor::SrcAlpha: return rhi::BlendFactor::SrcAlpha;
-            case BlendFactor::OneMinusSrcAlpha: return rhi::BlendFactor::OneMinusSrcAlpha;
-            case BlendFactor::DstAlpha: return rhi::BlendFactor::DstAlpha;
-            case BlendFactor::OneMinusDstAlpha: return rhi::BlendFactor::OneMinusDstAlpha;
-            default: return rhi::BlendFactor::One;
-            }
-        }
-
-        rhi::BlendOp BlendOperation(shadercompiler::BlendOperation o) { return rhi::BlendOp(u8(o)); }
-
         // The pipeline of a variant for a mesh layout, a topology and the target.
-        rhi::PipelineHandle PipelineOf(const ShaderVariant& v, const GpuMesh& m, rhi::PrimitiveTopology topology)
+        rhi::PipelineHandle PipelineOf(const ShaderVariant& v, const GpuMesh& m, rhi::PrimitiveTopology topology, const StateOverride* state)
         {
             RenderState& s = R();
             u64 key = CombineHash(MixHash(v.serial), MixHash(u64(topology)));
@@ -408,6 +404,8 @@ namespace helix::engine
                 key = CombineHash(key, MixHash(u64(a != kNone && m.offsets[a] != kNone ? u32(m.formats[a]) + 1 : 0)));
             }
             key = CombineHash(key, CombineHash(MixHash(u64(s.target.colorFormat)), MixHash(u64(s.target.depthFormat))));
+            if (state && state->mask != RenderStateMask::Nothing)
+                key = CombineHash(key, state->hash);
             if (rhi::PipelineHandle* p = s.pipelines.Find(key))
                 return *p;
             const GpuShader& shader = ShaderOf(v);
@@ -429,7 +427,9 @@ namespace helix::engine
             d.attributeCount = k;
             d.topology = topology;
             const shadercompiler::RenderState& st = *v.state;
-            d.cull = st.cull == CullMode::Off ? rhi::CullMode::None : st.cull == CullMode::Front ? rhi::CullMode::Front : rhi::CullMode::Back;
+            d.cull = st.cull == shadercompiler::CullMode::Off     ? rhi::CullMode::None
+                     : st.cull == shadercompiler::CullMode::Front ? rhi::CullMode::Front
+                                                                  : rhi::CullMode::Back;
             d.depthTest = s.target.depthFormat != rhi::Format::Unknown && (st.zWrite || st.zTest != shadercompiler::CompareFunction::Always);
             d.depthWrite = s.target.depthFormat != rhi::Format::Unknown && st.zWrite;
             d.depthCompare = Compare(st.zTest);
@@ -437,7 +437,7 @@ namespace helix::engine
             {
                 rhi::BlendState& b = d.blend[t];
                 b.writeMask = st.colorMask;
-                for (const BlendState& bs : st.blend)
+                for (const shadercompiler::BlendState& bs : st.blend)
                     if (bs.target < 0 || u32(bs.target) == t)
                     {
                         b.enabled = !(bs.source == BlendFactor::One && bs.destination == BlendFactor::Zero && bs.sourceAlpha == BlendFactor::One &&
@@ -450,6 +450,17 @@ namespace helix::engine
                         b.alphaOp = BlendOperation(bs.operationAlpha);
                     }
             }
+            bool hasDepth = s.target.depthFormat != rhi::Format::Unknown;
+            if (state && HasFlag(state->mask, RenderStateMask::Blend))
+                d.blend[0] = state->blend;
+            if (state && HasFlag(state->mask, RenderStateMask::Depth))
+            {
+                d.depthTest = hasDepth && state->depthTest;
+                d.depthWrite = hasDepth && state->depthWrite;
+                d.depthCompare = state->depthCompare;
+            }
+            if (state && HasFlag(state->mask, RenderStateMask::Raster))
+                d.cull = state->cull;
             d.colorFormats[0] = s.target.colorFormat;
             d.colorTargetCount = 1;
             d.depthFormat = s.target.depthFormat;
@@ -460,28 +471,58 @@ namespace helix::engine
             return p;
         }
 
-        // ------------------------------------------------------------------------------------------------ drawing
-
-        // Light modes of passes the placeholder renderer does not draw.
-        constexpr StringView kSkippedLightModes[] = {"ShadowCaster", "DepthOnly", "Meta", "MotionVectors"};
-
-        i32 DrawnPass(Material& m)
+        StateOverride MakeOverride(const RenderStateBlock& block)
         {
-            Shader* s = m.shader();
-            const ShaderDescription* d = s ? s->Description() : nullptr;
-            if (!d)
-                return -1;
-            for (i32 p = 0; p < s->passCount(); p++)
-            {
-                i32 index = s->PassIndex(p);
-                StringView mode = d->passes[u32(index)].lightMode;
-                bool skipped = false;
-                for (StringView k : kSkippedLightModes)
-                    skipped |= mode == k;
-                if (!skipped && m.GetShaderPassEnabled(mode))
-                    return index;
-            }
-            return -1;
+            // The reference's enums in their order, as the device has them.
+            static constexpr rhi::BlendFactor kFactors[] = {
+                rhi::BlendFactor::Zero,          rhi::BlendFactor::One,      rhi::BlendFactor::DstColor,         rhi::BlendFactor::SrcColor,
+                rhi::BlendFactor::OneMinusDstColor, rhi::BlendFactor::SrcAlpha, rhi::BlendFactor::OneMinusSrcColor, rhi::BlendFactor::DstAlpha,
+                rhi::BlendFactor::OneMinusDstAlpha, rhi::BlendFactor::One,   rhi::BlendFactor::OneMinusSrcAlpha};
+            static constexpr rhi::CompareFunction kCompare[] = {
+                rhi::CompareFunction::Always,  rhi::CompareFunction::Never,    rhi::CompareFunction::Less,         rhi::CompareFunction::Equal,
+                rhi::CompareFunction::LessEqual, rhi::CompareFunction::Greater, rhi::CompareFunction::NotEqual, rhi::CompareFunction::GreaterEqual,
+                rhi::CompareFunction::Always};
+            static constexpr rhi::CullMode kCull[] = {rhi::CullMode::None, rhi::CullMode::Front, rhi::CullMode::Back};
+            auto factor = [](BlendMode m) { return u32(m) < 11 ? kFactors[u32(m)] : rhi::BlendFactor::One; };
+            auto op = [](BlendOp o) { return u32(o) <= u32(BlendOp::Max) ? rhi::BlendOp(u8(o)) : rhi::BlendOp::Add; };
+            StateOverride o;
+            o.mask = block.mask;
+            const RenderTargetBlendState& t = block.blendState.targets[0];
+            u32 w = u32(t.writeMask);
+            // The reference's mask is A, B, G, R from bit 0; the device's R, G, B, A.
+            o.blend.writeMask = u8(((w >> 3) & 1) | (((w >> 2) & 1) << 1) | (((w >> 1) & 1) << 2) | ((w & 1) << 3));
+            o.blend.srcColor = factor(t.sourceColorBlendMode);
+            o.blend.dstColor = factor(t.destinationColorBlendMode);
+            o.blend.srcAlpha = factor(t.sourceAlphaBlendMode);
+            o.blend.dstAlpha = factor(t.destinationAlphaBlendMode);
+            o.blend.colorOp = op(t.colorBlendOperation);
+            o.blend.alphaOp = op(t.alphaBlendOperation);
+            o.blend.enabled = !(o.blend.srcColor == rhi::BlendFactor::One && o.blend.dstColor == rhi::BlendFactor::Zero &&
+                                o.blend.srcAlpha == rhi::BlendFactor::One && o.blend.dstAlpha == rhi::BlendFactor::Zero &&
+                                o.blend.colorOp == rhi::BlendOp::Add && o.blend.alphaOp == rhi::BlendOp::Add);
+            CompareFunction compare = block.depthState.compareFunction;
+            o.depthTest = compare != CompareFunction::Disabled;
+            o.depthWrite = block.depthState.writeEnabled;
+            o.depthCompare = u32(compare) < 9 ? kCompare[u32(compare)] : rhi::CompareFunction::Always;
+            o.cull = u32(block.rasterState.cullingMode) < 3 ? kCull[u32(block.rasterState.cullingMode)] : rhi::CullMode::Back;
+            u64 h = MixHash(u64(o.mask));
+            if (HasFlag(o.mask, RenderStateMask::Blend))
+                h = CombineHash(h, MixHash(u64(o.blend.enabled) | u64(o.blend.writeMask) << 1 | u64(o.blend.srcColor) << 8 | u64(o.blend.dstColor) << 16 |
+                                           u64(o.blend.srcAlpha) << 24 | u64(o.blend.dstAlpha) << 32 | u64(o.blend.colorOp) << 40 |
+                                           u64(o.blend.alphaOp) << 48));
+            if (HasFlag(o.mask, RenderStateMask::Depth))
+                h = CombineHash(h, MixHash(u64(o.depthTest) | u64(o.depthWrite) << 1 | u64(o.depthCompare) << 2));
+            if (HasFlag(o.mask, RenderStateMask::Raster))
+                h = CombineHash(h, MixHash(u64(o.cull) + 77));
+            o.hash = h;
+            return o;
+        }
+
+        void Upload(const void* data, u32 size, rhi::TransientAllocation& out)
+        {
+            out = R().device->AllocateTransient(size);
+            if (out.data && size)
+                std::memcpy(out.data, data, size);
         }
 
         Material* ErrorMaterial()
@@ -499,308 +540,10 @@ namespace helix::engine
             }
             return m;
         }
+    }
 
-        struct DrawItem
-        {
-            u64 sortKey;
-            f32 distance;
-            u32 renderer;
-            u32 submesh;
-            Material* material;
-            const MaterialPassData* data;
-            // An index of RenderState::queued (renderer is kNone then).
-            u32 queued = kNone;
-        };
-
-        // The sort key of a draw: queue, then sorting order, then (opaque) by variant and material front to back or
-        // (transparent) back to front by distance.
-        bool KeyOf(Material*& m, ShaderTarget target, i32 sortingOrder, u64& key, bool& transparent, const MaterialPassData*& data)
-        {
-            if (!m || !m->shader())
-                m = ErrorMaterial();
-            if (!m)
-                return false;
-            i32 pass = DrawnPass(*m);
-            if (pass < 0)
-                return false;
-            data = m->GetPassData(u32(pass), target);
-            if (!data)
-                return false;
-            i32 queue = m->renderQueue();
-            transparent = queue > 2500;
-            u64 order = u64(u32(sortingOrder + 0x8000) & 0xFFFF);
-            key = (u64(u32(queue) & 0xFFFF) << 48) | (order << 32) | (transparent ? 0 : u64(data->variant->serial & 0xFFFFFF) << 8);
-            return true;
-        }
-
-        void Upload(const void* data, u32 size, rhi::TransientAllocation& out)
-        {
-            out = R().device->AllocateTransient(size);
-            if (out.data && size)
-                std::memcpy(out.data, data, size);
-        }
-
-        void RenderOne(Camera& camera, bool clearAsFirst)
-        {
-            RenderState& s = R();
-            rhi::Device& device = *s.device;
-            Camera::SetCurrent(&camera);
-            if (detail::gRenderStage)
-                detail::gRenderStage(&camera, detail::RenderStage::PreCull);
-            RenderData& d = RendererManager::Get().RenderMutable();
-            ShaderTarget target = Graphics::ShaderTarget();
-            Matrix4x4 view = camera.worldToCameraMatrix();
-            Matrix4x4 gpuViewProjection = camera.GpuProjectionMatrix() * view;
-            Plane planes[6];
-            CalculateFrustumPlanes(camera.cullingMatrix(), planes);
-            u32 n = d.Count();
-            Array<u8> inside;
-            inside.Resize(n);
-            if (n)
-                CullBoundsSoAParallel(planes, d.Bounds(), inside.Data());
-            Vector3 eye = camera.transform() ? camera.transform()->position() : Vector3();
-            Vector3 forward = camera.transform() ? camera.transform()->forward() : Vector3::forward;
-            Array<DrawItem> items;
-            // The renderers the camera draws (each once).
-            Array<EntityId> drawn;
-            u32 cullingMask = camera.cullingMask();
-            for (u32 i = 0; i < n; i++)
-            {
-                if (!inside[i] || !d.drawn[i] || !(d.layerMask[i] & cullingMask))
-                    continue;
-                Renderer* r = EntityIdToObject<Renderer>(d.renderer[i]);
-                Mesh* mesh = EntityIdToObject<Mesh>(d.mesh[i]);
-                if (!r || !mesh || mesh->subMeshCount() == 0)
-                    continue;
-                d.visible[i] = 1;
-                s.stats.visible++;
-                Vector3 center(d.centerX[i], d.centerY[i], d.centerZ[i]);
-                f32 distance = Vector3::Dot(center - eye, forward);
-                Span<const PPtr<Material>> materials = r->Materials();
-                u32 subs = u32(mesh->subMeshCount());
-                u32 draws = materials.Size() > subs ? u32(materials.Size()) : subs;
-                usize before = items.Size();
-                for (u32 k = 0; k < draws; k++)
-                {
-                    // Extra materials draw the last submesh again; submeshes without a material are not drawn.
-                    if (k >= materials.Size())
-                        break;
-                    Material* m = materials[k].Get();
-                    u64 key;
-                    bool transparent;
-                    const MaterialPassData* data;
-                    if (!KeyOf(m, target, r->sortingOrder(), key, transparent, data))
-                        continue;
-                    items.Push({key, transparent ? -distance : distance, i, k < subs ? k : subs - 1, m, data});
-                }
-                if (items.Size() > before)
-                    drawn.Push(d.renderer[i]);
-            }
-            for (u32 q = 0; q < s.queued.Size(); q++)
-            {
-                const RenderState::Queued& item = s.queued[q];
-                if ((item.camera.IsValid() && item.camera != camera.GetEntityId()) || !(item.layerMask & cullingMask) || !TestPlanesAABB(planes, item.bounds))
-                    continue;
-                Mesh* mesh = EntityIdToObject<Mesh>(item.mesh);
-                if (!mesh || item.submesh >= u32(mesh->subMeshCount()))
-                    continue;
-                Material* m = EntityIdToObject<Material>(item.material);
-                u64 key;
-                bool transparent;
-                const MaterialPassData* data;
-                if (!KeyOf(m, target, 0, key, transparent, data))
-                    continue;
-                f32 distance = Vector3::Dot(item.bounds.center - eye, forward);
-                items.Push({key, transparent ? -distance : distance, kNone, item.submesh, m, data, q});
-            }
-            std::sort(items.begin(), items.end(), [](const DrawItem& a, const DrawItem& b) {
-                return a.sortKey != b.sortKey ? a.sortKey < b.sortKey : a.distance < b.distance;
-            });
-            // The scripts of each renderer the camera draws (once), then the camera's before it draws.
-            if (detail::gRenderStage)
-            {
-                for (EntityId id : drawn)
-                    if (Renderer* r = EntityIdToObject<Renderer>(id))
-                        detail::gRenderStage(r, detail::RenderStage::WillRenderObject);
-                detail::gRenderStage(&camera, detail::RenderStage::PreRender);
-            }
-
-            // The camera block.
-            struct PerCamera
-            {
-                Matrix4x4 v, p, vp;
-                f32 cameraPos[4];
-                f32 lightDirection[4];
-                f32 lightColor[4];
-                f32 ambient[4];
-            } cam{};
-            cam.v = view;
-            cam.p = camera.GpuProjectionMatrix();
-            cam.vp = gpuViewProjection;
-            cam.cameraPos[0] = eye.x, cam.cameraPos[1] = eye.y, cam.cameraPos[2] = eye.z, cam.cameraPos[3] = 1;
-            const Light* sun = nullptr;
-            f32 brightest = -1;
-            for (Light* l : Light::EnabledLights())
-                if (l->type() == LightType::Directional && l->intensity() > brightest && (l->cullingMask() & cullingMask))
-                    sun = l, brightest = l->intensity();
-            if (sun && sun->transform())
-            {
-                Vector3 toLight = -sun->transform()->forward();
-                Color c = sun->FinalColor();
-                cam.lightDirection[0] = toLight.x, cam.lightDirection[1] = toLight.y, cam.lightDirection[2] = toLight.z, cam.lightDirection[3] = 1;
-                cam.lightColor[0] = c.r, cam.lightColor[1] = c.g, cam.lightColor[2] = c.b, cam.lightColor[3] = 1;
-            }
-            cam.ambient[0] = s.ambient.r, cam.ambient[1] = s.ambient.g, cam.ambient[2] = s.ambient.b, cam.ambient[3] = 1;
-            rhi::TransientAllocation cameraBlock;
-            Upload(&cam, sizeof(cam), cameraBlock);
-
-            rhi::CommandList cl;
-            rhi::RenderPassDesc pass;
-            pass.colors[0].texture = s.target.color;
-            pass.depth.texture = s.target.depth;
-            CameraClearFlags flags = camera.clearFlags();
-            Color bg = camera.backgroundColor();
-            Rect pr = camera.pixelRect();
-            // Skyboxes come with the pipelines: until then Skybox clears with the background color.
-            bool clearColor = flags == CameraClearFlags::SolidColor || flags == CameraClearFlags::Skybox;
-            bool clearDepth = flags != CameraClearFlags::Nothing;
-            // A render pass clear takes the whole target: a camera with a smaller viewport clears it by drawing.
-            bool whole = pr.x <= 0 && pr.y <= 0 && pr.width >= f32(s.target.width) && pr.height >= f32(s.target.height);
-            pass.colors[0].load = (whole && clearColor) || clearAsFirst ? rhi::LoadOp::Clear : rhi::LoadOp::Load;
-            pass.colors[0].clearColor[0] = bg.r, pass.colors[0].clearColor[1] = bg.g, pass.colors[0].clearColor[2] = bg.b,
-            pass.colors[0].clearColor[3] = bg.a;
-            pass.depth.load = (whole && clearDepth) || clearAsFirst ? rhi::LoadOp::Clear : rhi::LoadOp::Load;
-            cl.BeginRenderPass(pass);
-            rhi::Viewport vp;
-            vp.x = pr.x;
-            vp.y = f32(s.target.height) - (pr.y + pr.height);
-            vp.width = pr.width;
-            vp.height = pr.height;
-            cl.SetViewport(vp);
-            cl.SetScissor({i32(vp.x), i32(vp.y), u32(vp.width), u32(vp.height)});
-            if (!whole && (clearColor || clearDepth))
-                if (Shader* clear = Shader::Find("Hidden/InternalClear"))
-                    if (const ShaderVariant* cv = clear->GetVariant(clearColor ? 0u : 1u, {}, target); cv && cv->ok)
-                    {
-                        static const GpuMesh kNoVertices{};
-                        cl.SetPipeline(PipelineOf(*cv, kNoVertices, rhi::PrimitiveTopology::TriangleList));
-                        if (clearColor)
-                        {
-                            const f32 c[4] = {bg.r, bg.g, bg.b, bg.a};
-                            rhi::TransientAllocation clearBlock;
-                            Upload(c, sizeof(c), clearBlock);
-                            cl.SetUniformBuffer(0, clearBlock);
-                        }
-                        cl.Draw(3);
-                    }
-
-            HashMap<const MaterialPassData*, u32> materialBlocks;
-            Array<rhi::TransientAllocation> uploaded;
-            Array<Array<u8>> blocks;
-            Array<MaterialPassData::TextureSlot> textures;
-            u32 lastRenderer = kNone;
-            rhi::TransientAllocation drawBlock;
-            for (const DrawItem& item : items)
-            {
-                const RenderState::Queued* queued = item.queued != kNone ? &s.queued[item.queued] : nullptr;
-                Renderer* r = queued ? nullptr : EntityIdToObject<Renderer>(d.renderer[item.renderer]);
-                Mesh* mesh = EntityIdToObject<Mesh>(queued ? queued->mesh : d.mesh[item.renderer]);
-                if (!mesh)
-                    continue;
-                const ShaderVariant& v = *item.data->variant;
-                const GpuMesh* gm = MeshOf(*mesh);
-                if (!gm->vertices.IsValid() || !gm->indices.IsValid() || item.submesh >= gm->subs.Size() || gm->subs[item.submesh].count == 0)
-                    continue;
-                const GpuMesh::Sub& sub = gm->subs[item.submesh];
-                cl.SetPipeline(PipelineOf(v, *gm, sub.topology));
-                u32 k = 0;
-                for (const ReflectedValue& in : v.reflection.vertexInputs)
-                {
-                    if (k >= rhi::kMaxVertexBuffers)
-                        break;
-                    u32 a = in.index < kVertexAttributeCount ? in.index : kNone;
-                    if (a != kNone && gm->offsets[a] != kNone)
-                        cl.SetVertexBuffer(k, gm->vertices, gm->offsets[a]);
-                    else
-                        cl.SetVertexBuffer(k, gm->zeros, 0);
-                    k++;
-                }
-                cl.SetIndexBuffer(gm->indices, rhi::IndexType::U32);
-                cl.SetUniformBuffer(9, cameraBlock);
-                u32 source = queued ? 0x80000000u | item.queued : item.renderer;
-                if (source != lastRenderer)
-                {
-                    const Matrix4x4& world = queued ? queued->world : d.world[item.renderer];
-                    Matrix4x4 m[2] = {world, world.inverse()};
-                    Upload(m, sizeof(m), drawBlock);
-                    lastRenderer = source;
-                }
-                cl.SetUniformBuffer(10, drawBlock);
-                // Material blocks once per material and pass; a property block makes its own copy.
-                const PropertySheet* block = queued ? (queued->hasBlock ? &queued->block : nullptr) : r ? r->PropertyBlock(i32(item.submesh)) : nullptr;
-                const Array<Array<u8>>* bytes = &item.data->blocks;
-                const Array<MaterialPassData::TextureSlot>* slots = &item.data->textures;
-                usize firstUpload;
-                if (block)
-                {
-                    blocks = item.data->blocks;
-                    textures = item.data->textures;
-                    Material::WriteValues(v, *block, nullptr, true, blocks, textures);
-                    bytes = &blocks;
-                    slots = &textures;
-                    firstUpload = uploaded.Size();
-                    for (const Array<u8>& b : *bytes)
-                        Upload(b.Data(), u32(b.Size()), uploaded.Emplace());
-                }
-                else if (const u32* at = materialBlocks.Find(item.data))
-                    firstUpload = *at;
-                else
-                {
-                    firstUpload = uploaded.Size();
-                    materialBlocks.Set(item.data, u32(firstUpload));
-                    for (const Array<u8>& b : *bytes)
-                        Upload(b.Data(), u32(b.Size()), uploaded.Emplace());
-                }
-                for (u32 b = 0; b < v.layout.blocks.Size(); b++)
-                    cl.SetUniformBuffer(v.layout.blocks[b].slot, uploaded[firstUpload + b]);
-                for (const MaterialPassData::TextureSlot& t : *slots)
-                {
-                    Texture* tex = EntityIdToObject<Texture>(t.texture);
-                    const GpuTexture* gt = tex ? TextureOf(*tex) : nullptr;
-                    if (!gt || !gt->texture.IsValid())
-                        gt = TextureOf(*Texture2D::whiteTexture());
-                    cl.SetTexture(t.slot, gt->texture, gt->sampler);
-                }
-                // The dynamic keywords of the variant.
-                for (const ReflectedBlock& rb : v.reflection.blocks)
-                    if (rb.name == StringView(kKeywordBlockName))
-                    {
-                        Array<u8> values;
-                        values.Resize(rb.size);
-                        std::memset(values.Data(), 0, values.Size());
-                        for (const ReflectedMember& member : rb.members)
-                            for (const KeywordValue& kv : v.keywords)
-                                if (member.name == kv.name)
-                                {
-                                    i32 value = i32(kv.value);
-                                    std::memcpy(values.Data() + member.offset, &value, 4);
-                                }
-                        rhi::TransientAllocation keywordBlock;
-                        Upload(values.Data(), u32(values.Size()), keywordBlock);
-                        cl.SetUniformBuffer(rb.slot, keywordBlock);
-                    }
-                cl.DrawIndexed(sub.count, 1, sub.start, sub.baseVertex);
-                s.stats.drawCalls++;
-            }
-            cl.EndRenderPass();
-            device.Submit(cl);
-            if (detail::gRenderStage)
-            {
-                detail::gRenderStage(&camera, detail::RenderStage::PostRender);
-                detail::gRenderStage(nullptr, detail::RenderStage::RenderObject);
-            }
-            Camera::SetCurrent(nullptr);
-        }
+    namespace
+    {
 
         void ForgetDead()
         {
@@ -877,16 +620,11 @@ namespace helix::engine
     {
         void RenderCameras()
         {
-            RenderState& s = R();
             Array<Camera*> cameras;
             Camera::GetAllCameras(cameras);
-            bool first = true;
-            for (Camera* c : cameras)
-            {
-                RenderOne(*c, first);
-                first = false;
-                s.stats.cameras++;
-            }
+            R().clearFirst = true;
+            render::RenderWithPipeline(Span<Camera* const>(cameras.Data(), cameras.Size()), true);
+            R().clearFirst = false;
         }
 
         // Draws the frame again into textures of the target's formats (so the pipelines are shared) and writes a PNG.
@@ -1006,12 +744,13 @@ namespace helix::engine
             HX_LOG_ERROR(RenderLog, "Graphics.RenderMesh: submesh index {} is out of range (the mesh has {}).", submeshIndex, mesh->subMeshCount());
             return;
         }
-        RenderState::Queued& q = R().queued.Emplace();
+        render::Queued& q = R().queued.Emplace();
         q.mesh = mesh->GetEntityId();
         q.material = params.material ? params.material->GetEntityId() : EntityId();
         q.camera = params.camera ? params.camera->GetEntityId() : EntityId();
         q.submesh = u32(submeshIndex);
         q.layerMask = params.layer >= 0 && params.layer < 32 ? 1u << u32(params.layer) : 0u;
+        q.renderingLayerMask = params.renderingLayerMask;
         q.world = objectToWorld;
         Vector3 size = params.worldBounds.size();
         q.bounds = size.x != 0 || size.y != 0 || size.z != 0 ? params.worldBounds : TransformBounds(mesh->bounds(), objectToWorld);
@@ -1024,6 +763,13 @@ namespace helix::engine
 
     u32 Graphics::QueuedMeshCount() { return u32(R().queued.Size()); }
 
+    void Graphics::ExecuteCommandBuffer(const CommandBuffer& buffer)
+    {
+        if (!R().device)
+            return;
+        render::ExecuteNow(buffer.List());
+    }
+
     void Graphics::RenderCamera(Camera& camera)
     {
         RendererManager& m = RendererManager::Get();
@@ -1031,13 +777,14 @@ namespace helix::engine
         m.Sync();
         if (!R().device)
             return;
-        RenderOne(camera, false);
-        R().stats.cameras++;
+        Camera* one = &camera;
+        render::RenderWithPipeline(Span<Camera* const>(&one, 1), false);
     }
 
     void Graphics::ReleaseResources()
     {
         RenderState& s = R();
+        render::ReleasePipeline();
         if (s.device)
         {
             for (auto e : s.meshes)

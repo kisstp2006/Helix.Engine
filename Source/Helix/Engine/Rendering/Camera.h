@@ -10,6 +10,8 @@
 // coordinates are pixels from the bottom left of the target, viewport coordinates 0 to 1, z the distance in world units.
 namespace helix::engine
 {
+    struct ScriptableCullingParameters;
+
     HX_ENUM(Namespace = "HelixEngine")
     enum class CameraClearFlags : i32
     {
@@ -201,6 +203,9 @@ namespace helix::engine
         HX_FUNCTION() void Reset();
         // Renders this camera now through the active renderer.
         HX_FUNCTION() void Render();
+        // The camera's frustum, culling mask and position for ScriptableRenderContext.Cull; false for a camera that
+        // draws nothing (an empty viewport, near not before far).
+        bool TryGetCullingParameters(ScriptableCullingParameters& parameters) const;
 
         void OnEnableNative();
         void OnDisableNative();

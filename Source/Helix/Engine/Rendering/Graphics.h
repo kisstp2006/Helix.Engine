@@ -5,12 +5,14 @@
 #include <Helix/RHI/Device/Device.h>
 #include <Helix/ShaderCompiler/Cache/ShaderCache.h>
 
-// The placeholder renderer (until the pipelines of M7): every enabled camera by depth into the target the host gives,
-// renderers culled by frustum and culling mask, opaque queues front to back and transparent ones back to front, each
-// submesh drawn with the first pass of its material that is no shadow, depth or meta pass. GPU meshes, textures,
-// samplers, shaders and pipelines are cached by the versions of their sources.
+// The renderer: every enabled camera by depth into the target the host gives, through the active render pipeline
+// (Rendering/Pipeline: the asset's scriptable pipeline, or the fallback pipeline that draws each submesh with the first
+// pass of its material that is no shadow, depth or meta pass). GPU meshes, textures, samplers, shaders and pipelines
+// are cached by the versions of their sources.
 namespace helix::engine
 {
+    class CommandBuffer;
+
     // Where cameras draw: textures of the device, or the swap chain when `color` is not valid.
     struct RenderTarget
     {
@@ -60,7 +62,7 @@ namespace helix::engine
         // The default target of cameras (its size is the display size of Camera).
         static void SetTarget(const RenderTarget& target);
         static const RenderTarget& Target();
-        // The ambient light of the placeholder renderer.
+        // The ambient light of the camera block (SetupCameraProperties).
         static void SetAmbientLight(Color color);
 
         // The player loop's FinishFrameRendering: renderer data brought up to date, then every enabled camera by depth.
@@ -75,6 +77,8 @@ namespace helix::engine
         static void RenderMesh(const RenderParams& params, Mesh* mesh, i32 submeshIndex, const Matrix4x4& objectToWorld);
         // Meshes RenderMesh queued for the frame.
         static u32 QueuedMeshCount();
+        // Runs a command buffer's commands now, into the target with the whole target as the viewport.
+        static void ExecuteCommandBuffer(const CommandBuffer& buffer);
     };
 
     // RenderMesh for the script API: RenderParams holds objects, which bound structs cannot (C# has the struct).

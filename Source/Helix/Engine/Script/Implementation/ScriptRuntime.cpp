@@ -1,4 +1,5 @@
 #include <Helix/Engine/Script/ScriptRuntime.h>
+#include <Helix/Engine/Rendering/Pipeline/RenderPipeline.h>
 
 #include <Helix/Engine/Script/Coroutines.h>
 
@@ -943,6 +944,7 @@ namespace helix::engine
         // The engine's exports for the C# side and the handler of C++ script classes (the bindings provider runs it).
         void StartScriptRuntime();
         void RegisterCoroutineExports();
+        void RegisterRenderPipelineExports();
     }
 
     bool LoadGameModule(StringView path, String& error)
@@ -995,6 +997,8 @@ namespace helix::engine
         for (usize i = 0; i < all.Size(); i++)
             if (all[i].name == module)
             {
+                // A pipeline may be of the module's code: it goes first (the next frame makes the pipeline again).
+                render::ReleasePipeline();
                 // The module's own Unregister (it can register again), else its classes and types directly.
                 String symbol = Format("HxBindings_{}_Unregister", Ident(module));
                 const void* unregister = all[i].library ? all[i].library->Symbol(symbol.CStr()) : scripting::FindNativeExport(symbol);
@@ -1177,6 +1181,7 @@ namespace helix::engine
         scripting::RegisterNativeExport("HxEngineScripts_SendMessage", std::bit_cast<const void*>(&SendFromManaged));
         scripting::SetNativeScriptHandler(&OnNativeScript, nullptr);
         detail::RegisterCoroutineExports();
+        detail::RegisterRenderPipelineExports();
     }
 
     // ---------------------------------------------------------------------------------------------- ScriptableObject

@@ -42,7 +42,8 @@ helix_bindgen(helix_engine MODULE HelixEngine NAMESPACE HelixEngine KIND Engine 
                       "${engine_source}/Helix/Engine/Rendering/Renderer.h" "${engine_source}/Helix/Engine/Rendering/Camera.h"
                       "${engine_source}/Helix/Engine/Rendering/Light.h" "${engine_source}/Helix/Engine/Rendering/Graphics.h"
                       "${engine_source}/Helix/Engine/Rendering/ScreenCapture.h" "${engine_source}/Helix/Engine/Script/ScriptableObject.h"
-                      "${engine_source}/Helix/Engine/Jobs/ManagedJobs.h"
+                      "${engine_source}/Helix/Engine/Jobs/ManagedJobs.h" "${engine_source}/Helix/Engine/Rendering/Pipeline/RenderStates.h"
+                      "${engine_source}/Helix/Engine/Rendering/Pipeline/RenderPipelineNative.h"
               CS_OUTPUT engine_cs)
 set(HELIX_ENGINE_BINDINGS_CS "${engine_cs}" CACHE INTERNAL "")
 

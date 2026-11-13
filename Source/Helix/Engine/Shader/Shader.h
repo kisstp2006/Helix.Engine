@@ -2,6 +2,7 @@
 
 #include <Helix/Engine/Material/PropertySheet.h>
 #include <Helix/Engine/Object/Object.h>
+#include <Helix/Engine/Shader/ShaderKeywords.h>
 #include <Helix/Engine/Texture/Texture.h>
 #include <Helix/ShaderCompiler/Cache/ShaderCache.h>
 #include <Helix/ShaderCompiler/Definition/ShaderDefinition.h>
@@ -15,6 +16,7 @@
 // does not compile logs its errors (with file:line) once and the error shader's variant takes its place.
 namespace helix::engine
 {
+    HX_ENUM(Namespace = "HelixEngine.Rendering")
     enum class ShaderPropertyType : i32
     {
         Color = 0,
@@ -25,6 +27,7 @@ namespace helix::engine
         Int = 5,
     };
 
+    HX_ENUM(Namespace = "HelixEngine.Rendering", Attributes = "[System.Flags]")
     enum class ShaderPropertyFlags : i32
     {
         None = 0,
@@ -74,6 +77,7 @@ namespace helix::engine
         Array<NamedMember> namedMembers = Array<NamedMember>();
     };
 
+    HX_CLASS(Namespace = "HelixEngine", Sealed)
     class Shader : public Object
     {
         HX_ENGINE_CLASS(Shader, Object, ClassId::Shader, ClassNone)
@@ -83,49 +87,119 @@ namespace helix::engine
         Shader(const Shader&) = default;
 
         // A loaded shader by name; null when none is.
-        static Shader* Find(StringView name);
-        static i32 PropertyToID(StringView name) { return engine::PropertyToID(name); }
+        HX_FUNCTION() static Shader* Find(StringView name);
+        HX_FUNCTION() static i32 PropertyToID(StringView name) { return engine::PropertyToID(name); }
 
-        bool isSupported() const;
-        i32 maximumLOD() const { return maximumLOD_; }
+        HX_PROPERTY(ReadOnly) bool isSupported() const;
+        HX_PROPERTY() i32 maximumLOD() const { return maximumLOD_; }
         void SetMaximumLOD(i32 value) { maximumLOD_ = value; }
-        static i32 globalMaximumLOD();
+        HX_PROPERTY() static i32 globalMaximumLOD();
         static void SetGlobalMaximumLOD(i32 value);
         // From the Queue tag (Background 1000, Geometry 2000, AlphaTest 2450, Transparent 3000, Overlay 4000, "+n"),
         // 2000 without one.
-        i32 renderQueue() const;
+        HX_PROPERTY(ReadOnly) i32 renderQueue() const;
         // Passes of the first SubShader.
-        i32 passCount() const;
-        i32 subshaderCount() const;
-        i32 GetPassCountInSubshader(i32 subshader) const;
+        HX_PROPERTY(ReadOnly) i32 passCount() const;
+        HX_PROPERTY(ReadOnly) i32 subshaderCount() const;
+        HX_FUNCTION() i32 GetPassCountInSubshader(i32 subshaderIndex) const;
         // The pass of the first SubShader at `pass`, as an index into the definition's passes; -1 when there is none.
         i32 PassIndex(i32 pass) const;
         StringView FindPassTagValue(i32 pass, StringView tag) const;
         StringView FindSubshaderTagValue(i32 subshader, StringView tag) const;
+        // The same with tag ids: a pass of the first SubShader, a pass of a SubShader; none (0) when it is not there.
+        HX_FUNCTION(Name = "FindPassTagValue") ShaderTagId FindPassTagValueId(i32 passIndex, ShaderTagId tagName) const;
+        HX_FUNCTION(Name = "FindPassTagValue") ShaderTagId FindPassTagValueId(i32 subshaderIndex, i32 passIndex, ShaderTagId tagName) const;
+        HX_FUNCTION(Name = "FindSubshaderTagValue") ShaderTagId FindSubshaderTagValueId(i32 subshaderIndex, ShaderTagId tagName) const;
 
-        i32 GetPropertyCount() const;
-        i32 FindPropertyIndex(StringView name) const;
-        StringView GetPropertyName(i32 index) const;
-        i32 GetPropertyNameId(i32 index) const;
-        StringView GetPropertyDescription(i32 index) const;
-        ShaderPropertyType GetPropertyType(i32 index) const;
-        // ShaderPropertyFlags combined.
-        i32 GetPropertyFlags(i32 index) const;
-        f32 GetPropertyDefaultFloatValue(i32 index) const;
-        i32 GetPropertyDefaultIntValue(i32 index) const;
-        Vector4 GetPropertyDefaultVectorValue(i32 index) const;
-        Vector2 GetPropertyRangeLimits(i32 index) const;
-        TextureDimension GetPropertyTextureDimension(i32 index) const;
-        StringView GetPropertyTextureDefaultName(i32 index) const;
-        // The local keywords (the keyword space): bool keywords by their name, enum keywords as name_member.
+        HX_FUNCTION() i32 GetPropertyCount() const;
+        HX_FUNCTION() i32 FindPropertyIndex(StringView propertyName) const;
+        HX_FUNCTION() StringView GetPropertyName(i32 propertyIndex) const;
+        HX_FUNCTION() i32 GetPropertyNameId(i32 propertyIndex) const;
+        HX_FUNCTION() StringView GetPropertyDescription(i32 propertyIndex) const;
+        HX_FUNCTION() ShaderPropertyType GetPropertyType(i32 propertyIndex) const;
+        HX_FUNCTION() ShaderPropertyFlags GetPropertyFlags(i32 propertyIndex) const;
+        HX_FUNCTION() f32 GetPropertyDefaultFloatValue(i32 propertyIndex) const;
+        HX_FUNCTION() i32 GetPropertyDefaultIntValue(i32 propertyIndex) const;
+        HX_FUNCTION() Vector4 GetPropertyDefaultVectorValue(i32 propertyIndex) const;
+        HX_FUNCTION() Vector2 GetPropertyRangeLimits(i32 propertyIndex) const;
+        HX_FUNCTION() TextureDimension GetPropertyTextureDimension(i32 propertyIndex) const;
+        HX_FUNCTION() StringView GetPropertyTextureDefaultName(i32 propertyIndex) const;
+        // The local keywords (declared local): bool keywords by their name, enum keywords as name_member.
         void GetLocalKeywords(Array<String>& out) const;
+        // The keyword space: every keyword of the shader, local and global, in declaration order.
+        const Array<ShaderKeywordInfo>& KeywordSpace() const;
+        HX_PROPERTY(ReadOnly) LocalKeywordSpace keywordSpace() const { return LocalKeywordSpace{GetEntityId().value}; }
 
         // ---------------------------------------------------------------------------------------------- globals
-        static void EnableKeyword(StringView keyword);
-        static void DisableKeyword(StringView keyword);
+        HX_FUNCTION() static void EnableKeyword(StringView keyword);
+        HX_FUNCTION() static void DisableKeyword(StringView keyword);
         static void SetKeyword(StringView keyword, bool enabled) { enabled ? EnableKeyword(keyword) : DisableKeyword(keyword); }
-        static bool IsKeywordEnabled(StringView keyword);
+        HX_FUNCTION() static bool IsKeywordEnabled(StringView keyword);
+        HX_FUNCTION() static void EnableKeyword(const GlobalKeyword& keyword) { EnableKeyword(keyword.name()); }
+        HX_FUNCTION() static void DisableKeyword(const GlobalKeyword& keyword) { DisableKeyword(keyword.name()); }
+        HX_FUNCTION() static bool IsKeywordEnabled(const GlobalKeyword& keyword) { return IsKeywordEnabled(keyword.name()); }
+        HX_FUNCTION() static void SetKeyword(const GlobalKeyword& keyword, bool value) { SetKeyword(keyword.name(), value); }
         static void GetEnabledGlobalKeywords(Array<String>& out);
+        HX_PROPERTY(ReadOnly) static Array<GlobalKeyword> enabledGlobalKeywords();
+        HX_PROPERTY(ReadOnly) static Array<GlobalKeyword> globalKeywords();
+        // Compiles the variants of every loaded shader's passes with no keywords for the current target.
+        HX_FUNCTION() static void WarmupAllShaders();
+
+        HX_FUNCTION() static void SetGlobalFloat(StringView name, f32 value) { SetGlobalFloat(PropertyToID(name), value); }
+        HX_FUNCTION() static void SetGlobalFloat(i32 nameID, f32 value) { Globals().SetFloat(nameID, value); }
+        HX_FUNCTION() static void SetGlobalInt(StringView name, i32 value) { SetGlobalFloat(name, f32(value)); }
+        HX_FUNCTION() static void SetGlobalInt(i32 nameID, i32 value) { SetGlobalFloat(nameID, f32(value)); }
+        HX_FUNCTION() static void SetGlobalInteger(StringView name, i32 value) { SetGlobalInteger(PropertyToID(name), value); }
+        HX_FUNCTION() static void SetGlobalInteger(i32 nameID, i32 value) { Globals().SetInt(nameID, value); }
+        HX_FUNCTION() static void SetGlobalVector(StringView name, Vector4 value) { SetGlobalVector(PropertyToID(name), value); }
+        HX_FUNCTION() static void SetGlobalVector(i32 nameID, Vector4 value) { Globals().SetVector(nameID, value); }
+        HX_FUNCTION() static void SetGlobalColor(StringView name, Color value) { SetGlobalColor(PropertyToID(name), value); }
+        HX_FUNCTION() static void SetGlobalColor(i32 nameID, Color value) { Globals().SetColor(nameID, value); }
+        HX_FUNCTION() static void SetGlobalMatrix(StringView name, Matrix4x4 value) { SetGlobalMatrix(PropertyToID(name), value); }
+        HX_FUNCTION() static void SetGlobalMatrix(i32 nameID, Matrix4x4 value) { Globals().SetMatrix(nameID, value); }
+        HX_FUNCTION() static void SetGlobalTexture(StringView name, Texture* value) { SetGlobalTexture(PropertyToID(name), value); }
+        HX_FUNCTION() static void SetGlobalTexture(i32 nameID, Texture* value) { Globals().SetTexture(nameID, value ? value->GetEntityId() : EntityId()); }
+        HX_FUNCTION() static void SetGlobalFloatArray(StringView name, Span<const f32> values) { SetGlobalFloatArray(PropertyToID(name), values); }
+        HX_FUNCTION() static void SetGlobalFloatArray(i32 nameID, Span<const f32> values) { Globals().SetFloatArray(nameID, values); }
+        HX_FUNCTION() static void SetGlobalVectorArray(StringView name, Span<const Vector4> values) { SetGlobalVectorArray(PropertyToID(name), values); }
+        HX_FUNCTION() static void SetGlobalVectorArray(i32 nameID, Span<const Vector4> values) { Globals().SetVectorArray(nameID, values); }
+        HX_FUNCTION() static void SetGlobalMatrixArray(StringView name, Span<const Matrix4x4> values) { SetGlobalMatrixArray(PropertyToID(name), values); }
+        HX_FUNCTION() static void SetGlobalMatrixArray(i32 nameID, Span<const Matrix4x4> values) { Globals().SetMatrixArray(nameID, values); }
+        HX_FUNCTION() static f32 GetGlobalFloat(StringView name) { return GetGlobalFloat(PropertyToID(name)); }
+        HX_FUNCTION() static f32 GetGlobalFloat(i32 nameID) { return Globals().GetFloat(nameID); }
+        HX_FUNCTION() static i32 GetGlobalInt(StringView name) { return i32(GetGlobalFloat(name)); }
+        HX_FUNCTION() static i32 GetGlobalInt(i32 nameID) { return i32(GetGlobalFloat(nameID)); }
+        HX_FUNCTION() static i32 GetGlobalInteger(StringView name) { return GetGlobalInteger(PropertyToID(name)); }
+        HX_FUNCTION() static i32 GetGlobalInteger(i32 nameID) { return Globals().GetInt(nameID); }
+        HX_FUNCTION() static Vector4 GetGlobalVector(StringView name) { return GetGlobalVector(PropertyToID(name)); }
+        HX_FUNCTION() static Vector4 GetGlobalVector(i32 nameID) { return Globals().GetVector(nameID); }
+        HX_FUNCTION() static Color GetGlobalColor(StringView name) { return GetGlobalColor(PropertyToID(name)); }
+        HX_FUNCTION() static Color GetGlobalColor(i32 nameID) { return Globals().GetColor(nameID); }
+        HX_FUNCTION() static Matrix4x4 GetGlobalMatrix(StringView name) { return GetGlobalMatrix(PropertyToID(name)); }
+        HX_FUNCTION() static Matrix4x4 GetGlobalMatrix(i32 nameID) { return Globals().GetMatrix(nameID); }
+        HX_FUNCTION() static Texture* GetGlobalTexture(StringView name) { return GetGlobalTexture(PropertyToID(name)); }
+        HX_FUNCTION() static Texture* GetGlobalTexture(i32 nameID) { return EntityIdToObject<Texture>(Globals().GetTexture(nameID)); }
+        HX_FUNCTION() static Array<f32> GetGlobalFloatArray(StringView name) { return GetGlobalFloatArray(PropertyToID(name)); }
+        HX_FUNCTION() static Array<f32> GetGlobalFloatArray(i32 nameID)
+        {
+            Array<f32> out;
+            Globals().GetFloatArray(nameID, out);
+            return out;
+        }
+        HX_FUNCTION() static Array<Vector4> GetGlobalVectorArray(StringView name) { return GetGlobalVectorArray(PropertyToID(name)); }
+        HX_FUNCTION() static Array<Vector4> GetGlobalVectorArray(i32 nameID)
+        {
+            Array<Vector4> out;
+            Globals().GetVectorArray(nameID, out);
+            return out;
+        }
+        HX_FUNCTION() static Array<Matrix4x4> GetGlobalMatrixArray(StringView name) { return GetGlobalMatrixArray(PropertyToID(name)); }
+        HX_FUNCTION() static Array<Matrix4x4> GetGlobalMatrixArray(i32 nameID)
+        {
+            Array<Matrix4x4> out;
+            Globals().GetMatrixArray(nameID, out);
+            return out;
+        }
         // Bumped whenever a global keyword changes.
         static u32 GlobalKeywordsVersion();
         // Global property values (SetGlobalFloat, ...): the renderer reads them for properties no material sets.
@@ -162,5 +236,8 @@ namespace helix::engine
         std::shared_ptr<ShaderProgram> program_;
         u32 index_ = 0;
         i32 maximumLOD_ = -1;
+        // Made on first use from the definition.
+        mutable Array<ShaderKeywordInfo> keywordSpace_ = Array<ShaderKeywordInfo>();
+        mutable bool keywordSpaceMade_ = false;
     };
 }

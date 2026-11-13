@@ -2,11 +2,21 @@
 #include <Helix/Engine/Rendering/Graphics.h>
 #include <Helix/Engine/Rendering/Light.h>
 
+#include <Helix/Core/Logging/Log.h>
+#include <Helix/Math/Mathf.h>
+
 #include <cmath>
 #include <cstring>
 
 namespace helix::engine
 {
+    namespace
+    {
+        LogChannel CameraLog{"Engine"};
+    }
+
+    void (*detail::gRenderStage)(Component*, detail::RenderStage) = nullptr;
+
     namespace
     {
         struct CameraState
@@ -42,7 +52,8 @@ namespace helix::engine
           orthographicSize_(o.orthographicSize_), aspect_(o.aspect_), rect_(o.rect_), depth_(o.depth_), cullingMask_(o.cullingMask_),
           eventMask_(o.eventMask_), clearFlags_(o.clearFlags_), background_(o.background_), cameraType_(o.cameraType_),
           occlusionCulling_(o.occlusionCulling_), allowHDR_(o.allowHDR_), allowMSAA_(o.allowMSAA_), depthTextureMode_(o.depthTextureMode_),
-          customProjection_(o.customProjection_), customView_(o.customView_), projection_(o.projection_), view_(o.view_)
+          customProjection_(o.customProjection_), customView_(o.customView_), customCulling_(o.customCulling_), targetDisplay_(o.targetDisplay_),
+          scene_(o.scene_), projection_(o.projection_), view_(o.view_), culling_(o.culling_)
     {
         std::memcpy(layerCullDistances_, o.layerCullDistances_, sizeof(layerCullDistances_));
     }
@@ -225,20 +236,114 @@ namespace helix::engine
             out[i] = view.MultiplyPoint3x4(ViewportToWorldPoint(Vector3(corners[i].x, corners[i].y, z)));
     }
 
-    void Camera::CopyFrom(const Camera& o)
+    void Camera::CopySettings(const Camera& o)
     {
         fieldOfView_ = o.fieldOfView_, near_ = o.near_, far_ = o.far_, orthographic_ = o.orthographic_, orthographicSize_ = o.orthographicSize_;
         aspect_ = o.aspect_, rect_ = o.rect_, depth_ = o.depth_, cullingMask_ = o.cullingMask_, eventMask_ = o.eventMask_;
         clearFlags_ = o.clearFlags_, background_ = o.background_, cameraType_ = o.cameraType_, occlusionCulling_ = o.occlusionCulling_;
         allowHDR_ = o.allowHDR_, allowMSAA_ = o.allowMSAA_, depthTextureMode_ = o.depthTextureMode_;
         customProjection_ = o.customProjection_, customView_ = o.customView_, projection_ = o.projection_, view_ = o.view_;
+        customCulling_ = o.customCulling_, culling_ = o.culling_, targetDisplay_ = o.targetDisplay_, scene_ = o.scene_;
         std::memcpy(layerCullDistances_, o.layerCullDistances_, sizeof(layerCullDistances_));
+    }
+
+    void Camera::Reset() { CopySettings(Camera()); }
+
+    Matrix4x4 Camera::CalculateObliqueMatrix(Vector4 clipPlane) const
+    {
+        // The near plane moved onto the clip plane: the corner of the frustum opposite the plane fixes the scale.
+        Matrix4x4 p = projectionMatrix();
+        auto sign = [](f32 v) { return v > 0 ? 1.0f : v < 0 ? -1.0f : 0.0f; };
+        Vector4 q = p.inverse() * Vector4(sign(clipPlane.x), sign(clipPlane.y), 1, 1);
+        f32 d = Vector4::Dot(clipPlane, q);
+        if (d == 0)
+            return p;
+        Vector4 c = clipPlane * (2.0f / d);
+        p.m20 = c.x - p.m30, p.m21 = c.y - p.m31, p.m22 = c.z - p.m32, p.m23 = c.w - p.m33;
+        return p;
+    }
+
+    f32 Camera::FieldOfViewToFocalLength(f32 fieldOfView, f32 sensorSize) { return sensorSize * 0.5f / std::tan(fieldOfView * 0.5f * mathf::Deg2Rad); }
+    f32 Camera::FocalLengthToFieldOfView(f32 focalLength, f32 sensorSize)
+    {
+        if (focalLength < mathf::Epsilon)
+        {
+            HX_LOG_ERROR(CameraLog, "Camera focal length must be greater than zero.");
+            return 0;
+        }
+        return 2.0f * std::atan(sensorSize * 0.5f / focalLength) * mathf::Rad2Deg;
+    }
+    f32 Camera::HorizontalToVerticalFieldOfView(f32 horizontalFieldOfView, f32 aspectRatio)
+    {
+        return 2.0f * std::atan(std::tan(horizontalFieldOfView * 0.5f * mathf::Deg2Rad) / aspectRatio) * mathf::Rad2Deg;
+    }
+    f32 Camera::VerticalToHorizontalFieldOfView(f32 verticalFieldOfView, f32 aspectRatio)
+    {
+        return 2.0f * std::atan(std::tan(verticalFieldOfView * 0.5f * mathf::Deg2Rad) * aspectRatio) * mathf::Rad2Deg;
+    }
+
+    void Camera::CopyFrom(const Camera& o)
+    {
+        CopySettings(o);
         if (Transform* t = transform())
             if (Transform* other = o.transform())
                 t->SetPositionAndRotation(other->position(), other->rotation());
     }
 
     void Camera::Render() { Graphics::RenderCamera(*this); }
+
+    Array<Plane> GeometryUtility::FrustumPlanesOf(Camera* camera)
+    {
+        Array<Plane> out;
+        out.Resize(6);
+        if (camera)
+            CalculateFrustumPlanes(*camera, out.Data());
+        return out;
+    }
+
+    Array<Plane> GeometryUtility::FrustumPlanesOf(Matrix4x4 worldToProjectionMatrix)
+    {
+        Array<Plane> out;
+        out.Resize(6);
+        CalculateFrustumPlanes(worldToProjectionMatrix, out.Data());
+        return out;
+    }
+
+    bool GeometryUtility::TestPlanes(Span<const Plane> planes, Bounds bounds)
+    {
+        Vector3 c = bounds.center, e = bounds.extents;
+        for (const Plane& p : planes)
+        {
+            Vector3 n = p.normal;
+            f32 r = e.x * std::fabs(n.x) + e.y * std::fabs(n.y) + e.z * std::fabs(n.z);
+            if (Vector3::Dot(n, c) + p.distance + r < 0)
+                return false;
+        }
+        return true;
+    }
+
+    bool GeometryUtility::TryCreatePlaneFromPolygon(Span<const Vector3> vertices, Plane& plane)
+    {
+        plane = Plane();
+        if (vertices.Size() < 3)
+            return false;
+        Vector3 n, centroid;
+        for (usize i = 0; i < vertices.Size(); i++)
+        {
+            const Vector3& a = vertices[i];
+            const Vector3& b = vertices[(i + 1) % vertices.Size()];
+            n.x += (a.y - b.y) * (a.z + b.z);
+            n.y += (a.z - b.z) * (a.x + b.x);
+            n.z += (a.x - b.x) * (a.y + b.y);
+            centroid += a;
+        }
+        f32 length = n.magnitude();
+        if (length < 1e-12f)
+            return false;
+        centroid /= f32(vertices.Size());
+        plane = Plane(n / length, centroid);
+        return true;
+    }
 
     Bounds GeometryUtility::CalculateBounds(Span<const Vector3> positions, const Matrix4x4& transform)
     {
@@ -294,6 +399,16 @@ namespace helix::engine
             auto unit = [](f32 v) { return (v < 0 ? 0 : v > 255 ? 255 : v) / 255.0f; };
             return Color(unit(r), unit(g), unit(b), 1);
         }
+    }
+
+    void Light::Reset()
+    {
+        const Light d;
+        type_ = d.type_, color_ = d.color_, intensity_ = d.intensity_, range_ = d.range_, spotAngle_ = d.spotAngle_, innerSpotAngle_ = d.innerSpotAngle_;
+        shadows_ = d.shadows_, shadowStrength_ = d.shadowStrength_, shadowBias_ = d.shadowBias_, shadowNormalBias_ = d.shadowNormalBias_;
+        shadowNearPlane_ = d.shadowNearPlane_, cullingMask_ = d.cullingMask_, renderingLayerMask_ = d.renderingLayerMask_;
+        bounceIntensity_ = d.bounceIntensity_, colorTemperature_ = d.colorTemperature_, useColorTemperature_ = d.useColorTemperature_;
+        renderMode_ = d.renderMode_;
     }
 
     Color Light::FinalColor() const

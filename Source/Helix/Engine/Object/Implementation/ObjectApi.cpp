@@ -3,6 +3,7 @@
 #include <Helix/Engine/Object/Object.h>
 #include <Helix/Engine/Script/ScriptClass.h>
 #include <Helix/Engine/Script/GameBehaviour.h>
+#include <Helix/Engine/Script/ScriptRuntime.h>
 #include <Helix/Engine/Transform/Transform.h>
 
 // The statics of Object the script API has, over the engine's lifecycle and find functions.
@@ -46,8 +47,8 @@ namespace helix::engine
         {
             if (!script.IsValid())
                 return true;
-            auto* b = static_cast<GameBehaviour*>(o);
-            return b->script() && scripting::IsAssignableFrom(script, b->script()->type);
+            const ScriptClass* s = ScriptClassOfObject(o);
+            return s && scripting::IsAssignableFrom(script, s->type);
         }
 
         Array<Object*> Find(scripting::TypeId type, FindObjectsInactive inactive, FindObjectsSortMode sortMode)

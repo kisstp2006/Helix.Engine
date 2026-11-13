@@ -9,6 +9,7 @@
 // render side at the end of the frame.
 namespace helix::engine
 {
+    HX_ENUM(Namespace = "HelixEngine.Rendering")
     enum class ShadowCastingMode : i32
     {
         Off = 0,
@@ -17,6 +18,7 @@ namespace helix::engine
         ShadowsOnly = 3,
     };
 
+    HX_CLASS(Namespace = "HelixEngine", Sealed)
     class MeshFilter final : public Component
     {
         HX_ENGINE_CLASS(MeshFilter, Component, ClassId::MeshFilter, ClassDisallowMultiple)
@@ -25,10 +27,10 @@ namespace helix::engine
         MeshFilter() = default;
         MeshFilter(const MeshFilter& other) : Component(other), mesh_(other.mesh_) {}
 
-        Mesh* sharedMesh() const { return mesh_.Get(); }
+        HX_PROPERTY() Mesh* sharedMesh() const { return mesh_.Get(); }
         void SetSharedMesh(Mesh* mesh);
         // The filter's own copy of the shared mesh, made on first access (later accesses give the same copy).
-        Mesh* mesh();
+        HX_PROPERTY() Mesh* mesh();
         void SetMesh(Mesh* mesh) { SetSharedMesh(mesh); }
 
         void OnDestroyNative();
@@ -54,62 +56,91 @@ namespace helix::engine
         extern HX_IMPORT_DATA void (*gVisibilityChanged)(Renderer* renderer, bool visible);
     }
 
+    HX_CLASS(Namespace = "HelixEngine")
     class Renderer : public Component
     {
         HX_ENGINE_CLASS(Renderer, Component, ClassId::Renderer, ClassAbstract | ClassDisallowMultiple)
 
     public:
-        bool enabled() const { return enabled_; }
+        HX_PROPERTY() bool enabled() const { return enabled_; }
         void SetEnabled(bool value);
         // Some camera drew it in the last rendered frame.
-        bool isVisible() const;
+        HX_PROPERTY(ReadOnly) bool isVisible() const;
 
         // World bounds; an override set by SetBounds stays until ResetBounds.
-        Bounds bounds() const;
+        HX_PROPERTY() Bounds bounds() const;
         void SetBounds(const Bounds& value);
-        void ResetBounds();
+        HX_FUNCTION() void ResetBounds();
         // Bounds in the GameObject's space (the mesh's by default).
-        Bounds localBounds() const;
+        HX_PROPERTY() Bounds localBounds() const;
         void SetLocalBounds(const Bounds& value);
-        void ResetLocalBounds();
-        Matrix4x4 localToWorldMatrix() const;
-        Matrix4x4 worldToLocalMatrix() const;
+        HX_FUNCTION() void ResetLocalBounds();
+        HX_PROPERTY(ReadOnly) Matrix4x4 localToWorldMatrix() const;
+        HX_PROPERTY(ReadOnly) Matrix4x4 worldToLocalMatrix() const;
 
-        Material* sharedMaterial() const { return materials_.Empty() ? nullptr : materials_[0].Get(); }
+        HX_PROPERTY() Material* sharedMaterial() const { return materials_.Empty() ? nullptr : materials_[0].Get(); }
         void SetSharedMaterial(Material* material);
         void GetSharedMaterials(Array<Material*>& out) const;
         void SetSharedMaterials(Span<Material* const> materials);
         i32 sharedMaterialCount() const { return i32(materials_.Size()); }
         // The renderer's own copies of its materials, made on first access.
-        Material* material();
+        HX_PROPERTY() Material* material();
         void SetMaterial(Material* material) { SetSharedMaterial(material); }
         void GetMaterials(Array<Material*>& out);
         void SetMaterials(Span<Material* const> materials) { SetSharedMaterials(materials); }
+        HX_PROPERTY(Name = "sharedMaterials", Setter = "SetSharedMaterials") Array<Material*> SharedMaterialsApi() const
+        {
+            Array<Material*> out;
+            GetSharedMaterials(out);
+            return out;
+        }
+        HX_PROPERTY(Name = "materials", Setter = "SetMaterials") Array<Material*> MaterialsApi()
+        {
+            Array<Material*> out;
+            GetMaterials(out);
+            return out;
+        }
 
         // Values on top of the materials; with a material index for that material only.
         void SetPropertyBlock(const MaterialPropertyBlock* block);
         void SetPropertyBlock(const MaterialPropertyBlock* block, i32 materialIndex);
         void GetPropertyBlock(MaterialPropertyBlock& out) const;
         void GetPropertyBlock(MaterialPropertyBlock& out, i32 materialIndex) const;
-        bool HasPropertyBlock() const;
+        HX_FUNCTION() bool HasPropertyBlock() const;
+        // The blocks by id (C#'s MaterialPropertyBlock is no native object; a C++ script passes its block).
+        HX_FUNCTION(Name = "SetPropertyBlock", Internal) void SetPropertyBlockById(PropertyBlockId properties) { SetPropertyBlock(MaterialPropertyBlock::Find(properties)); }
+        HX_FUNCTION(Name = "SetPropertyBlock", Internal) void SetPropertyBlockById(PropertyBlockId properties, i32 materialIndex)
+        {
+            SetPropertyBlock(MaterialPropertyBlock::Find(properties), materialIndex);
+        }
+        HX_FUNCTION(Name = "GetPropertyBlock", Internal) void GetPropertyBlockById(PropertyBlockId dest) const
+        {
+            if (MaterialPropertyBlock* b = MaterialPropertyBlock::Find(dest))
+                GetPropertyBlock(*b);
+        }
+        HX_FUNCTION(Name = "GetPropertyBlock", Internal) void GetPropertyBlockById(PropertyBlockId dest, i32 materialIndex) const
+        {
+            if (MaterialPropertyBlock* b = MaterialPropertyBlock::Find(dest))
+                GetPropertyBlock(*b, materialIndex);
+        }
 
-        ShadowCastingMode shadowCastingMode() const { return shadowCasting_; }
+        HX_PROPERTY() ShadowCastingMode shadowCastingMode() const { return shadowCasting_; }
         void SetShadowCastingMode(ShadowCastingMode value) { shadowCasting_ = value; }
-        bool receiveShadows() const { return receiveShadows_; }
+        HX_PROPERTY() bool receiveShadows() const { return receiveShadows_; }
         void SetReceiveShadows(bool value) { receiveShadows_ = value; }
-        bool staticShadowCaster() const { return staticShadowCaster_; }
+        HX_PROPERTY() bool staticShadowCaster() const { return staticShadowCaster_; }
         void SetStaticShadowCaster(bool value) { staticShadowCaster_ = value; }
-        u32 renderingLayerMask() const { return renderingLayerMask_; }
+        HX_PROPERTY() u32 renderingLayerMask() const { return renderingLayerMask_; }
         void SetRenderingLayerMask(u32 value) { renderingLayerMask_ = value; }
-        i32 rendererPriority() const { return rendererPriority_; }
+        HX_PROPERTY() i32 rendererPriority() const { return rendererPriority_; }
         void SetRendererPriority(i32 value) { rendererPriority_ = value; }
-        i32 sortingLayerID() const { return sortingLayerID_; }
+        HX_PROPERTY() i32 sortingLayerID() const { return sortingLayerID_; }
         void SetSortingLayerID(i32 value) { sortingLayerID_ = value; }
-        i32 sortingOrder() const { return sortingOrder_; }
+        HX_PROPERTY() i32 sortingOrder() const { return sortingOrder_; }
         void SetSortingOrder(i32 value);
-        bool forceRenderingOff() const { return forceRenderingOff_; }
+        HX_PROPERTY() bool forceRenderingOff() const { return forceRenderingOff_; }
         void SetForceRenderingOff(bool value);
-        bool allowOcclusionWhenDynamic() const { return allowOcclusionWhenDynamic_; }
+        HX_PROPERTY() bool allowOcclusionWhenDynamic() const { return allowOcclusionWhenDynamic_; }
         void SetAllowOcclusionWhenDynamic(bool value) { allowOcclusionWhenDynamic_ = value; }
 
         // ---------------------------------------------------------------------------------------------- native
@@ -175,6 +206,7 @@ namespace helix::engine
         u32 managerIndex_ = ~0u;
     };
 
+    HX_CLASS(Namespace = "HelixEngine", Sealed)
     class MeshRenderer final : public Renderer
     {
         HX_ENGINE_CLASS(MeshRenderer, Renderer, ClassId::MeshRenderer, ClassDisallowMultiple)

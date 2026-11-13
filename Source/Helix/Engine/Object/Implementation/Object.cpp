@@ -130,7 +130,7 @@ namespace helix::engine
     {
         Registry& r = Classes();
         HX_ASSERT(info.base == kNoClass || info.base < r.classes.Size());
-        bool script = (info.flags & ClassScript) != 0;
+        bool script = (info.flags & (ClassScript | ClassSharedId)) != 0;
         // A class registered again is the copy of its inline registration in another binary (a game module built
         // against the shared engine): it finds the class the engine has.
         if (!script)
@@ -139,6 +139,11 @@ namespace helix::engine
                 HX_ASSERT(r.classes[*known].name == info.name);
                 return *known;
             }
+        // A class sharing another's ID is found by its name.
+        if ((info.flags & ClassSharedId) && !(info.flags & ClassScript))
+            for (u32 i = 0; i < r.classes.Size(); i++)
+                if (r.classes[i].name == info.name && (r.classes[i].flags & ClassScript) == 0)
+                    return i;
         u32 index = u32(r.classes.Size());
         if (!script)
             r.byId.Set(info.classId, index);

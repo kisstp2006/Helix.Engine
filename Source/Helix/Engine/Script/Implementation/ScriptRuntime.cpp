@@ -5,7 +5,10 @@
 #include <Helix/Core/Logging/Log.h>
 #include <Helix/Engine/Application/Application.h>
 #include <Helix/Engine/GameObject/Lifecycle.h>
+#include <Helix/Engine/Object/Implementation/BuiltinClasses.h>
 #include <Helix/Engine/Object/Implementation/ObjectAccess.h>
+#include <Helix/Engine/Object/Implementation/ScriptingTypes.h>
+#include <Helix/Engine/Rendering/Camera.h>
 #include <Helix/Engine/Rendering/Renderer.h>
 #include <Helix/Platform/IO/FileSystem.h>
 #include <Helix/Platform/System/DynamicLibrary.h>
@@ -96,7 +99,52 @@ namespace helix::engine
             return -1;
         }
 
-        u64& Handle(GameBehaviour* b) { return scripting::ObjectHandles<Object>::WrapperOf(b); }
+        u64& Handle(Object* o) { return scripting::ObjectHandles<Object>::WrapperOf(o); }
+
+        // The C# object of a C# script's object, made once (the native object must be in the table).
+        void EnsureManagedScript(Object* b, const ScriptClass* s)
+        {
+            if (!s || s->language != ScriptLanguage::CSharp || Handle(b) || !b->GetEntityId().IsValid())
+                return;
+            Runtime& rt = RT();
+            if (!gManaged.create)
+            {
+                if (!rt.warnedNoManaged)
+                    HX_LOG_ERROR(gScriptLog, "{}: C# scripts need the C# side of the engine (the .NET host is not running)", s->name);
+                rt.warnedNoManaged = true;
+                return;
+            }
+            u64 handle = 0;
+            if (gManaged.create(b->GetEntityId().value, s->index, &handle) != 0 || !handle)
+            {
+                HX_LOG_ERROR(gScriptLog, "{}: its C# object could not be made", s->name);
+                return;
+            }
+            // The C# object is the wrapper, held while the native object lives.
+            u64& slot = Handle(b);
+            if (slot && slot != handle)
+                scripting::ReleaseWrapper(slot);
+            slot = handle;
+        }
+
+        // A copy's C# fields through their binary form (references stay the original's until the remap).
+        void CopyManagedFields(Object* copy, const Object* original, const ScriptClass* s)
+        {
+            if (!s || s->language != ScriptLanguage::CSharp || !s->transfer)
+                return;
+            EnsureManagedScript(copy, s);
+            if (!Handle(copy) || !Handle(const_cast<Object*>(original)))
+                return;
+            Array<u8> bytes;
+            serialization::BinaryWrite w(bytes);
+            serialization::DynamicVisitor written = serialization::DynamicAdapter<serialization::BinaryWrite>::Make(w);
+            s->transfer(const_cast<Object*>(original), &written);
+            serialization::BinaryRead r{Span<const u8>(bytes)};
+            serialization::DynamicVisitor read = serialization::DynamicAdapter<serialization::BinaryRead>::Make(r);
+            s->transfer(copy, &read);
+            if (r.Failed())
+                HX_LOG_ERROR(gScriptLog, "{}: the copy of the script's fields failed ({})", s->name, r.Error());
+        }
     }
 
     struct ScriptAccess
@@ -209,31 +257,7 @@ namespace helix::engine
         }
 
         // The C# object of a C# script, made once (the native object must be in the table).
-        static void EnsureManaged(GameBehaviour* b)
-        {
-            const ScriptClass* s = b->script_;
-            if (!s || s->language != ScriptLanguage::CSharp || Handle(b) || !b->GetEntityId().IsValid())
-                return;
-            Runtime& rt = RT();
-            if (!gManaged.create)
-            {
-                if (!rt.warnedNoManaged)
-                    HX_LOG_ERROR(gScriptLog, "{}: C# scripts need the C# side of the engine (the .NET host is not running)", s->name);
-                rt.warnedNoManaged = true;
-                return;
-            }
-            u64 handle = 0;
-            if (gManaged.create(b->GetEntityId().value, s->index, &handle) != 0 || !handle)
-            {
-                HX_LOG_ERROR(gScriptLog, "{}: its C# object could not be made", s->name);
-                return;
-            }
-            // The C# object is the wrapper, held while the native object lives.
-            u64& slot = Handle(b);
-            if (slot && slot != handle)
-                scripting::ReleaseWrapper(slot);
-            slot = handle;
-        }
+        static void EnsureManaged(GameBehaviour* b) { EnsureManagedScript(b, b->script_); }
 
         static void Activate(GameBehaviour* b)
         {
@@ -425,6 +449,19 @@ namespace helix::engine
                         CallScriptMessage(b, visible ? ScriptMessage::OnBecameVisible : ScriptMessage::OnBecameInvisible);
         }
 
+        // The camera messages: the scripts of the camera's (or the renderer's) GameObject, every script for RenderObject.
+        void RenderStageReached(Component* at, detail::RenderStage stage)
+        {
+            switch (stage)
+            {
+            case detail::RenderStage::PreCull: ScriptsOf(at->gameObject(), ScriptMessage::OnPreCull, false); break;
+            case detail::RenderStage::PreRender: ScriptsOf(at->gameObject(), ScriptMessage::OnPreRender, false); break;
+            case detail::RenderStage::PostRender: ScriptsOf(at->gameObject(), ScriptMessage::OnPostRender, false); break;
+            case detail::RenderStage::WillRenderObject: ScriptsOf(at->gameObject(), ScriptMessage::OnWillRenderObject, false); break;
+            case detail::RenderStage::RenderObject: BroadcastScriptMessage(ScriptMessage::OnRenderObject); break;
+            }
+        }
+
         void Hook()
         {
             Runtime& rt = RT();
@@ -433,6 +470,7 @@ namespace helix::engine
             rt.hooked = true;
             detail::gHierarchyChanged = &HierarchyChanged;
             detail::gVisibilityChanged = &VisibilityChanged;
+            detail::gRenderStage = &RenderStageReached;
             Application::focusChanged().Add([](void*, bool focus) { BroadcastScriptMessage(ScriptMessage::OnApplicationFocus, focus); });
             Application::pauseChanged().Add([](void*, bool paused) { BroadcastScriptMessage(ScriptMessage::OnApplicationPause, paused); });
             Application::quitting().Add([](void*) { BroadcastScriptMessage(ScriptMessage::OnApplicationQuit); });
@@ -514,11 +552,13 @@ namespace helix::engine
 
     namespace
     {
+        // The class a 114 document makes: a C++ script's class, ScriptableObject's for a C# ScriptableObject script,
+        // GameBehaviour's (kNoClass) else.
         u32 CppScriptClassOf(const ScriptOnly& only)
         {
             if (MonoScript* asset = only.m_Script.Get())
                 if (const ScriptClass* s = asset->GetScriptClass())
-                    if (s->language == ScriptLanguage::Cpp && s->alive)
+                    if (s->alive && (s->language == ScriptLanguage::Cpp || IsDerivedFrom(s->engineClass, ClassOf<ScriptableObject>())))
                         return s->engineClass;
             return kNoClass;
         }
@@ -547,23 +587,7 @@ namespace helix::engine
         }
     }
 
-    void GameBehaviour::OnCloneNative(const GameBehaviour& original)
-    {
-        if (!script_ || script_->language != ScriptLanguage::CSharp || !script_->transfer)
-            return;
-        ScriptAccess::EnsureManaged(this);
-        if (!Handle(this) || !Handle(const_cast<GameBehaviour*>(&original)))
-            return;
-        Array<u8> bytes;
-        serialization::BinaryWrite w(bytes);
-        serialization::DynamicVisitor written = serialization::DynamicAdapter<serialization::BinaryWrite>::Make(w);
-        script_->transfer(static_cast<Object*>(const_cast<GameBehaviour*>(&original)), &written);
-        serialization::BinaryRead r{Span<const u8>(bytes)};
-        serialization::DynamicVisitor read = serialization::DynamicAdapter<serialization::BinaryRead>::Make(r);
-        script_->transfer(static_cast<Object*>(this), &read);
-        if (r.Failed())
-            HX_LOG_ERROR(gScriptLog, "{}: the copy of the script's fields failed ({})", script_->name, r.Error());
-    }
+    void GameBehaviour::OnCloneNative(const GameBehaviour& original) { CopyManagedFields(this, &original, script_); }
 
     u32 GameBehaviour::ResolveBinary(const serialization::SerializedFile& file, u32 index, serialization::ReferenceTable* refs)
     {
@@ -609,12 +633,28 @@ namespace helix::engine
 
     void CallScriptMessage(GameBehaviour* b, ScriptMessage m, bool argument)
     {
-        const ScriptClass* s = b ? b->script() : nullptr;
-        if (!s || !s->Has(m) || !s->alive)
+        if (b)
+            CallScriptMessage(b, b->script(), m, argument);
+    }
+
+    const ScriptClass* ScriptClassOfObject(const Object* o)
+    {
+        if (!o)
+            return nullptr;
+        if (o->Is<GameBehaviour>())
+            return static_cast<const GameBehaviour*>(o)->script();
+        if (o->Is<ScriptableObject>())
+            return static_cast<const ScriptableObject*>(o)->script();
+        return nullptr;
+    }
+
+    void CallScriptMessage(Object* b, const ScriptClass* s, ScriptMessage m, bool argument)
+    {
+        if (!b || !s || !s->Has(m) || !s->alive)
             return;
         if (s->language == ScriptLanguage::Cpp)
         {
-            void* self = static_cast<Object*>(b);
+            void* self = b;
             if (ScriptMessageTakesBool(m))
                 s->callBool[u32(m)](self, argument);
             else
@@ -858,10 +898,14 @@ namespace helix::engine
                 s.callBool[u32(message)] = m.callBool;
             }
             ScriptClass* registered = MutableScriptClass(RegisterScriptClass(s));
-            // Its engine class: GameBehaviour's, made as the C++ class.
-            ClassInfo info = GetClass(ClassOf<GameBehaviour>());
+            // Its engine class: its script base's (GameBehaviour's, ScriptableObject's), made as the C++ class.
+            RegisterBuiltinClasses();
+            u32 base = n.scriptBase.Empty() ? kNoClass : FindClassByName(n.scriptBase);
+            if (base == kNoClass)
+                base = ClassOf<GameBehaviour>();
+            ClassInfo info = GetClass(base);
             info.name = registered->name;
-            info.base = ClassOf<GameBehaviour>();
+            info.base = base;
             info.flags = (info.flags & ~u32(ClassAbstract)) | ClassScript;
             info.size = n.size;
             info.alignment = n.alignment;
@@ -983,8 +1027,7 @@ namespace helix::engine
         // The transfer of C# script classes with serialized fields: the C# object's (none without one).
         void ManagedTransfer(void* instance, void* visitor)
         {
-            auto* b = static_cast<GameBehaviour*>(static_cast<Object*>(instance));
-            if (u64 handle = Handle(b); handle && gManaged.transfer)
+            if (u64 handle = Handle(static_cast<Object*>(instance)); handle && gManaged.transfer)
                 gManaged.transfer(handle, visitor);
         }
 
@@ -1089,7 +1132,9 @@ namespace helix::engine
             s.messages = messages;
             s.defaultOrder = order;
             s.transfer = fields ? &ManagedTransfer : nullptr;
-            s.engineClass = ClassOf<GameBehaviour>();
+            // Below ScriptableObject or GameBehaviour, by the C# base chain.
+            u32 scriptable = ClassOf<ScriptableObject>();
+            s.engineClass = scripting::IsAssignableFrom(GetClass(scriptable).type, type) ? scriptable : ClassOf<GameBehaviour>();
             *typeOut = type.value;
             return RegisterScriptClass(s);
         }
@@ -1115,5 +1160,171 @@ namespace helix::engine
         scripting::RegisterNativeExport("HxEngineScripts_SendMessage", std::bit_cast<const void*>(&SendFromManaged));
         scripting::SetNativeScriptHandler(&OnNativeScript, nullptr);
         detail::RegisterCoroutineExports();
+    }
+
+    // ---------------------------------------------------------------------------------------------- ScriptableObject
+
+    struct ScriptableAccess
+    {
+        static void SetScript(ScriptableObject* o, const ScriptClass* s)
+        {
+            o->script_ = s;
+            EnsureManagedScript(o, s);
+        }
+
+        // Awake and OnEnable, once.
+        static void Wake(ScriptableObject* o)
+        {
+            if (!o->script_)
+                if (const ScriptClass* s = FindScriptClassOfEngineClass(o->ClassIndex()))
+                    SetScript(o, s);
+            EnsureManagedScript(o, o->script_);
+            if (o->awoken_)
+                return;
+            o->awoken_ = true;
+            EntityId id = o->GetEntityId();
+            CallScriptMessage(o, o->script_, ScriptMessage::Awake);
+            // Awake may destroy it.
+            if (EntityIdToObject(id) != o)
+                return;
+            o->enabled_ = true;
+            CallScriptMessage(o, o->script_, ScriptMessage::OnEnable);
+        }
+    };
+
+    namespace
+    {
+        // The engine class of a type (an engine class's or a script class's) and its script class.
+        u32 ClassOfType(scripting::TypeId type, const ScriptClass*& script)
+        {
+            script = FindScriptClass(type);
+            if (script)
+                return script->alive ? script->engineClass : kNoClass;
+            const scripting::TypeInfo* t = scripting::GetType(type);
+            return t && t->module == detail::EngineModule() && t->kind == scripting::TypeKind::Class ? u32(t->user) : kNoClass;
+        }
+
+        ScriptableObject* MakeInstance(u32 klass, const ScriptClass* script, StringView what)
+        {
+            if (klass == kNoClass || !IsDerivedFrom(klass, ClassOf<ScriptableObject>()))
+            {
+                HX_LOG_ERROR(gScriptLog, "Instance of {} couldn't be created. The script class needs to derive from ScriptableObject.", what);
+                return nullptr;
+            }
+            auto* o = static_cast<ScriptableObject*>(NewObjectOfClass(klass));
+            if (!o)
+            {
+                HX_LOG_ERROR(gScriptLog, "Instance of {} couldn't be created because the class is abstract.", what);
+                return nullptr;
+            }
+            if (script)
+                ScriptableAccess::SetScript(o, script);
+            EntityId id = o->GetEntityId();
+            ScriptableAccess::Wake(o);
+            return EntityIdToObject<ScriptableObject>(id);
+        }
+    }
+
+    ScriptableObject* ScriptableObject::CreateInstance(scripting::TypeId type)
+    {
+        const ScriptClass* script = nullptr;
+        u32 klass = ClassOfType(type, script);
+        const scripting::TypeInfo* t = scripting::GetType(type);
+        return MakeInstance(klass, script, t ? StringView(t->name) : StringView("an unknown type"));
+    }
+
+    ScriptableObject* ScriptableObject::CreateInstanceByName(StringView className)
+    {
+        // The name, or namespace and name, of a script class below ScriptableObject.
+        u32 scriptable = ClassOf<ScriptableObject>();
+        for (u32 i = 0; i < ScriptClassCount(); i++)
+        {
+            const ScriptClass* s = GetScriptClass(i);
+            if (!s || !s->alive || !IsDerivedFrom(s->engineClass, scriptable))
+                continue;
+            String full(s->nameSpace);
+            if (!full.Empty())
+                full.Append(".");
+            full.Append(s->name);
+            if (StringView(s->name) == className || StringView(full) == className)
+                return MakeInstance(s->engineClass, s, className);
+        }
+        if (className == StringView("ScriptableObject"))
+            return MakeInstance(scriptable, nullptr, className);
+        HX_LOG_ERROR(gScriptLog, "Instance of {} couldn't be created because there is no script with that name.", className);
+        return nullptr;
+    }
+
+    void ScriptableObject::AttachScriptAsset()
+    {
+        if (MonoScript* asset = scriptAsset_.Get())
+            if (const ScriptClass* s = asset->GetScriptClass())
+            {
+                if (s->language == ScriptLanguage::CSharp || s->engineClass == ClassIndex())
+                {
+                    ScriptableAccess::SetScript(this, s);
+                    return;
+                }
+                if (!script_)
+                    HX_LOG_ERROR(gScriptLog, "{}: the C++ script {} needs an object made as its class", Name(), s->name);
+            }
+        if (!script_)
+            if (const ScriptClass* s = FindScriptClassOfEngineClass(ClassIndex()))
+                ScriptableAccess::SetScript(this, s);
+    }
+
+    void ScriptableObject::OnLoadedNative() { ScriptableAccess::Wake(this); }
+
+    void ScriptableObject::OnDestroyNative()
+    {
+        if (enabled_)
+        {
+            enabled_ = false;
+            CallScriptMessage(this, script_, ScriptMessage::OnDisable);
+        }
+        if (awoken_)
+            CallScriptMessage(this, script_, ScriptMessage::OnDestroy);
+    }
+
+    void ScriptableObject::OnCloneNative(const ScriptableObject& original)
+    {
+        CopyManagedFields(this, &original, script_);
+        ScriptableAccess::Wake(this);
+    }
+
+    u32 ScriptableObject::ResolveYaml(const serialization::yaml::Tree& tree, u32 root, serialization::ReferenceTable* refs)
+    {
+        return GameBehaviour::ResolveYaml(tree, root, refs);
+    }
+
+    ObjectLayout ScriptableObject::ObjectLayout()
+    {
+        AttachScriptAsset();
+        if (!script_ || !script_->transfer || (script_->language == ScriptLanguage::CSharp && !Handle(this)))
+            return engine::ObjectLayout{&serialization::TypeTreeOf<ScriptableObject>(), serialization::TypeHashOf<ScriptableObject>()};
+        ScriptClass* s = MutableScriptClass(script_->index);
+        if (!s->hasLayout)
+        {
+            serialization::TypeTreeBuild(s->layout).Node("Base", *this);
+            s->layout.ComputeSizes();
+            s->layoutHash = s->layout.Hash();
+            s->hasLayout = true;
+        }
+        return engine::ObjectLayout{&s->layout, s->layoutHash};
+    }
+
+    void ScriptableObject::PrepareBinaryRead(const serialization::SerializedFile& file, u32 index, serialization::ReferenceTable* refs)
+    {
+        if (script_)
+            return;
+        const serialization::TypeTree& tree = file.Types()[file.Objects()[index].type].tree;
+        ScriptOnly only;
+        serialization::SafeBinaryRead r(tree.nodes.Empty() ? serialization::TypeTreeOf<ScriptableObject>() : tree, file.Data(index), refs);
+        r.At(0, 0, only);
+        if (!r.Failed() && only.m_Script.Get())
+        {
+            scriptAsset_ = only.m_Script;
+            AttachScriptAsset();
+        }
     }
 }

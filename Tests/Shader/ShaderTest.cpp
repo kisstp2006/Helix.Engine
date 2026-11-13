@@ -47,7 +47,7 @@ HX_TEST(Shader, AssembliesLoadAsShaders)
     HX_REQUIRE(tint >= 0 && smooth >= 0 && base >= 0);
     HX_CHECK(s->GetPropertyType(tint) == ShaderPropertyType::Color && s->GetPropertyType(smooth) == ShaderPropertyType::Range &&
              s->GetPropertyType(base) == ShaderPropertyType::Texture && s->GetPropertyType(s->FindPropertyIndex("layers")) == ShaderPropertyType::Int);
-    HX_CHECK(s->GetPropertyFlags(tint) == i32(ShaderPropertyFlags::MainColor) && s->GetPropertyRangeLimits(smooth) == Vector2(0, 1));
+    HX_CHECK(s->GetPropertyFlags(tint) == ShaderPropertyFlags::MainColor && s->GetPropertyRangeLimits(smooth) == Vector2(0, 1));
     HX_CHECK(s->GetPropertyDefaultVectorValue(tint) == Vector4(1, 0.5f, 0.25f, 1) && s->GetPropertyTextureDefaultName(base) == StringView("white"));
     HX_CHECK(s->GetPropertyNameId(tint) == Shader::PropertyToID("tint") && s->GetPropertyDescription(smooth) == StringView("Smoothness"));
     Array<String> keywords;

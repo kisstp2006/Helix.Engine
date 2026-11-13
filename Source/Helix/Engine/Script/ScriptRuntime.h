@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Helix/Engine/Script/GameBehaviour.h>
+#include <Helix/Engine/Script/ScriptableObject.h>
 #include <Helix/Scripting/Types/Variant.h>
 
 // The scripts of both languages at run time: one scheduler calls their messages in the reference's order. C++ scripts
@@ -17,6 +18,10 @@ namespace helix::engine
     void RunScriptPhase(ScriptMessage phase);
     // A message to one script (Awake, OnEnable, ... by the scheduler; SendMessage and tools).
     void CallScriptMessage(GameBehaviour* behaviour, ScriptMessage message, bool argument = false);
+    // The same for any object of a script class (a GameBehaviour or a ScriptableObject).
+    void CallScriptMessage(Object* object, const ScriptClass* script, ScriptMessage message, bool argument = false);
+    // The script class of a GameBehaviour or a ScriptableObject; null for other objects and those without one.
+    const ScriptClass* ScriptClassOfObject(const Object* object);
     // A message to every script that is active and enabled (OnApplicationFocus, Pause, Quit).
     void BroadcastScriptMessage(ScriptMessage message, bool argument = false);
     // How many scripts the phase calls now (enabled on active GameObjects, with the message).

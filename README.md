@@ -46,11 +46,13 @@ reports it.
 | `Source/Helix/Engine/Material/Material.h` | `Material`, `MaterialPropertyBlock`, `MaterialPassData` (block bytes and textures per pass and variant) |
 | `Source/Helix/Engine/Material/PropertySheet.h` | `PropertyToID`, `PropertySheet`: property values by id |
 | `Source/Helix/Engine/Rendering/Renderer.h` | `MeshFilter`, `Renderer`, `MeshRenderer`, `ShadowCastingMode` |
-| `Source/Helix/Engine/Rendering/Camera.h` | `Camera`, `CameraClearFlags`, `CameraType`, `GeometryUtility` |
+| `Source/Helix/Engine/Rendering/Camera.h` | `Camera`, `CameraClearFlags`, `CameraType`, `DepthTextureMode`, `GeometryUtility` |
 | `Source/Helix/Engine/Rendering/Light.h` | `Light`, `LightType`, `LightShadows`, `LightRenderMode` |
-| `Source/Helix/Engine/Rendering/Graphics.h` | `Graphics` (device, target, `RenderFrame`), `RenderTarget`, `RenderStats`: the placeholder renderer |
+| `Source/Helix/Engine/Rendering/Graphics.h` | `Graphics` (device, target, `RenderFrame`, `RenderMesh`), `RenderParams`, `RenderTarget`, `RenderStats`: the placeholder renderer |
 | `Source/Helix/Engine/Rendering/ScreenCapture.h` | `ScreenCapture::CaptureScreenshot`: the frame drawn again into a texture and written as PNG |
 | `Source/Helix/Engine/Script/GameBehaviour.h` | `GameBehaviour` (class 114): the base of scripts in C++ and C# |
+| `Source/Helix/Engine/Script/ScriptableObject.h` | `ScriptableObject`: script objects of both languages that are no components (`CreateInstance`; class 114 documents) |
+| `Source/Helix/Engine/Shader/ShaderKeywords.h` | `LocalKeyword`, `GlobalKeyword`, `LocalKeywordSpace`, `ShaderTagId`, `ShaderKeywordType`, the global keyword list |
 | `Source/Helix/Engine/Script/MonoScript.h` | `MonoScript` (class 115): the script asset (assembly or game module, namespace, class, execution order) |
 | `Source/Helix/Engine/Script/ScriptClass.h` | `ScriptClass`, `ScriptMessage`, the registry of script classes of both languages |
 | `Source/Helix/Engine/Debug/Debug.h` | `Debug`: the log of scripts (`Log`, `LogWarning`, `LogError`, `LogAssertion`, `Assert`), `isDebugBuild`, `Break`, `DrawLine` / `DrawRay` (accepted until the gizmo renderer) |
@@ -366,16 +368,26 @@ walking the same tree instead of the compiled list takes 2.8 times as long.
 
 ## Scripts
 
-- Scripts of both languages derive from `GameBehaviour`. A C++ script is an `HX_CLASS` class of a game module whose
-  generated registration (Helix.Bindgen) adds it as a script class; its messages (Awake, Start, Update, ...) are
-  found by name in the header, without virtual. A C# script is a GameBehaviour whose C# object is its wrapper.
+- Scripts of both languages derive from `GameBehaviour` or `ScriptableObject`. A C++ script is an `HX_CLASS` class of
+  a game module whose generated registration (Helix.Bindgen) adds it as a script class below its script base; its
+  messages (Awake, Start, Update, ...) are found by name in the header, without virtual. A C# script is an object
+  whose C# object is its wrapper.
+- ScriptableObject is an Object, no Component: Awake and OnEnable when it is made (`CreateInstance` by type, `<T>` or
+  name), read from a file (a class hook after a file's objects are read and linked) or copied (`Instantiate`);
+  OnDisable and OnDestroy when it is destroyed. Its documents are GameBehaviour documents of class 114 (the class
+  shares the ID, `ClassSharedId`): GameBehaviour's resolve hooks make a ScriptableObject when the script derives from
+  it.
 - One scheduler in the reference's order: Awake when the GameObject first becomes active, OnEnable, pending Starts
   before the first FixedUpdate or Update, the phases at their player loop systems, OnDisable, OnDestroy;
-  OnApplicationFocus, Pause and Quit, the hierarchy and visibility messages. Within one execution order (Script
+  OnApplicationFocus, Pause and Quit, the hierarchy and visibility messages, the camera messages (OnPreCull,
+  OnWillRenderObject of drawn renderers, OnPreRender, OnPostRender, OnRenderObject). Within one execution order (Script
   Execution Order of the MonoScript, then DefaultExecutionOrder) the C++ scripts of a phase run first through
   function pointers of dense lists, then the C# ones in one call into C#.
 - The script API: Object, GameObject, Component, Behaviour, Transform, Time, Application, Screen, Debug, Resources,
-  SceneManager and the value types of Helix.Math are tagged; Helix.Bindgen makes their C# (HelixEngine.CoreModule)
+  SceneManager, ScriptableObject, Shader and its keywords, Material, Mesh, Texture, Texture2D, MeshFilter, Renderer,
+  MeshRenderer, Camera, Light, GeometryUtility, ScreenCapture and the value types of Helix.Math are tagged (members
+  C# needs in another shape go through internal functions: MaterialPropertyBlock's block table, RenderParams and
+  `Graphics.RenderMesh`); Helix.Bindgen makes their C# (HelixEngine.CoreModule)
   and the C++ script API (`<HelixEngine/HelixEngineApi.h>`: value handles of the engine's objects over the same
   function table, the class C++ scripts derive from), so both languages have the same members.
 - Script fields: a script's serialized fields go after `m_Script` in every visitor of its GameBehaviour (scene and

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Helix/Engine/Rendering/Camera.h>
+#include <Helix/Engine/Rendering/Renderer.h>
 #include <Helix/RHI/Device/Device.h>
 #include <Helix/ShaderCompiler/Cache/ShaderCache.h>
 
@@ -31,6 +32,23 @@ namespace helix::engine
         u32 uploads = 0;
     };
 
+    // How Graphics.RenderMesh draws a mesh (the reference's RenderParams with its constructor's defaults).
+    struct RenderParams
+    {
+        Material* material = nullptr;
+        // Null draws in every camera.
+        Camera* camera = nullptr;
+        const MaterialPropertyBlock* matProps = nullptr;
+        // The layer index the cameras' culling masks test.
+        i32 layer = 0;
+        u32 renderingLayerMask = 1;
+        i32 rendererPriority = 0;
+        // Zero size: the mesh's bounds under the matrix.
+        Bounds worldBounds;
+        ShadowCastingMode shadowCastingMode = ShadowCastingMode::Off;
+        bool receiveShadows = false;
+    };
+
     class Graphics
     {
     public:
@@ -52,5 +70,28 @@ namespace helix::engine
         static const RenderStats& LastStats();
         // Frees every GPU resource the renderer made.
         static void ReleaseResources();
+
+        // A submesh drawn by the cameras of this frame (or by the one of the params), dropped once the frame is drawn.
+        static void RenderMesh(const RenderParams& params, Mesh* mesh, i32 submeshIndex, const Matrix4x4& objectToWorld);
+        // Meshes RenderMesh queued for the frame.
+        static u32 QueuedMeshCount();
+    };
+
+    // RenderMesh for the script API: RenderParams holds objects, which bound structs cannot (C# has the struct).
+    HX_CLASS(Namespace = "HelixEngine.Internal", Static, Internal)
+    class GraphicsNative
+    {
+    public:
+        HX_FUNCTION()
+        static void RenderMesh(Material* material, Camera* camera, PropertyBlockId matProps, i32 layer, u32 renderingLayerMask, i32 rendererPriority,
+                               Bounds worldBounds, ShadowCastingMode shadowCastingMode, bool receiveShadows, Mesh* mesh, i32 submeshIndex,
+                               Matrix4x4 objectToWorld)
+        {
+            RenderParams p;
+            p.material = material, p.camera = camera, p.matProps = MaterialPropertyBlock::Find(matProps), p.layer = layer;
+            p.renderingLayerMask = renderingLayerMask, p.rendererPriority = rendererPriority, p.worldBounds = worldBounds;
+            p.shadowCastingMode = shadowCastingMode, p.receiveShadows = receiveShadows;
+            Graphics::RenderMesh(p, mesh, submeshIndex, objectToWorld);
+        }
     };
 }

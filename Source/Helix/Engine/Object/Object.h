@@ -88,6 +88,8 @@ namespace helix::engine
                 info.onDisable = [](Object& o) { static_cast<T&>(o).OnDisableNative(); };
             if constexpr (requires(T& t) { t.OnLayerChangedNative(); })
                 info.onLayerChanged = [](Object& o) { static_cast<T&>(o).OnLayerChangedNative(); };
+            if constexpr (requires(T& t) { t.OnLoadedNative(); })
+                info.onLoaded = [](Object& o) { static_cast<T&>(o).OnLoadedNative(); };
             if constexpr (requires(T& t) { t.UnloadDataNative(); })
                 info.unloadData = [](Object& o) { static_cast<T&>(o).UnloadDataNative(); };
             if constexpr (requires(Array<u32>& out) { T::Requires(out); })
@@ -98,10 +100,12 @@ namespace helix::engine
 
 // Declares an engine class: its base, its class ID and its flags. Classes register on first use, on the
 // main thread (the object model's thread); the index is a plain static, so asking for it costs a load and a compare.
-#define HX_ENGINE_CLASS(Type, BaseType, Id, Flags)                                                 \
+#define HX_ENGINE_CLASS(Type, BaseType, Id, Flags) HX_ENGINE_CLASS_DOCUMENT(Type, BaseType, Id, Flags, #Type)
+// The same with the type name its documents have (a class sharing another's class ID shares its name too).
+#define HX_ENGINE_CLASS_DOCUMENT(Type, BaseType, Id, Flags, DocumentName)                           \
 public:                                                                                             \
     using Base = BaseType;                                                                          \
-    [[maybe_unused]] static constexpr ::helix::StringView kTypeName = #Type;                        \
+    [[maybe_unused]] static constexpr ::helix::StringView kTypeName = DocumentName;                 \
     [[maybe_unused]] static constexpr ::helix::i32 kClassId = Id;                                   \
     static ::helix::u32 StaticClass()                                                               \
     {                                                                                               \

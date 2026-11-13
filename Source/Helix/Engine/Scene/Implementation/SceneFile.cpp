@@ -694,6 +694,10 @@ namespace helix::engine
                 for (EntityId id : created_)
                     if (Object* o = EntityIdToObject(id); o && o->ClassIndex() == gameObjectClass)
                         GameObjectAccess::ActiveInHierarchy(*static_cast<GameObject*>(o)) = false;
+                // Objects that are no components hear of the read file (by id: the hooks may destroy objects).
+                for (EntityId id : created_)
+                    if (Object* o = EntityIdToObject(id); o && o->Class().onLoaded)
+                        o->Class().onLoaded(*o);
                 // Assets are never enabled.
                 if (!options_.enable)
                     return;

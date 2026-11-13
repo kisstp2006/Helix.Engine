@@ -270,10 +270,9 @@ namespace helix::engine
 
     Bounds Renderer::bounds() const
     {
+        // Up to date at once (the manager's copy follows the transforms at the end of the frame).
         if (hasWorldBounds_)
             return worldBounds_;
-        if (managerIndex_ != ~0u)
-            return RendererManager::Get().WorldBounds(managerIndex_);
         return TransformBounds(localBounds(), localToWorldMatrix());
     }
 

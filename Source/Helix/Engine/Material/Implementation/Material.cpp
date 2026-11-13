@@ -5,6 +5,7 @@
 #include <Helix/Core/Strings/Format.h>
 
 #include <cstring>
+#include <mutex>
 
 namespace helix::engine
 {
@@ -624,5 +625,112 @@ namespace helix::engine
             data->globalsVersion = globals;
         }
         return data;
+    }
+}
+
+namespace helix::engine
+{
+    namespace
+    {
+        // The live property blocks by id; the blocks scripts made are owned here.
+        struct BlockTable
+        {
+            std::mutex lock;
+            HashMap<u64, MaterialPropertyBlock*> live;
+            HashMap<u64, u8> owned;
+            u64 next = 1;
+        };
+
+        BlockTable& Blocks()
+        {
+            static BlockTable t;
+            return t;
+        }
+
+        u64 AddBlock(MaterialPropertyBlock* b)
+        {
+            BlockTable& t = Blocks();
+            std::lock_guard<std::mutex> guard(t.lock);
+            u64 id = t.next++;
+            t.live.Set(id, b);
+            return id;
+        }
+
+        void RemoveBlock(u64 id)
+        {
+            BlockTable& t = Blocks();
+            std::lock_guard<std::mutex> guard(t.lock);
+            t.live.Remove(id);
+        }
+    }
+
+    MaterialPropertyBlock::MaterialPropertyBlock() : id_(AddBlock(this)) {}
+
+    MaterialPropertyBlock::MaterialPropertyBlock(const MaterialPropertyBlock& other) : sheet_(other.sheet_), id_(AddBlock(this)) {}
+
+    MaterialPropertyBlock::~MaterialPropertyBlock() { RemoveBlock(id_); }
+
+    MaterialPropertyBlock* MaterialPropertyBlock::Find(PropertyBlockId block)
+    {
+        BlockTable& t = Blocks();
+        std::lock_guard<std::mutex> guard(t.lock);
+        MaterialPropertyBlock* const* b = t.live.Find(block.id);
+        return b ? *b : nullptr;
+    }
+
+    PropertyBlockId PropertyBlockNative::Create()
+    {
+        auto* b = new MaterialPropertyBlock();
+        BlockTable& t = Blocks();
+        std::lock_guard<std::mutex> guard(t.lock);
+        t.owned.Set(b->Id(), u8(1));
+        return PropertyBlockId{b->Id()};
+    }
+
+    void PropertyBlockNative::Destroy(PropertyBlockId block)
+    {
+        MaterialPropertyBlock* b = nullptr;
+        {
+            BlockTable& t = Blocks();
+            std::lock_guard<std::mutex> guard(t.lock);
+            if (!t.owned.Find(block.id))
+                return;
+            t.owned.Remove(block.id);
+            if (MaterialPropertyBlock* const* found = t.live.Find(block.id))
+                b = *found;
+        }
+        delete b;
+    }
+
+    Array<Color> Material::GetColorArray(i32 id) const
+    {
+        Array<Vector4> v;
+        values_.GetVectorArray(id, v);
+        Array<Color> out;
+        for (const Vector4& x : v)
+            out.Push(Color(x.x, x.y, x.z, x.w));
+        return out;
+    }
+
+    Array<LocalKeyword> Material::enabledKeywords() const
+    {
+        Array<LocalKeyword> out;
+        if (Shader* s = shader())
+            for (const String& k : keywords_)
+            {
+                LocalKeyword kw = s->keywordSpace().FindKeyword(k);
+                if (kw.isValid())
+                    out.Push(kw);
+            }
+        return out;
+    }
+
+    void Material::SetEnabledKeywords(Span<const LocalKeyword> keywords)
+    {
+        Array<String> names;
+        for (const LocalKeyword& k : keywords)
+            if (k.isValid())
+                names.Push(k.name());
+        SetShaderKeywords(Span<const String>(names.Data(), names.Size()));
     }
 }

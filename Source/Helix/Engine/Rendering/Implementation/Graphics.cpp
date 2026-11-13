@@ -75,6 +75,18 @@ namespace helix::engine
                 i32 superSize = 1;
             };
             Array<Capture> captures = Array<Capture>();
+            // Graphics.RenderMesh's meshes for the frame.
+            struct Queued
+            {
+                EntityId mesh, material, camera;
+                u32 submesh = 0;
+                u32 layerMask = 1;
+                Matrix4x4 world;
+                Bounds bounds;
+                bool hasBlock = false;
+                PropertySheet block;
+            };
+            Array<Queued> queued = Array<Queued>();
         };
 
         RenderState& R()
@@ -496,7 +508,30 @@ namespace helix::engine
             u32 submesh;
             Material* material;
             const MaterialPassData* data;
+            // An index of RenderState::queued (renderer is kNone then).
+            u32 queued = kNone;
         };
+
+        // The sort key of a draw: queue, then sorting order, then (opaque) by variant and material front to back or
+        // (transparent) back to front by distance.
+        bool KeyOf(Material*& m, ShaderTarget target, i32 sortingOrder, u64& key, bool& transparent, const MaterialPassData*& data)
+        {
+            if (!m || !m->shader())
+                m = ErrorMaterial();
+            if (!m)
+                return false;
+            i32 pass = DrawnPass(*m);
+            if (pass < 0)
+                return false;
+            data = m->GetPassData(u32(pass), target);
+            if (!data)
+                return false;
+            i32 queue = m->renderQueue();
+            transparent = queue > 2500;
+            u64 order = u64(u32(sortingOrder + 0x8000) & 0xFFFF);
+            key = (u64(u32(queue) & 0xFFFF) << 48) | (order << 32) | (transparent ? 0 : u64(data->variant->serial & 0xFFFFFF) << 8);
+            return true;
+        }
 
         void Upload(const void* data, u32 size, rhi::TransientAllocation& out)
         {
@@ -510,6 +545,8 @@ namespace helix::engine
             RenderState& s = R();
             rhi::Device& device = *s.device;
             Camera::SetCurrent(&camera);
+            if (detail::gRenderStage)
+                detail::gRenderStage(&camera, detail::RenderStage::PreCull);
             RenderData& d = RendererManager::Get().RenderMutable();
             ShaderTarget target = Graphics::ShaderTarget();
             Matrix4x4 view = camera.worldToCameraMatrix();
@@ -524,6 +561,8 @@ namespace helix::engine
             Vector3 eye = camera.transform() ? camera.transform()->position() : Vector3();
             Vector3 forward = camera.transform() ? camera.transform()->forward() : Vector3::forward;
             Array<DrawItem> items;
+            // The renderers the camera draws (each once).
+            Array<EntityId> drawn;
             u32 cullingMask = camera.cullingMask();
             for (u32 i = 0; i < n; i++)
             {
@@ -540,34 +579,51 @@ namespace helix::engine
                 Span<const PPtr<Material>> materials = r->Materials();
                 u32 subs = u32(mesh->subMeshCount());
                 u32 draws = materials.Size() > subs ? u32(materials.Size()) : subs;
+                usize before = items.Size();
                 for (u32 k = 0; k < draws; k++)
                 {
                     // Extra materials draw the last submesh again; submeshes without a material are not drawn.
                     if (k >= materials.Size())
                         break;
                     Material* m = materials[k].Get();
-                    if (!m || !m->shader())
-                        m = ErrorMaterial();
-                    if (!m)
+                    u64 key;
+                    bool transparent;
+                    const MaterialPassData* data;
+                    if (!KeyOf(m, target, r->sortingOrder(), key, transparent, data))
                         continue;
-                    i32 pass = DrawnPass(*m);
-                    if (pass < 0)
-                        continue;
-                    const MaterialPassData* data = m->GetPassData(u32(pass), target);
-                    if (!data)
-                        continue;
-                    i32 queue = m->renderQueue();
-                    bool transparent = queue > 2500;
-                    // Queue, then sorting order, then (opaque) by variant and material front to back or (transparent) back
-                    // to front by distance.
-                    u64 order = u64(u32(r->sortingOrder() + 0x8000) & 0xFFFF);
-                    u64 key = (u64(u32(queue) & 0xFFFF) << 48) | (order << 32) | (transparent ? 0 : u64(data->variant->serial & 0xFFFFFF) << 8);
                     items.Push({key, transparent ? -distance : distance, i, k < subs ? k : subs - 1, m, data});
                 }
+                if (items.Size() > before)
+                    drawn.Push(d.renderer[i]);
+            }
+            for (u32 q = 0; q < s.queued.Size(); q++)
+            {
+                const RenderState::Queued& item = s.queued[q];
+                if ((item.camera.IsValid() && item.camera != camera.GetEntityId()) || !(item.layerMask & cullingMask) || !TestPlanesAABB(planes, item.bounds))
+                    continue;
+                Mesh* mesh = EntityIdToObject<Mesh>(item.mesh);
+                if (!mesh || item.submesh >= u32(mesh->subMeshCount()))
+                    continue;
+                Material* m = EntityIdToObject<Material>(item.material);
+                u64 key;
+                bool transparent;
+                const MaterialPassData* data;
+                if (!KeyOf(m, target, 0, key, transparent, data))
+                    continue;
+                f32 distance = Vector3::Dot(item.bounds.center - eye, forward);
+                items.Push({key, transparent ? -distance : distance, kNone, item.submesh, m, data, q});
             }
             std::sort(items.begin(), items.end(), [](const DrawItem& a, const DrawItem& b) {
                 return a.sortKey != b.sortKey ? a.sortKey < b.sortKey : a.distance < b.distance;
             });
+            // The scripts of each renderer the camera draws (once), then the camera's before it draws.
+            if (detail::gRenderStage)
+            {
+                for (EntityId id : drawn)
+                    if (Renderer* r = EntityIdToObject<Renderer>(id))
+                        detail::gRenderStage(r, detail::RenderStage::WillRenderObject);
+                detail::gRenderStage(&camera, detail::RenderStage::PreRender);
+            }
 
             // The camera block.
             struct PerCamera
@@ -646,8 +702,11 @@ namespace helix::engine
             rhi::TransientAllocation drawBlock;
             for (const DrawItem& item : items)
             {
-                Renderer* r = EntityIdToObject<Renderer>(d.renderer[item.renderer]);
-                Mesh* mesh = EntityIdToObject<Mesh>(d.mesh[item.renderer]);
+                const RenderState::Queued* queued = item.queued != kNone ? &s.queued[item.queued] : nullptr;
+                Renderer* r = queued ? nullptr : EntityIdToObject<Renderer>(d.renderer[item.renderer]);
+                Mesh* mesh = EntityIdToObject<Mesh>(queued ? queued->mesh : d.mesh[item.renderer]);
+                if (!mesh)
+                    continue;
                 const ShaderVariant& v = *item.data->variant;
                 const GpuMesh* gm = MeshOf(*mesh);
                 if (!gm->vertices.IsValid() || !gm->indices.IsValid() || item.submesh >= gm->subs.Size() || gm->subs[item.submesh].count == 0)
@@ -668,15 +727,17 @@ namespace helix::engine
                 }
                 cl.SetIndexBuffer(gm->indices, rhi::IndexType::U32);
                 cl.SetUniformBuffer(9, cameraBlock);
-                if (item.renderer != lastRenderer)
+                u32 source = queued ? 0x80000000u | item.queued : item.renderer;
+                if (source != lastRenderer)
                 {
-                    Matrix4x4 m[2] = {d.world[item.renderer], d.world[item.renderer].inverse()};
+                    const Matrix4x4& world = queued ? queued->world : d.world[item.renderer];
+                    Matrix4x4 m[2] = {world, world.inverse()};
                     Upload(m, sizeof(m), drawBlock);
-                    lastRenderer = item.renderer;
+                    lastRenderer = source;
                 }
                 cl.SetUniformBuffer(10, drawBlock);
                 // Material blocks once per material and pass; a property block makes its own copy.
-                const PropertySheet* block = r ? r->PropertyBlock(i32(item.submesh)) : nullptr;
+                const PropertySheet* block = queued ? (queued->hasBlock ? &queued->block : nullptr) : r ? r->PropertyBlock(i32(item.submesh)) : nullptr;
                 const Array<Array<u8>>* bytes = &item.data->blocks;
                 const Array<MaterialPassData::TextureSlot>* slots = &item.data->textures;
                 usize firstUpload;
@@ -733,6 +794,11 @@ namespace helix::engine
             }
             cl.EndRenderPass();
             device.Submit(cl);
+            if (detail::gRenderStage)
+            {
+                detail::gRenderStage(&camera, detail::RenderStage::PostRender);
+                detail::gRenderStage(nullptr, detail::RenderStage::RenderObject);
+            }
             Camera::SetCurrent(nullptr);
         }
 
@@ -900,8 +966,12 @@ namespace helix::engine
         RenderData& d = m.RenderMutable();
         if (!d.visible.Empty())
             std::memset(d.visible.Data(), 0, d.visible.Size());
+        // RenderMesh's meshes are for this frame, drawn or not.
         if (!s.device)
+        {
+            s.queued.Clear();
             return;
+        }
         if ((++s.frame & 63) == 0)
             ForgetDead();
         RenderCameras();
@@ -921,7 +991,38 @@ namespace helix::engine
             for (const RenderState::Capture& c : captures)
                 WriteCapture(c);
         }
+        s.queued.Clear();
     }
+
+    void Graphics::RenderMesh(const RenderParams& params, Mesh* mesh, i32 submeshIndex, const Matrix4x4& objectToWorld)
+    {
+        if (!mesh)
+        {
+            HX_LOG_ERROR(RenderLog, "Graphics.RenderMesh: the mesh is null.");
+            return;
+        }
+        if (submeshIndex < 0 || submeshIndex >= mesh->subMeshCount())
+        {
+            HX_LOG_ERROR(RenderLog, "Graphics.RenderMesh: submesh index {} is out of range (the mesh has {}).", submeshIndex, mesh->subMeshCount());
+            return;
+        }
+        RenderState::Queued& q = R().queued.Emplace();
+        q.mesh = mesh->GetEntityId();
+        q.material = params.material ? params.material->GetEntityId() : EntityId();
+        q.camera = params.camera ? params.camera->GetEntityId() : EntityId();
+        q.submesh = u32(submeshIndex);
+        q.layerMask = params.layer >= 0 && params.layer < 32 ? 1u << u32(params.layer) : 0u;
+        q.world = objectToWorld;
+        Vector3 size = params.worldBounds.size();
+        q.bounds = size.x != 0 || size.y != 0 || size.z != 0 ? params.worldBounds : TransformBounds(mesh->bounds(), objectToWorld);
+        if (params.matProps)
+        {
+            q.hasBlock = true;
+            q.block = params.matProps->Sheet();
+        }
+    }
+
+    u32 Graphics::QueuedMeshCount() { return u32(R().queued.Size()); }
 
     void Graphics::RenderCamera(Camera& camera)
     {

@@ -36,7 +36,12 @@ helix_bindgen(helix_engine MODULE HelixEngine NAMESPACE HelixEngine KIND Engine 
                       "${engine_source}/Helix/Engine/Time/Time.h" "${engine_source}/Helix/Engine/Application/Application.h"
                       "${engine_source}/Helix/Engine/Screen/Screen.h" "${engine_source}/Helix/Engine/Scene/Scene.h"
                       "${engine_source}/Helix/Engine/Scene/SceneManager.h" "${engine_source}/Helix/Engine/Asset/Resources.h"
-                      "${engine_source}/Helix/Engine/Scene/SceneNative.h"
+                      "${engine_source}/Helix/Engine/Scene/SceneNative.h" "${engine_source}/Helix/Engine/Texture/Texture.h"
+                      "${engine_source}/Helix/Engine/Shader/ShaderKeywords.h" "${engine_source}/Helix/Engine/Shader/Shader.h"
+                      "${engine_source}/Helix/Engine/Material/Material.h" "${engine_source}/Helix/Engine/Mesh/Mesh.h"
+                      "${engine_source}/Helix/Engine/Rendering/Renderer.h" "${engine_source}/Helix/Engine/Rendering/Camera.h"
+                      "${engine_source}/Helix/Engine/Rendering/Light.h" "${engine_source}/Helix/Engine/Rendering/Graphics.h"
+                      "${engine_source}/Helix/Engine/Rendering/ScreenCapture.h" "${engine_source}/Helix/Engine/Script/ScriptableObject.h"
               CS_OUTPUT engine_cs)
 set(HELIX_ENGINE_BINDINGS_CS "${engine_cs}" CACHE INTERNAL "")
 
@@ -88,7 +93,7 @@ target_include_directories(helix_engine PRIVATE "${engine_generated}")
 
 set(engine_binding_headers ${HELIX_ENGINE_MATH_HEADERS} "${engine_source}/Helix/Engine/Object/EntityId.h" "${engine_source}/Helix/Engine/Object/Object.h"
     "${engine_source}/Helix/Engine/GameObject/GameObject.h" "${engine_source}/Helix/Engine/Transform/Transform.h"
-    "${engine_source}/Helix/Engine/Script/GameBehaviour.h")
+    "${engine_source}/Helix/Engine/Script/GameBehaviour.h" "${engine_source}/Helix/Engine/Script/ScriptableObject.h")
 helix_add_test_suite(helix_engine_tests DEPS Helix::Engine Helix::Jobs)
 # The tests' C++ scripts: a game module of their own (EngineTests), linked into the test program.
 if(TARGET helix_engine_tests)

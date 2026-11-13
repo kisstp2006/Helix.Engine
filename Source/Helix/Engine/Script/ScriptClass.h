@@ -31,6 +31,12 @@ namespace helix::engine
         OnBecameInvisible,
         OnValidate,
         Reset,
+        // The camera's scripts around its rendering; the scripts of a renderer a camera draws; every script after.
+        OnPreCull,
+        OnPreRender,
+        OnPostRender,
+        OnWillRenderObject,
+        OnRenderObject,
         Count,
     };
 

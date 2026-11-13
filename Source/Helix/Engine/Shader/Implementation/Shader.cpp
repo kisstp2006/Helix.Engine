@@ -3,6 +3,7 @@
 #include <Helix/Core/Hashing/Hash.h>
 #include <Helix/Core/Logging/Log.h>
 #include <Helix/Core/Strings/Format.h>
+#include <Helix/Engine/Rendering/Graphics.h>
 #include <Helix/ShaderCompiler/Frontend/Frontend.h>
 #include <Helix/ShaderCompiler/Transforms/Link.h>
 
@@ -410,6 +411,28 @@ namespace helix::engine
         return t ? StringView(t->value) : StringView();
     }
 
+    ShaderTagId Shader::FindPassTagValueId(i32 pass, ShaderTagId tag) const { return ShaderTagId(FindPassTagValue(pass, tag.name())); }
+
+    ShaderTagId Shader::FindPassTagValueId(i32 subshader, i32 pass, ShaderTagId tag) const
+    {
+        const ShaderDescription* d = Description();
+        if (!d || subshader < 0 || pass < 0)
+            return ShaderTagId();
+        i32 n = 0;
+        String name = tag.name();
+        for (const ShaderPass& p : d->passes)
+            if (i32(p.subShader) == subshader && n++ == pass)
+            {
+                if (name == StringView("LightMode"))
+                    return ShaderTagId(p.lightMode);
+                const ShaderTag* t = FindTag(p.tags, name);
+                return t ? ShaderTagId(t->value) : ShaderTagId();
+            }
+        return ShaderTagId();
+    }
+
+    ShaderTagId Shader::FindSubshaderTagValueId(i32 subshader, ShaderTagId tag) const { return ShaderTagId(FindSubshaderTagValue(subshader, tag.name())); }
+
     StringView Shader::FindSubshaderTagValue(i32 subshader, StringView tag) const
     {
         const ShaderDescription* d = Description();
@@ -483,11 +506,11 @@ namespace helix::engine
         return p->Has(PropertyFlags::MainColor) || p->Has(PropertyFlags::Hdr) ? ShaderPropertyType::Color : ShaderPropertyType::Vector;
     }
 
-    i32 Shader::GetPropertyFlags(i32 index) const
+    ShaderPropertyFlags Shader::GetPropertyFlags(i32 index) const
     {
         const ShaderProperty* p = PropertyAt(Description(), index);
         if (!p)
-            return 0;
+            return ShaderPropertyFlags::None;
         // The compiler's flags to the reference's numbers.
         struct FlagPair
         {
@@ -503,7 +526,7 @@ namespace helix::engine
         for (const FlagPair& f : kFlags)
             if (p->Has(f.from))
                 out |= i32(f.to);
-        return out;
+        return ShaderPropertyFlags(out);
     }
 
     f32 Shader::GetPropertyDefaultFloatValue(i32 index) const
@@ -585,6 +608,7 @@ namespace helix::engine
 
     void Shader::EnableKeyword(StringView keyword)
     {
+        (void)GlobalKeywordIndex(keyword);
         ShaderGlobals& g = G();
         for (const String& k : g.keywords)
             if (k == keyword)
@@ -621,6 +645,69 @@ namespace helix::engine
             delete *program_->variants.Find(k);
             program_->variants.Remove(k);
         }
+    }
+
+    const Array<ShaderKeywordInfo>& Shader::KeywordSpace() const
+    {
+        if (keywordSpaceMade_)
+            return keywordSpace_;
+        keywordSpaceMade_ = true;
+        if (const ShaderDescription* d = Description())
+            for (const ShaderKeyword& k : d->keywords)
+            {
+                auto add = [&](String name) {
+                    ShaderKeywordInfo info;
+                    info.name = Move(name);
+                    info.dynamic = k.dynamic;
+                    info.overridable = k.global;
+                    keywordSpace_.Push(Move(info));
+                };
+                if (k.valueNames.Empty())
+                    add(k.name);
+                for (const String& member : k.valueNames)
+                    add(Format("{}_{}", k.name, member));
+            }
+        return keywordSpace_;
+    }
+
+    Array<GlobalKeyword> Shader::enabledGlobalKeywords()
+    {
+        Array<GlobalKeyword> out;
+        for (const String& k : G().keywords)
+            out.Push(GlobalKeyword(k));
+        return out;
+    }
+
+    Array<GlobalKeyword> Shader::globalKeywords()
+    {
+        // The keywords loaded shaders declare global join the list.
+        ForEachObjectOfClass(ClassOf<Shader>(), [](Object* o) {
+            for (const ShaderKeywordInfo& k : static_cast<Shader*>(o)->KeywordSpace())
+                if (k.overridable)
+                    (void)GlobalKeywordIndex(k.name);
+            return true;
+        });
+        Array<GlobalKeyword> out;
+        for (u32 i = 0; i < GlobalKeywordCount(); i++)
+        {
+            GlobalKeyword k;
+            k.index = i;
+            out.Push(k);
+        }
+        return out;
+    }
+
+    void Shader::WarmupAllShaders()
+    {
+        Array<Shader*> all;
+        ForEachObjectOfClass(ClassOf<Shader>(), [&](Object* o) {
+            all.Push(static_cast<Shader*>(o));
+            return true;
+        });
+        for (Shader* s : all)
+            if (const ShaderDescription* d = s->Description())
+                for (u32 p = 0; p < d->passes.Size(); p++)
+                    (void)s->GetVariant(p, {}, Graphics::ShaderTarget());
     }
 
     bool Shader::IsKeywordEnabled(StringView keyword)

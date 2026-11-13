@@ -7,6 +7,7 @@ namespace helix::engine
         constexpr StringView kNames[] = {
             "Awake", "OnEnable", "Start", "FixedUpdate", "Update", "LateUpdate", "OnDisable", "OnDestroy", "OnApplicationFocus", "OnApplicationPause",
             "OnApplicationQuit", "OnTransformParentChanged", "OnTransformChildrenChanged", "OnBecameVisible", "OnBecameInvisible", "OnValidate", "Reset",
+            "OnPreCull", "OnPreRender", "OnPostRender", "OnWillRenderObject", "OnRenderObject",
         };
         static_assert(sizeof(kNames) / sizeof(kNames[0]) == usize(ScriptMessage::Count));
 

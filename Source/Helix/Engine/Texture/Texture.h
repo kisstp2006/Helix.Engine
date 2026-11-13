@@ -10,6 +10,7 @@
 namespace helix::engine
 {
     // The reference's numbers; formats without a layout in Helix.Image are refused by the constructors.
+    HX_ENUM(Namespace = "HelixEngine")
     enum class TextureFormat : i32
     {
         Alpha8 = 1,
@@ -74,6 +75,7 @@ namespace helix::engine
         RGBA64_SIGNED = 82,
     };
 
+    HX_ENUM(Namespace = "HelixEngine")
     enum class FilterMode : i32
     {
         Point = 0,
@@ -81,6 +83,7 @@ namespace helix::engine
         Trilinear = 2,
     };
 
+    HX_ENUM(Namespace = "HelixEngine")
     enum class TextureWrapMode : i32
     {
         Repeat = 0,
@@ -89,6 +92,7 @@ namespace helix::engine
         MirrorOnce = 3,
     };
 
+    HX_ENUM(Namespace = "HelixEngine.Rendering")
     enum class TextureDimension : i32
     {
         Unknown = -1,
@@ -131,6 +135,7 @@ namespace helix::engine
         }
     };
 
+    HX_CLASS(Namespace = "HelixEngine")
     class Texture : public Object
     {
         HX_ENGINE_CLASS(Texture, Object, ClassId::Texture, ClassAbstract)
@@ -138,33 +143,34 @@ namespace helix::engine
     public:
         static constexpr i32 GenerateAllMips = -1;
 
-        i32 width() const { return i32(data_.width); }
-        i32 height() const { return i32(data_.height); }
-        virtual TextureDimension dimension() const { return TextureDimension::Tex2D; }
-        i32 mipmapCount() const { return i32(data_.mips); }
-        bool isReadable() const { return readable_; }
+        // Not settable on this class (C#'s setters throw, as the reference's do).
+        HX_PROPERTY(SetterThrows) i32 width() const { return i32(data_.width); }
+        HX_PROPERTY(SetterThrows) i32 height() const { return i32(data_.height); }
+        HX_PROPERTY(SetterThrows) virtual TextureDimension dimension() const { return TextureDimension::Tex2D; }
+        HX_PROPERTY(ReadOnly) i32 mipmapCount() const { return i32(data_.mips); }
+        HX_PROPERTY(ReadOnly) bool isReadable() const { return readable_; }
         // The pixels hold sRGB colors (sampling turns them linear).
-        bool isDataSRGB() const { return !linear_; }
+        HX_PROPERTY(ReadOnly) bool isDataSRGB() const { return !linear_; }
 
-        FilterMode filterMode() const { return settings_.filterMode; }
+        HX_PROPERTY() FilterMode filterMode() const { return settings_.filterMode; }
         void SetFilterMode(FilterMode value) { settings_.filterMode = value; }
-        i32 anisoLevel() const { return settings_.aniso; }
+        HX_PROPERTY() i32 anisoLevel() const { return settings_.aniso; }
         void SetAnisoLevel(i32 value) { settings_.aniso = value; }
-        f32 mipMapBias() const { return settings_.mipBias; }
+        HX_PROPERTY() f32 mipMapBias() const { return settings_.mipBias; }
         void SetMipMapBias(f32 value) { settings_.mipBias = value; }
-        TextureWrapMode wrapMode() const { return settings_.wrapU; }
+        HX_PROPERTY() TextureWrapMode wrapMode() const { return settings_.wrapU; }
         void SetWrapMode(TextureWrapMode value) { settings_.wrapU = settings_.wrapV = settings_.wrapW = value; }
-        TextureWrapMode wrapModeU() const { return settings_.wrapU; }
+        HX_PROPERTY() TextureWrapMode wrapModeU() const { return settings_.wrapU; }
         void SetWrapModeU(TextureWrapMode value) { settings_.wrapU = value; }
-        TextureWrapMode wrapModeV() const { return settings_.wrapV; }
+        HX_PROPERTY() TextureWrapMode wrapModeV() const { return settings_.wrapV; }
         void SetWrapModeV(TextureWrapMode value) { settings_.wrapV = value; }
-        TextureWrapMode wrapModeW() const { return settings_.wrapW; }
+        HX_PROPERTY() TextureWrapMode wrapModeW() const { return settings_.wrapW; }
         void SetWrapModeW(TextureWrapMode value) { settings_.wrapW = value; }
         const TextureSettings& settings() const { return settings_; }
 
         // Bumped by Apply and IncrementUpdateCount.
-        u32 updateCount() const { return updateCount_; }
-        void IncrementUpdateCount() { updateCount_++, version_++; }
+        HX_PROPERTY(ReadOnly) u32 updateCount() const { return updateCount_; }
+        HX_FUNCTION() void IncrementUpdateCount() { updateCount_++, version_++; }
 
         // ---------------------------------------------------------------------------------------------- native
         // Every mip, layer and face of the texture (the CPU copy).
@@ -198,6 +204,7 @@ namespace helix::engine
         u32 version_ = 0;
     };
 
+    HX_CLASS(Namespace = "HelixEngine", Sealed)
     class Texture2D : public Texture
     {
         HX_ENGINE_CLASS(Texture2D, Texture, ClassId::Texture2D, ClassNone)
@@ -212,6 +219,25 @@ namespace helix::engine
                                  bool createUninitialized = false);
         // With a mip count (-1 for the full chain).
         static Texture2D* Create(i32 width, i32 height, TextureFormat format, i32 mipCount, bool linear, bool createUninitialized = false);
+        // The reference's constructors.
+        HX_FUNCTION(Constructor) static Texture2D* New(i32 width, i32 height) { return Create(width, height); }
+        HX_FUNCTION(Constructor) static Texture2D* New(i32 width, i32 height, TextureFormat textureFormat, bool mipChain) { return Create(width, height, textureFormat, mipChain); }
+        HX_FUNCTION(Constructor) static Texture2D* New(i32 width, i32 height, TextureFormat textureFormat, bool mipChain, bool linear)
+        {
+            return Create(width, height, textureFormat, mipChain, linear);
+        }
+        HX_FUNCTION(Constructor) static Texture2D* New(i32 width, i32 height, TextureFormat textureFormat, bool mipChain, bool linear, bool createUninitialized)
+        {
+            return Create(width, height, textureFormat, mipChain, linear, createUninitialized);
+        }
+        HX_FUNCTION(Constructor) static Texture2D* New(i32 width, i32 height, TextureFormat textureFormat, i32 mipCount, bool linear)
+        {
+            return Create(width, height, textureFormat, mipCount, linear);
+        }
+        HX_FUNCTION(Constructor) static Texture2D* New(i32 width, i32 height, TextureFormat textureFormat, i32 mipCount, bool linear, bool createUninitialized)
+        {
+            return Create(width, height, textureFormat, mipCount, linear, createUninitialized);
+        }
         // From decoded pixels (rows top first, as files hold them).
         static Texture2D* Create(image::TextureData&& data, bool linear);
         // From pixels PrepareTextureData made ready (the asset loaders, which prepare on a job).
@@ -219,22 +245,22 @@ namespace helix::engine
         void SetSettings(const TextureSettings& settings) { settings_ = settings; }
         void SetReadable(bool readable) { readable_ = readable; }
 
-        TextureFormat format() const { return format_; }
+        HX_PROPERTY(ReadOnly) TextureFormat format() const { return format_; }
         // New size and format; the pixels are lost (black).
-        bool Reinitialize(i32 width, i32 height);
-        bool Reinitialize(i32 width, i32 height, TextureFormat format, bool hasMipMap);
+        HX_FUNCTION() bool Reinitialize(i32 width, i32 height);
+        HX_FUNCTION() bool Reinitialize(i32 width, i32 height, TextureFormat format, bool hasMipMap);
 
         // Out of range coordinates follow the wrap mode. Block compressed textures are decoded for reading.
-        Color GetPixel(i32 x, i32 y, i32 mipLevel = 0) const;
-        Color GetPixelBilinear(f32 u, f32 v, i32 mipLevel = 0) const;
-        Array<Color> GetPixels(i32 mipLevel = 0) const;
-        Array<Color> GetPixels(i32 x, i32 y, i32 blockWidth, i32 blockHeight, i32 mipLevel = 0) const;
-        Array<Color32> GetPixels32(i32 mipLevel = 0) const;
-        bool SetPixel(i32 x, i32 y, Color color, i32 mipLevel = 0);
-        bool SetPixels(Span<const Color> colors, i32 mipLevel = 0);
-        bool SetPixels(i32 x, i32 y, i32 blockWidth, i32 blockHeight, Span<const Color> colors, i32 mipLevel = 0);
-        bool SetPixels32(Span<const Color32> colors, i32 mipLevel = 0);
-        bool SetPixels32(i32 x, i32 y, i32 blockWidth, i32 blockHeight, Span<const Color32> colors, i32 mipLevel = 0);
+        HX_FUNCTION() Color GetPixel(i32 x, i32 y, i32 mipLevel = 0) const;
+        HX_FUNCTION() Color GetPixelBilinear(f32 u, f32 v, i32 mipLevel = 0) const;
+        HX_FUNCTION() Array<Color> GetPixels(i32 mipLevel = 0) const;
+        HX_FUNCTION() Array<Color> GetPixels(i32 x, i32 y, i32 blockWidth, i32 blockHeight, i32 mipLevel = 0) const;
+        HX_FUNCTION() Array<Color32> GetPixels32(i32 mipLevel = 0) const;
+        HX_FUNCTION(Void) bool SetPixel(i32 x, i32 y, Color color, i32 mipLevel = 0);
+        HX_FUNCTION(Void) bool SetPixels(Span<const Color> colors, i32 mipLevel = 0);
+        HX_FUNCTION(Void) bool SetPixels(i32 x, i32 y, i32 blockWidth, i32 blockHeight, Span<const Color> colors, i32 mipLevel = 0);
+        HX_FUNCTION(Void) bool SetPixels32(Span<const Color32> colors, i32 mipLevel = 0);
+        HX_FUNCTION(Void) bool SetPixels32(i32 x, i32 y, i32 blockWidth, i32 blockHeight, Span<const Color32> colors, i32 mipLevel = 0);
         // The bytes of one mip in the texture's format, as T.
         template <class T>
         Span<T> GetPixelData(i32 mipLevel) const
@@ -252,11 +278,19 @@ namespace helix::engine
         }
         // Every mip one after the other.
         Span<u8> GetRawTextureData() const;
-        bool LoadRawTextureData(Span<const u8> data);
+        HX_FUNCTION(Void) bool LoadRawTextureData(Span<const u8> data);
+        // The raw bytes as a result (the reference's byte[] GetRawTextureData()).
+        HX_FUNCTION(Name = "GetRawTextureData") Array<u8> RawTextureData() const
+        {
+            Span<u8> b = GetRawTextureData();
+            Array<u8> out;
+            out.Append(b.Data(), b.Size());
+            return out;
+        }
 
         // Makes the mips from the top level when updateMipmaps, then hands the pixels to the renderer;
         // makeNoLongerReadable makes the CPU copy inaccessible (it goes once the renderer holds the pixels).
-        void Apply(bool updateMipmaps = true, bool makeNoLongerReadable = false);
+        HX_FUNCTION() void Apply(bool updateMipmaps = true, bool makeNoLongerReadable = false);
         // To DXT1 (no alpha) or DXT5.
         bool Compress(bool highQuality);
 
@@ -268,12 +302,12 @@ namespace helix::engine
         bool EncodeToEXR(Array<u8>& out, u32 flags = 0) const;
 
         // 4 x 4 textures made on first use and kept for good.
-        static Texture2D* whiteTexture();
-        static Texture2D* blackTexture();
-        static Texture2D* grayTexture();
-        static Texture2D* linearGrayTexture();
-        static Texture2D* redTexture();
-        static Texture2D* normalTexture();
+        HX_PROPERTY(ReadOnly) static Texture2D* whiteTexture();
+        HX_PROPERTY(ReadOnly) static Texture2D* blackTexture();
+        HX_PROPERTY(ReadOnly) static Texture2D* grayTexture();
+        HX_PROPERTY(ReadOnly) static Texture2D* linearGrayTexture();
+        HX_PROPERTY(ReadOnly) static Texture2D* redTexture();
+        HX_PROPERTY(ReadOnly) static Texture2D* normalTexture();
 
         // Resources.UnloadAsset.
         void UnloadDataNative()

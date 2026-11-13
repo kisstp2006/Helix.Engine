@@ -48,6 +48,9 @@ namespace helix::engine
         ClassBehaviour = 8,
         // A script class of a game module: its objects are of the script base's class ID (not found by it).
         ClassScript = 16,
+        // Writes the class ID of another class (ScriptableObject's documents are 114 as GameBehaviour's): not found by
+        // it, the other class's resolve hooks decide.
+        ClassSharedId = 32,
     };
 
     inline constexpr u32 kNoClass = ~0u;
@@ -88,6 +91,8 @@ namespace helix::engine
         void (*unloadData)(Object&) = nullptr;
         // A component's GameObject moved to another layer.
         void (*onLayerChanged)(Object&) = nullptr;
+        // The objects of a file (an asset or a scene) are read and their references linked.
+        void (*onLoaded)(Object&) = nullptr;
         // Classes AddComponent adds first (RequireComponent).
         Array<u32> required = Array<u32>();
         // Scene files through the class's Transfer; null for abstract classes.

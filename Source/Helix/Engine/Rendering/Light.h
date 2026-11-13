@@ -8,6 +8,7 @@
 // Light: its settings, and the list of enabled lights the renderer reads.
 namespace helix::engine
 {
+    HX_ENUM(Namespace = "HelixEngine")
     enum class LightType : i32
     {
         Spot = 0,
@@ -20,6 +21,7 @@ namespace helix::engine
         Tube = 7,
     };
 
+    HX_ENUM(Namespace = "HelixEngine")
     enum class LightShadows : i32
     {
         None = 0,
@@ -27,6 +29,7 @@ namespace helix::engine
         Soft = 2,
     };
 
+    HX_ENUM(Namespace = "HelixEngine")
     enum class LightRenderMode : i32
     {
         Auto = 0,
@@ -34,6 +37,7 @@ namespace helix::engine
         ForceVertex = 2,
     };
 
+    HX_CLASS(Namespace = "HelixEngine", Sealed)
     class Light final : public Behaviour
     {
         HX_ENGINE_CLASS(Light, Behaviour, ClassId::Light, ClassDisallowMultiple)
@@ -42,42 +46,50 @@ namespace helix::engine
         Light() = default;
         Light(const Light&) = default;
 
-        LightType type() const { return type_; }
+        HX_PROPERTY() LightType type() const { return type_; }
         void SetType(LightType value) { type_ = value; }
-        Color color() const { return color_; }
+        HX_PROPERTY() Color color() const { return color_; }
         void SetColor(Color value) { color_ = value; }
-        f32 intensity() const { return intensity_; }
+        HX_PROPERTY() f32 intensity() const { return intensity_; }
         void SetIntensity(f32 value) { intensity_ = value; }
-        f32 range() const { return range_; }
+        HX_PROPERTY() f32 range() const { return range_; }
         void SetRange(f32 value) { range_ = value; }
-        f32 spotAngle() const { return spotAngle_; }
+        HX_PROPERTY() f32 spotAngle() const { return spotAngle_; }
         void SetSpotAngle(f32 value) { spotAngle_ = value; }
-        f32 innerSpotAngle() const { return innerSpotAngle_; }
+        HX_PROPERTY() f32 innerSpotAngle() const { return innerSpotAngle_; }
         void SetInnerSpotAngle(f32 value) { innerSpotAngle_ = value; }
-        LightShadows shadows() const { return shadows_; }
+        HX_PROPERTY() LightShadows shadows() const { return shadows_; }
         void SetShadows(LightShadows value) { shadows_ = value; }
-        f32 shadowStrength() const { return shadowStrength_; }
+        HX_PROPERTY() f32 shadowStrength() const { return shadowStrength_; }
         void SetShadowStrength(f32 value) { shadowStrength_ = value; }
-        f32 shadowBias() const { return shadowBias_; }
+        HX_PROPERTY() f32 shadowBias() const { return shadowBias_; }
         void SetShadowBias(f32 value) { shadowBias_ = value; }
-        f32 shadowNormalBias() const { return shadowNormalBias_; }
+        HX_PROPERTY() f32 shadowNormalBias() const { return shadowNormalBias_; }
         void SetShadowNormalBias(f32 value) { shadowNormalBias_ = value; }
-        f32 shadowNearPlane() const { return shadowNearPlane_; }
+        HX_PROPERTY() f32 shadowNearPlane() const { return shadowNearPlane_; }
         void SetShadowNearPlane(f32 value) { shadowNearPlane_ = value; }
         u32 cullingMask() const { return cullingMask_; }
         void SetCullingMask(u32 value) { cullingMask_ = value; }
         u32 renderingLayerMask() const { return renderingLayerMask_; }
         void SetRenderingLayerMask(u32 value) { renderingLayerMask_ = value; }
-        f32 bounceIntensity() const { return bounceIntensity_; }
+        HX_PROPERTY() f32 bounceIntensity() const { return bounceIntensity_; }
         void SetBounceIntensity(f32 value) { bounceIntensity_ = value; }
-        f32 colorTemperature() const { return colorTemperature_; }
+        HX_PROPERTY() f32 colorTemperature() const { return colorTemperature_; }
         void SetColorTemperature(f32 value) { colorTemperature_ = value; }
-        bool useColorTemperature() const { return useColorTemperature_; }
+        HX_PROPERTY() bool useColorTemperature() const { return useColorTemperature_; }
         void SetUseColorTemperature(bool value) { useColorTemperature_ = value; }
-        LightRenderMode renderMode() const { return renderMode_; }
+        HX_PROPERTY() LightRenderMode renderMode() const { return renderMode_; }
         void SetRenderMode(LightRenderMode value) { renderMode_ = value; }
 
         // The color the light adds (color, by the temperature's when used, times intensity), linear.
+        // The masks as the script API has them (int).
+        HX_PROPERTY(Name = "cullingMask", Setter = "SetCullingMaskApi") i32 CullingMaskApi() const { return i32(cullingMask_); }
+        void SetCullingMaskApi(i32 value) { cullingMask_ = u32(value); }
+        HX_PROPERTY(Name = "renderingLayerMask", Setter = "SetRenderingLayerMaskApi") i32 RenderingLayerMaskApi() const { return i32(renderingLayerMask_); }
+        void SetRenderingLayerMaskApi(i32 value) { renderingLayerMask_ = u32(value); }
+        // The settings of a new light.
+        HX_FUNCTION() void Reset();
+
         Color FinalColor() const;
         // The enabled lights.
         static Span<Light* const> EnabledLights();

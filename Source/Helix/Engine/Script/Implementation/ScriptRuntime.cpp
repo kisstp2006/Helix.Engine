@@ -967,6 +967,10 @@ namespace helix::engine
             error = Format("{} has no bindings ({} is missing or failed)", path, symbol);
             return false;
         }
+        // Its exports by name too, for C# bindings of the module in a game assembly (they find them so).
+        String publish = Format("HxBindings_{}_Publish", Ident(stem));
+        if (auto publishExports = std::bit_cast<void (*)()>(library->Symbol(publish.CStr())))
+            publishExports();
         Modules().Push(Module{String(stem), library});
         return true;
     }
@@ -1001,6 +1005,10 @@ namespace helix::engine
                     scripting::UnregisterNativeScriptClasses(module);
                     scripting::UnloadModule(scripting::FindModule(module));
                 }
+                // A library's exports by name go with it (their functions are unloaded).
+                if (all[i].library)
+                    for (StringView e : {StringView("Register"), StringView("Unregister"), StringView("SetManaged"), StringView("Functions"), StringView("Types")})
+                        scripting::RegisterNativeExport(Format("HxBindings_{}_{}", Ident(module), e), nullptr);
                 delete all[i].library;
                 all.RemoveAt(i);
                 return;

@@ -59,7 +59,7 @@ reports it.
 | `Source/Helix/Engine/Script/ScriptClass.h` | `ScriptClass`, `ScriptMessage`, the registry of script classes of both languages |
 | `Source/Helix/Engine/Debug/Debug.h` | `Debug`: the log of scripts (`Log`, `LogWarning`, `LogError`, `LogAssertion`, `Assert`), `isDebugBuild`, `Break`, `DrawLine` / `DrawRay` (accepted until the gizmo renderer) |
 | `Source/Helix/Engine/Math/MathNative.h`, `Scene/SceneNative.h` | The calls the C# value types and operation classes make into Helix.Math and the engine (internal in C#) |
-| `Source/Helix/Engine/Script/ScriptRuntime.h` | The scheduler of scripts (`RunScriptPhase`, `CallScriptMessage`, `BroadcastScriptMessage`), `AddScript`, `SendScriptMessage` (`SendMessage`, `BroadcastMessage`, `SendMessageUpwards`), C++ game modules (`LoadGameModule`, `RegisterLinkedGameModule`, `UnloadGameModule`) |
+| `Source/Helix/Engine/Script/ScriptRuntime.h` | The scheduler of scripts (`RunScriptPhase`, `CallScriptMessage`, `BroadcastScriptMessage`), `AddScript`, `SendScriptMessage` (`SendMessage`, `BroadcastMessage`, `SendMessageUpwards`), C++ game modules (`LoadGameModule`, which also publishes the module's exports by name for its C# bindings, `RegisterLinkedGameModule`, `UnloadGameModule`) |
 | `Shaders/` | The built in shaders in C# (`Hidden/InternalErrorShader`, `Hidden/InternalClear`, the engine's shader variables and vertex input locations), built with the .NET SDK and embedded |
 | `Tests/Shaders/` | C# test shaders, embedded into the tests |
 | `Tests/`, `Benchmarks/` | Ids, the class tree, components, hierarchies, enable and destroy order, clones, world math, change dispatch, scenes and scene files, assets, meshes and textures; throughput |

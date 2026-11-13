@@ -1069,6 +1069,14 @@ namespace helix::engine
             return o ? scripting::ObjectHandles<Object>::TypeOf(o).value : 0u;
         }
 
+        // Whether an object is of a type or derives from it (C# wraps references to objects of types it has no class
+        // for, such as C++ scripts, as the field's type).
+        u8 ObjectIsA(u64 id, u32 type)
+        {
+            Object* o = scripting::ObjectHandles<Object>::FromId(id);
+            return o && scripting::IsAssignableFrom(scripting::TypeId{type}, scripting::ObjectHandles<Object>::TypeOf(o)) ? 1 : 0;
+        }
+
         scripting::Variant ToVariant(const MessageValue* v)
         {
             using namespace scripting;
@@ -1157,6 +1165,7 @@ namespace helix::engine
         scripting::RegisterNativeExport("HxEngine_Log", std::bit_cast<const void*>(&Log));
         scripting::RegisterNativeExport("HxEngineScripts_ValueType", std::bit_cast<const void*>(&FindManagedValueType));
         scripting::RegisterNativeExport("HxEngineScripts_ObjectType", std::bit_cast<const void*>(&ObjectTypeOf));
+        scripting::RegisterNativeExport("HxEngineScripts_ObjectIsA", std::bit_cast<const void*>(&ObjectIsA));
         scripting::RegisterNativeExport("HxEngineScripts_SendMessage", std::bit_cast<const void*>(&SendFromManaged));
         scripting::SetNativeScriptHandler(&OnNativeScript, nullptr);
         detail::RegisterCoroutineExports();

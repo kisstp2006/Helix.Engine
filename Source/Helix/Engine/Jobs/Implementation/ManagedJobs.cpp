@@ -190,9 +190,9 @@ namespace helix::engine
         for (u32 i = 0; i < n; i++)
         {
             Transform* t = EntityIdToObject<Transform>(a->transforms[i]);
-            items[i] = t ? TransformJobItem{&t->Hierarchy(), t->NodeIndex(), i32(i)} : TransformJobItem{nullptr, 0, i32(i)};
+            items[i] = t ? TransformJobItem{u64(uptr(&t->Hierarchy())), t->NodeIndex(), i32(i)} : TransformJobItem{0, 0, i32(i)};
         }
-        std::stable_sort(items, items + n, [](const TransformJobItem& x, const TransformJobItem& y) { return uptr(x.hierarchy) < uptr(y.hierarchy); });
+        std::stable_sort(items, items + n, [](const TransformJobItem& x, const TransformJobItem& y) { return x.hierarchy < y.hierarchy; });
         auto* starts = static_cast<u32*>(HeapAlloc(sizeof(u32) * (n + 1), 16));
         u32 groups = 0;
         for (u32 i = 0; i < n; i++)

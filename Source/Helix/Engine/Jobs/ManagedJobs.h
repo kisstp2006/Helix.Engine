@@ -52,13 +52,15 @@ namespace helix::engine
         HX_FUNCTION(Leaf) static i32 LiveAllocations(i32 allocator);
     };
 
-    // An item of a transform job: the node, and its place in the TransformAccessArray.
+    // An item of a transform job: the node, and its place in the TransformAccessArray. 16 bytes on every platform (C#
+    // reads it so): the hierarchy's address as a u64, also where pointers have 32 bits (the Web).
     struct TransformJobItem
     {
-        TransformHierarchy* hierarchy;
+        u64 hierarchy;
         u32 node;
         i32 index;
     };
+    static_assert(sizeof(TransformJobItem) == 16);
 
     // TransformAccessArray and TransformAccess (C# keeps the native array's address).
     HX_CLASS(Namespace = "HelixEngine.Internal", Static, Internal)

@@ -125,13 +125,13 @@ namespace helix::engine
         }
 
         HX_PROPERTY() ShadowCastingMode shadowCastingMode() const { return shadowCasting_; }
-        void SetShadowCastingMode(ShadowCastingMode value) { shadowCasting_ = value; }
+        void SetShadowCastingMode(ShadowCastingMode value);
         HX_PROPERTY() bool receiveShadows() const { return receiveShadows_; }
         void SetReceiveShadows(bool value) { receiveShadows_ = value; }
         HX_PROPERTY() bool staticShadowCaster() const { return staticShadowCaster_; }
         void SetStaticShadowCaster(bool value) { staticShadowCaster_ = value; }
         HX_PROPERTY() u32 renderingLayerMask() const { return renderingLayerMask_; }
-        void SetRenderingLayerMask(u32 value) { renderingLayerMask_ = value; }
+        void SetRenderingLayerMask(u32 value);
         HX_PROPERTY() i32 rendererPriority() const { return rendererPriority_; }
         void SetRendererPriority(i32 value) { rendererPriority_ = value; }
         HX_PROPERTY() i32 sortingLayerID() const { return sortingLayerID_; }
@@ -204,6 +204,9 @@ namespace helix::engine
         i32 sortingLayerID_ = 0;
         i32 sortingOrder_ = 0;
         u32 managerIndex_ = ~0u;
+        // The LOD group's slot and the levels this renderer draws on (LODGroup sets them).
+        u32 lodSlot_ = ~0u;
+        u8 lodMask_ = 0;
     };
 
     HX_CLASS(Namespace = "HelixEngine", Sealed)

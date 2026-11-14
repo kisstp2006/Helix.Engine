@@ -51,10 +51,14 @@ of C++ and C# scripts, a fallback pipeline without an asset), and the screen as 
 | `Source/Helix/Engine/Rendering/Renderer.h` | `MeshFilter`, `Renderer`, `MeshRenderer`, `ShadowCastingMode` |
 | `Source/Helix/Engine/Rendering/Camera.h` | `Camera`, `CameraClearFlags`, `CameraType`, `DepthTextureMode`, `GeometryUtility` |
 | `Source/Helix/Engine/Rendering/Light.h` | `Light`, `LightType`, `LightShadows`, `LightRenderMode` |
-| `Source/Helix/Engine/Rendering/Graphics.h` | `Graphics` (device, target, `RenderFrame`, `RenderMesh`, `ExecuteCommandBuffer`, `Blit`, `CopyTexture`, `ConvertTexture`, `SetRenderTarget`), `RenderParams`, `RenderTarget`, `RenderStats` |
+| `Source/Helix/Engine/Rendering/Graphics.h` | `Graphics` (device, target, `RenderFrame`, `RenderMesh`, `ExecuteCommandBuffer`, `Blit`, `CopyTexture`, `ConvertTexture`, `SetRenderTarget`, `RenderMeshInstanced`, `DrawMeshInstanced`), `RenderParams`, `RenderTarget`, `RenderStats` (draws, set pass calls, triangles, instanced draws, draw list and submit times) |
+| `Source/Helix/Engine/Rendering/LODGroup.h` | `LODGroup` (class 205), `LOD`, `LODFadeMode`: levels of detail chosen while culling |
+| `Source/Helix/Engine/Rendering/CullingGroup.h` | `CullingGroup`, `BoundingSphere`, `CullingGroupEvent`: spheres tested each time their camera culls |
+| `Source/Helix/Engine/Rendering/SystemInfo.h` | `SystemInfo` (`renderingThreadingMode`), `RenderingThreadingMode` |
+| `Source/Helix/Engine/Rendering/CullingNative.h` | `CullingNative`: what C#'s culling groups, LOD levels, LOD and sorting settings call |
 | `Source/Helix/Engine/Rendering/Pipeline/RenderPipeline.h` | `RenderPipeline`, `RenderPipelineManager` (events, the current pipeline), `GraphicsSettings` and `QualitySettings` pipeline assets, the factories of pipelines by script language |
 | `Source/Helix/Engine/Rendering/Pipeline/ScriptableRenderContext.h` | `ScriptableRenderContext`: `Cull`, `DrawRenderers`, `SetupCameraProperties`, `ExecuteCommandBuffer`, `InvokeOnRenderObjectCallback`, `Submit` |
-| `Source/Helix/Engine/Rendering/Pipeline/CommandBuffer.h` | `CommandBuffer`: clears, viewport and scissor, view and projection, globals and keywords, `DrawMesh`, `DrawRenderer`, samples, render targets, temporary render textures, `Blit`, `CopyTexture`, resolves and mips |
+| `Source/Helix/Engine/Rendering/Pipeline/CommandBuffer.h` | `CommandBuffer`: clears, viewport and scissor, view and projection, globals and keywords, `DrawMesh`, `DrawRenderer`, samples, render targets, temporary render textures, `Blit`, `CopyTexture`, resolves and mips, `DrawMeshInstanced`, `SetInvertCulling`, global arrays |
 | `Source/Helix/Engine/Rendering/Pipeline/RenderTargets.h` | `RenderTargetIdentifier`, `BuiltinRenderTextureType`, `RenderBufferLoadAction` / `StoreAction`, `RTClearFlags`, `CubemapFace` |
 | `Source/Helix/Engine/Rendering/Pipeline/RenderStates.h` | `SortingSettings`, `DrawingSettings`, `FilteringSettings`, `RenderQueueRange`, `RenderStateBlock` and its states, `ScriptableCullingParameters`, `CullingResults`, `VisibleLight`, the rendering enums |
 | `Source/Helix/Engine/Rendering/Pipeline/RenderPipelineNative.h` | `RenderPipelineNative`, `DrawRendererData`: what C#'s pipeline API calls |
@@ -69,7 +73,7 @@ of C++ and C# scripts, a fallback pipeline without an asset), and the screen as 
 | `Source/Helix/Engine/Script/ScriptRuntime.h` | The scheduler of scripts (`RunScriptPhase`, `CallScriptMessage`, `BroadcastScriptMessage`), `AddScript`, `SendScriptMessage` (`SendMessage`, `BroadcastMessage`, `SendMessageUpwards`), C++ game modules (`LoadGameModule`, which also publishes the module's exports by name for its C# bindings, `RegisterLinkedGameModule`, `UnloadGameModule`) |
 | `Shaders/` | The built in shaders in C# (`Hidden/InternalErrorShader`, `Hidden/InternalClear`, `Hidden/BlitCopy`, the engine's shader variables and vertex input locations), built with the .NET SDK and embedded |
 | `Tests/Shaders/` | C# test shaders, embedded into the tests |
-| `Tests/`, `Benchmarks/` | Ids, the class tree, components, hierarchies, enable and destroy order, clones, world math, change dispatch, scenes and scene files, assets, meshes and textures; throughput |
+| `Tests/`, `Benchmarks/` | Ids, the class tree, components, hierarchies, enable and destroy order, clones, world math, change dispatch, scenes and scene files, assets, meshes and textures, rendering (also with `HELIX_RENDER_BATCHING=1` and `HELIX_RENDER_THREAD=1`, which CTest runs as their own tests); throughput and the frame budgets (culling 100k renderers, draw lists of 20k draws, submits of 5k draws) |
 
 ## Design
 
@@ -198,6 +202,22 @@ of C++ and C# scripts, a fallback pipeline without an asset), and the screen as 
   OnPostRender, OnRenderObject). GPU meshes (formats the GPU lacks widened to float, missing attributes read zero),
   textures, samplers, shaders and pipelines are cached by the versions of their sources; meshes and textures that are
   not readable drop their CPU copy once uploaded.
+- Culling runs over the render side's bounds in chunks on the jobs (layers, drawn flags, the planes beyond six, layer
+  cull distances and LOD levels inside the jobs) into lists kept from frame to frame; each light with shadows gets the
+  shadow casters in the camera's volume extruded toward it (directional) or in its range. LOD groups pick a level per
+  camera by their height on the screen times QualitySettings.lodBias, never below maximumLODLevel. Culling groups of a
+  camera are tested after it culls and report changes of visibility and distance band.
+- DrawRenderers builds its draws in chunks on the jobs from the render side's copies (materials, rendering layers,
+  submesh counts): the pass templates of each material once, then items with 128 bit keys (queue, sorting order, the
+  variant, the distance, the pass name) sorted by a stable LSD radix sort. Consecutive draws of the same mesh, submesh
+  and pass without property blocks become one instanced draw where the material enables instancing and its shader
+  declares INSTANCING_ON (ShaderVariables reads the instance's matrices by ShaderMath.InstanceId; at most 128 per draw).
+- GraphicsSettings.useScriptableRenderPipelineBatching keeps material blocks and per object blocks in persistent uniform
+  buffers, written into fresh parts when they change and bound by offset (where the device can bind by offset and write
+  parts); the command lists skip bindings that repeat. RenderStateBlock's blend, depth, raster (depth bias, depth clip,
+  conservative) and stencil state and the passes' own state reach the devices. A device of the RHI's threaded mode
+  (the player's default) is a render thread: the frame's command lists are built on the main thread and the jobs, the
+  device thread submits them while the next frame is made.
 - Render textures are objects whose GPU textures the renderer makes when they are created (a color texture with its
   mips, a multisampled one to draw into, a depth buffer); their rows are kept bottom first, as a texture's, so a draw
   into one flips the projection and the winding. Draws sample the textures of a source registry by class, so a render

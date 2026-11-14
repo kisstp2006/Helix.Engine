@@ -25,6 +25,25 @@ public struct PerDraw
     public float4x4 helix_WorldToObject;
 }
 
+/// <summary>One instance's object data in the instance block.</summary>
+public struct PerInstance
+{
+    public float4x4 helix_ObjectToWorld;
+    public float4x4 helix_WorldToObject;
+}
+
+[System.Runtime.CompilerServices.InlineArray(ShaderVariables.MaxInstances)]
+public struct PerInstanceArray
+{
+    private PerInstance element;
+}
+
+/// <summary>What the renderer sets per instanced draw: the object data of each instance (the draw slot's block then).</summary>
+public struct PerInstances
+{
+    public PerInstanceArray helix_Instances;
+}
+
 /// <summary>
 /// The engine's shader variables. Their blocks take uniform slots 9 (camera) and 10 (draw); the dynamic keywords take 11,
 /// so materials use slots 0 to 8 (12 blocks per stage is what every graphics API the engine runs on guarantees).
@@ -33,19 +52,32 @@ public static class ShaderVariables
 {
     public const int CameraSlot = 9;
     public const int DrawSlot = 10;
+    /// <summary>The most instances of one instanced draw.</summary>
+    public const int MaxInstances = 128;
 
     [Uniform(CameraSlot)] public static PerCamera camera;
     [Uniform(DrawSlot)] public static PerDraw draw;
+    [Uniform(DrawSlot)] public static PerInstances instances;
+
+    /// <summary>
+    /// On in the variants the renderer draws instanced. A shader takes part by declaring this keyword in its definition;
+    /// its per object data is then read in the vertex stage only.
+    /// </summary>
+    [Keyword(KeywordScope.Global)] public static readonly bool INSTANCING_ON;
+
+    /// <summary>The object to world matrix of the object (of the instance in instanced variants).</summary>
+    public static float4x4 ObjectToWorldMatrix() =>
+        INSTANCING_ON ? instances.helix_Instances[(int)ShaderMath.InstanceId()].helix_ObjectToWorld : draw.helix_ObjectToWorld;
 
     /// <summary>An object space position in clip space.</summary>
     public static float4 ObjectToClip(float3 position) =>
-        ShaderMath.Mul(camera.helix_MatrixVP, ShaderMath.Mul(draw.helix_ObjectToWorld, new float4(position, 1.0f)));
+        ShaderMath.Mul(camera.helix_MatrixVP, ShaderMath.Mul(ObjectToWorldMatrix(), new float4(position, 1.0f)));
 
     /// <summary>An object space position in world space.</summary>
-    public static float3 ObjectToWorld(float3 position) => ShaderMath.Mul(draw.helix_ObjectToWorld, new float4(position, 1.0f)).xyz;
+    public static float3 ObjectToWorld(float3 position) => ShaderMath.Mul(ObjectToWorldMatrix(), new float4(position, 1.0f)).xyz;
 
     /// <summary>An object space normal in world space (uniform scale; the renderer passes the inverse for others).</summary>
-    public static float3 ObjectToWorldNormal(float3 normal) => ShaderMath.Normalize(ShaderMath.Mul(draw.helix_ObjectToWorld, new float4(normal, 0.0f)).xyz);
+    public static float3 ObjectToWorldNormal(float3 normal) => ShaderMath.Normalize(ShaderMath.Mul(ObjectToWorldMatrix(), new float4(normal, 0.0f)).xyz);
 }
 
 /// <summary>

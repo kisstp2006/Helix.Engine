@@ -4,7 +4,8 @@
 namespace helix::engine
 {
     u64 RenderPipelineNative::Cull(u64 context, Camera* camera, i32 cullingMask, Matrix4x4 cullingMatrix, Span<const Plane> planes, i32 options,
-                                   Vector3 origin, bool orthographic)
+                                   Vector3 origin, bool orthographic, Vector4 lod, Vector3 lodPosition, Span<const f32> layerCullDistances,
+                                   bool layerCullSpherical, i32 maximumVisibleLights)
     {
         ScriptableRenderContext* c = ScriptableRenderContext::Find(context);
         if (!c)
@@ -19,6 +20,11 @@ namespace helix::engine
         p.origin = origin;
         p.isOrthographic = orthographic;
         p.camera = camera ? camera->GetEntityId() : EntityId();
+        p.lodParameters = {lod.w != 0, lodPosition, lod.x, lod.y, i32(lod.z)};
+        for (usize i = 0; i < layerCullDistances.Size() && i < 32; i++)
+            p.layerCullDistances[i] = layerCullDistances[i];
+        p.layerCullSpherical = layerCullSpherical;
+        p.maximumVisibleLights = maximumVisibleLights;
         CullingResults r = c->Cull(p);
         return u64(reinterpret_cast<uintptr_t>(r.data));
     }

@@ -142,8 +142,10 @@ namespace helix::engine
             return out;
         }
         // The culling results' address (0 when invalid).
+        // `lod`: field of view, orthographic size, pixel height, orthographic (0 or 1); `lodPosition`: the camera's.
         HX_FUNCTION() static u64 Cull(u64 context, Camera* camera, i32 cullingMask, Matrix4x4 cullingMatrix, Span<const Plane> planes, i32 options,
-                                      Vector3 origin, bool orthographic);
+                                      Vector3 origin, bool orthographic, Vector4 lod, Vector3 lodPosition, Span<const f32> layerCullDistances,
+                                      bool layerCullSpherical, i32 maximumVisibleLights);
         // `blends`: seven values per target after the first (write mask, the four factors, the two operations).
         HX_FUNCTION() static void DrawRenderers(u64 context, u64 culling, const DrawRendererData& data, Span<const ShaderTagId> passNames,
                                                 Material* overrideMaterial, Shader* overrideShader, Material* fallbackMaterial, Span<const i32> blends);
@@ -207,9 +209,18 @@ namespace helix::engine
         HX_FUNCTION() static void SetGlobalVector(u64 buffer, i32 nameID, Vector4 value) { With(buffer, [&](CommandBuffer& b) { b.SetGlobalVector(nameID, value); }); }
         HX_FUNCTION() static void SetGlobalMatrix(u64 buffer, i32 nameID, Matrix4x4 value) { With(buffer, [&](CommandBuffer& b) { b.SetGlobalMatrix(nameID, value); }); }
         HX_FUNCTION() static void SetGlobalTexture(u64 buffer, i32 nameID, Texture* value) { With(buffer, [&](CommandBuffer& b) { b.SetGlobalTexture(nameID, value); }); }
+        HX_FUNCTION() static void SetGlobalFloatArray(u64 buffer, i32 nameID, Span<const f32> values) { With(buffer, [&](CommandBuffer& b) { b.SetGlobalFloatArray(nameID, values); }); }
+        HX_FUNCTION() static void SetGlobalVectorArray(u64 buffer, i32 nameID, Span<const Vector4> values) { With(buffer, [&](CommandBuffer& b) { b.SetGlobalVectorArray(nameID, values); }); }
+        HX_FUNCTION() static void SetGlobalMatrixArray(u64 buffer, i32 nameID, Span<const Matrix4x4> values) { With(buffer, [&](CommandBuffer& b) { b.SetGlobalMatrixArray(nameID, values); }); }
+        HX_FUNCTION() static void SetInvertCulling(u64 buffer, bool value) { With(buffer, [&](CommandBuffer& b) { b.SetInvertCulling(value); }); }
         HX_FUNCTION() static void SetKeyword(u64 buffer, StringView keyword, bool value)
         {
             With(buffer, [&](CommandBuffer& b) { b.SetKeyword(GlobalKeyword(keyword), value); });
+        }
+        HX_FUNCTION() static void DrawMeshInstanced(u64 buffer, Mesh* mesh, i32 submeshIndex, Material* material, i32 shaderPass,
+                                                    Span<const Matrix4x4> matrices, PropertyBlockId properties)
+        {
+            With(buffer, [&](CommandBuffer& b) { b.DrawMeshInstanced(mesh, submeshIndex, material, shaderPass, matrices, MaterialPropertyBlock::Find(properties)); });
         }
         HX_FUNCTION() static void DrawMesh(u64 buffer, Mesh* mesh, Matrix4x4 matrix, Material* material, i32 submeshIndex, i32 shaderPass, PropertyBlockId properties)
         {

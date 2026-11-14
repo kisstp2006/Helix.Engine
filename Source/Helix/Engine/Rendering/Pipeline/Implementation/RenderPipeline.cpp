@@ -430,7 +430,32 @@ namespace helix::engine
     u32 GraphicsSettings::defaultRenderingLayerMask() { return P().renderingLayerMask; }
     void GraphicsSettings::SetDefaultRenderingLayerMask(u32 mask) { P().renderingLayerMask = mask; }
 
+    namespace
+    {
+        TransparencySortMode gSortMode = TransparencySortMode::Default;
+        Vector3 gSortAxis(0, 0, 1);
+    }
+    namespace
+    {
+        bool gBatching = false;
+    }
+    bool GraphicsSettings::useScriptableRenderPipelineBatching() { return gBatching; }
+    void GraphicsSettings::SetUseScriptableRenderPipelineBatching(bool value) { gBatching = value; }
+    TransparencySortMode GraphicsSettings::transparencySortMode() { return gSortMode; }
+    void GraphicsSettings::SetTransparencySortMode(TransparencySortMode mode) { gSortMode = mode; }
+    Vector3 GraphicsSettings::transparencySortAxis() { return gSortAxis; }
+    void GraphicsSettings::SetTransparencySortAxis(Vector3 axis) { gSortAxis = axis; }
+
     ScriptableObject* QualitySettings::renderPipeline() { return AssetOf(P().qualityAsset); }
+    namespace
+    {
+        f32 gLodBias = 1;
+        i32 gMaximumLODLevel = 0;
+    }
+    f32 QualitySettings::lodBias() { return gLodBias; }
+    void QualitySettings::SetLodBias(f32 value) { gLodBias = value > 0 ? value : gLodBias; }
+    i32 QualitySettings::maximumLODLevel() { return gMaximumLODLevel; }
+    void QualitySettings::SetMaximumLODLevel(i32 value) { gMaximumLODLevel = value < 0 ? 0 : value; }
     void QualitySettings::SetRenderPipeline(ScriptableObject* asset) { P().qualityAsset = asset ? asset->GetEntityId() : EntityId(); }
 
     ScriptableObject* QualitySettings::GetRenderPipelineAssetAt(i32 index)

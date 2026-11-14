@@ -148,6 +148,8 @@ namespace helix::engine
         void SetDepthTextureMode(DepthTextureMode value) { depthTextureMode_ = value; }
         // Per layer: objects further than this are culled (0 takes the far plane).
         Span<const f32> layerCullDistances() const { return Span<const f32>(layerCullDistances_, 32); }
+        HX_PROPERTY() bool layerCullSpherical() const { return layerCullSpherical_; }
+        void SetLayerCullSpherical(bool value) { layerCullSpherical_ = value; }
         void SetLayerCullDistances(Span<const f32> distances);
         HX_PROPERTY(Name = "layerCullDistances", Setter = "SetLayerCullDistances") Array<f32> LayerCullDistancesApi() const
         {
@@ -261,6 +263,7 @@ namespace helix::engine
         bool allowMSAA_ = true;
         DepthTextureMode depthTextureMode_ = DepthTextureMode::None;
         f32 layerCullDistances_[32] = {};
+        bool layerCullSpherical_ = false;
         bool customProjection_ = false;
         bool customView_ = false;
         bool customCulling_ = false;

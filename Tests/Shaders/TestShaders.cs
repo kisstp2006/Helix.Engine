@@ -183,6 +183,37 @@ public sealed class Unlit : ShaderDefinition
     }
 }
 
+/// <summary>Tests/Unlit that takes part in instancing (it declares the INSTANCING_ON keyword).</summary>
+[Shader("Tests/InstancedUnlit")]
+public sealed class InstancedUnlit : ShaderDefinition
+{
+    [Property("Color"), MainColor, Default(1.0f, 1.0f, 1.0f, 1.0f)] public float4 color;
+    [Keyword(KeywordScope.Global)] public static readonly bool INSTANCING_ON;
+
+    public struct MaterialData
+    {
+        public float4 color;
+    }
+
+    public struct Varyings
+    {
+        [Position] public float4 position;
+    }
+
+    [Pass("Forward")]
+    public static class Forward
+    {
+        [Uniform(0)] public static MaterialData material;
+
+        [VertexShader]
+        public static Varyings Vertex([Location(VertexInputs.Position)] float3 position) => new Varyings { position = ShaderVariables.ObjectToClip(position) };
+
+        [FragmentShader]
+        [return: Target(0)]
+        public static float4 Fragment(Varyings input) => material.color;
+    }
+}
+
 /// <summary>A texture times a color, with tiling.</summary>
 [Shader("Tests/Textured")]
 public sealed class Textured : ShaderDefinition

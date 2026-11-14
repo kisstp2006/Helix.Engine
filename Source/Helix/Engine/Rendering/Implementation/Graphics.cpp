@@ -620,6 +620,21 @@ namespace helix::engine
             // A texture target is drawn upside down (its projection is flipped): front faces turn around too.
             d.frontCounterClockwise = target->flipped;
             d.depthCompare = Compare(st.zTest);
+            // The pass's own state: offsets, depth clip, conservative rasterization, alpha to coverage and stencil.
+            d.depthBias = i32(st.offsetUnits);
+            d.depthBiasSlope = st.offsetFactor;
+            d.depthClip = st.zClip;
+            d.conservative = st.conservative;
+            d.alphaToCoverage = st.alphaToMask;
+            auto face = [](const shadercompiler::StencilFaceState& f) {
+                return rhi::StencilFace{Compare(f.compare), rhi::StencilOp(u8(f.pass)), rhi::StencilOp(u8(f.fail)), rhi::StencilOp(u8(f.zFail))};
+            };
+            bool stencilTarget = target->depth == rhi::Format::D24UnormS8Uint;
+            d.stencil.enabled = st.stencil && stencilTarget;
+            d.stencil.readMask = st.stencilReadMask;
+            d.stencil.writeMask = st.stencilWriteMask;
+            d.stencil.front = face(st.stencilFront);
+            d.stencil.back = face(st.stencilBack);
             for (u32 t = 0; t < target->colorCount; t++)
             {
                 rhi::BlendState& b = d.blend[t];
@@ -639,8 +654,18 @@ namespace helix::engine
             }
             bool hasDepth = target->depth != rhi::Format::Unknown;
             if (state && HasFlag(state->mask, RenderStateMask::Blend))
+            {
                 for (u32 t = 0; t < target->colorCount; t++)
                     d.blend[t] = state->blends[t];
+                d.alphaToCoverage = state->alphaToCoverage;
+                d.logicOpEnabled = state->logicOpEnabled;
+                d.logicOp = state->logicOp;
+            }
+            if (state && HasFlag(state->mask, RenderStateMask::Stencil))
+            {
+                d.stencil = state->stencil;
+                d.stencil.enabled = state->stencil.enabled && stencilTarget;
+            }
             if (state && HasFlag(state->mask, RenderStateMask::Depth))
             {
                 d.depthTest = hasDepth && state->depthTest;
@@ -648,7 +673,13 @@ namespace helix::engine
                 d.depthCompare = state->depthCompare;
             }
             if (state && HasFlag(state->mask, RenderStateMask::Raster))
+            {
                 d.cull = state->cull;
+                d.depthBias = state->depthBias;
+                d.depthBiasSlope = state->depthBiasSlope;
+                d.depthClip = state->depthClip;
+                d.conservative = state->conservative;
+            }
             for (u32 t = 0; t < target->colorCount; t++)
                 d.colorFormats[t] = target->colors[t];
             d.colorTargetCount = target->colorCount;
@@ -701,13 +732,47 @@ namespace helix::engine
             o.depthWrite = block.depthState.writeEnabled;
             o.depthCompare = u32(compare) < 9 ? kCompare[u32(compare)] : rhi::CompareFunction::Always;
             o.cull = u32(block.rasterState.cullingMode) < 3 ? kCull[u32(block.rasterState.cullingMode)] : rhi::CullMode::Back;
+            o.depthBias = block.rasterState.offsetUnits;
+            o.depthBiasSlope = block.rasterState.offsetFactor;
+            o.depthClip = block.rasterState.depthClip;
+            o.conservative = block.rasterState.conservative;
+            o.alphaToCoverage = block.blendState.alphaToMask;
+            // The logical operations of the reference's BlendOp (the first target's), in the device's order.
+            u32 logical = u32(block.blendState.targets[0].colorBlendOperation);
+            o.logicOpEnabled = logical >= u32(BlendOp::LogicalClear) && logical <= u32(BlendOp::LogicalOrInverted);
+            o.logicOp = o.logicOpEnabled ? rhi::LogicOp(u8(logical - u32(BlendOp::LogicalClear))) : rhi::LogicOp::Copy;
+            const StencilState& st = block.stencilState;
+            auto face = [&](CompareFunction c, StencilOp pass, StencilOp fail, StencilOp zFail) {
+                return rhi::StencilFace{u32(c) < 9 ? kCompare[u32(c)] : rhi::CompareFunction::Always, rhi::StencilOp(u8(pass)), rhi::StencilOp(u8(fail)),
+                                        rhi::StencilOp(u8(zFail))};
+            };
+            o.stencil.enabled = st.enabled;
+            o.stencil.readMask = st.readMask;
+            o.stencil.writeMask = st.writeMask;
+            o.stencil.front = face(st.compareFunctionFront, st.passOperationFront, st.failOperationFront, st.zFailOperationFront);
+            o.stencil.back = face(st.compareFunctionBack, st.passOperationBack, st.failOperationBack, st.zFailOperationBack);
+            o.stencilReference = u32(block.stencilReference) & 0xFF;
             u64 h = MixHash(u64(o.mask));
             if (HasFlag(o.mask, RenderStateMask::Blend))
                 h = CombineHash(h, blendHash);
             if (HasFlag(o.mask, RenderStateMask::Depth))
                 h = CombineHash(h, MixHash(u64(o.depthTest) | u64(o.depthWrite) << 1 | u64(o.depthCompare) << 2));
+            if (HasFlag(o.mask, RenderStateMask::Blend))
+                h = CombineHash(h, MixHash(u64(o.alphaToCoverage) | u64(o.logicOpEnabled) << 1 | u64(o.logicOp) << 2));
             if (HasFlag(o.mask, RenderStateMask::Raster))
-                h = CombineHash(h, MixHash(u64(o.cull) + 77));
+            {
+                u32 slope;
+                std::memcpy(&slope, &o.depthBiasSlope, 4);
+                h = CombineHash(h, MixHash(u64(o.cull) + 77 + (u64(u32(o.depthBias)) << 8) + (u64(slope) << 32)));
+                h = CombineHash(h, MixHash(u64(o.depthClip) | u64(o.conservative) << 1));
+            }
+            if (HasFlag(o.mask, RenderStateMask::Stencil))
+            {
+                const rhi::StencilState& s = o.stencil;
+                u64 faces = u64(s.front.compare) | u64(s.front.pass) << 4 | u64(s.front.fail) << 8 | u64(s.front.depthFail) << 12 | u64(s.back.compare) << 16 |
+                            u64(s.back.pass) << 20 | u64(s.back.fail) << 24 | u64(s.back.depthFail) << 28;
+                h = CombineHash(h, MixHash(faces | u64(s.enabled) << 32 | u64(s.readMask) << 40 | u64(s.writeMask) << 48));
+            }
             o.hash = h;
             return o;
         }
@@ -918,6 +983,7 @@ namespace helix::engine
         }
         if ((++s.frame & 63) == 0)
             ForgetDead();
+        render::BeginPersistentBlocks(s.device, s.frame);
         RenderCameras();
         // Renderers that became visible or invisible by any camera this frame.
         if (detail::gVisibilityChanged)
@@ -949,6 +1015,31 @@ namespace helix::engine
                 WriteCapture(c);
         }
         s.queued.Clear();
+    }
+
+    void Graphics::RenderMeshInstanced(const RenderParams& params, Mesh* mesh, i32 submeshIndex, Span<const Matrix4x4> instances)
+    {
+        if (!params.material || !params.material->enableInstancing())
+        {
+            HX_LOG_ERROR(RenderLog, "Graphics.RenderMeshInstanced: the material needs to enable instancing.");
+            return;
+        }
+        // Each instance is culled on its own; the draws of the same mesh and material meet again in one instanced draw.
+        for (const Matrix4x4& m : instances)
+            RenderMesh(params, mesh, submeshIndex, m);
+    }
+
+    void Graphics::DrawMeshInstanced(Mesh* mesh, i32 submeshIndex, Material* material, Span<const Matrix4x4> matrices,
+                                     const MaterialPropertyBlock* properties, i32 layer, Camera* camera)
+    {
+        if (matrices.Size() > 1023)
+        {
+            HX_LOG_ERROR(RenderLog, "Graphics.DrawMeshInstanced: {} instances, at most 1023.", matrices.Size());
+            return;
+        }
+        RenderParams p;
+        p.material = material, p.matProps = properties, p.layer = layer, p.camera = camera;
+        RenderMeshInstanced(p, mesh, submeshIndex, matrices);
     }
 
     void Graphics::RenderMesh(const RenderParams& params, Mesh* mesh, i32 submeshIndex, const Matrix4x4& objectToWorld)
@@ -1107,6 +1198,7 @@ namespace helix::engine
     {
         RenderState& s = R();
         render::ReleasePipeline();
+        render::ReleasePersistentBlocks();
         if (s.device)
         {
             for (auto e : s.meshes)

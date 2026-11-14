@@ -573,6 +573,7 @@ namespace helix::engine
 
     void Material::Write(MaterialPassData& data) const
     {
+        data.writes++;
         WriteValues(*data.variant, values_, &Shader::Globals(), false, data.blocks, data.textures);
     }
 
@@ -581,10 +582,10 @@ namespace helix::engine
         return CombineHash(CombineHash(MixHash(EntityId::ToULong(shader_.Id())), MixHash(keywordsVersion_)), MixHash(Shader::GlobalKeywordsVersion()));
     }
 
-    const MaterialPassData* Material::GetPassData(u32 pass, ShaderTarget target)
+    const MaterialPassData* Material::GetPassData(u32 pass, ShaderTarget target, bool instanced)
     {
         // The usual case: the same pass and target as before, keywords unchanged.
-        u64 stamp = KeywordStamp();
+        u64 stamp = KeywordStamp() ^ (instanced ? 0x9E3779B97F4A7C15ull : 0);
         MaterialPassData* data = nullptr;
         for (MaterialPassData* d : passData_)
             if (d->pass == pass && d->target == target && d->keywordStamp == stamp)
@@ -601,6 +602,15 @@ namespace helix::engine
                 return nullptr;
             Array<KeywordValue> keywords;
             s->KeywordValues(Span<const String>(keywords_.Data(), keywords_.Size()), keywords);
+            if (instanced)
+            {
+                bool set = false;
+                for (KeywordValue& k : keywords)
+                    if (k.name == StringView("INSTANCING_ON"))
+                        k.value = 1, set = true;
+                if (!set)
+                    keywords.Push({"INSTANCING_ON", 1});
+            }
             const ShaderVariant* v = s->GetVariant(pass, Span<const KeywordValue>(keywords.Data(), keywords.Size()), target);
             if (!v)
                 return nullptr;
@@ -610,6 +620,8 @@ namespace helix::engine
             if (!data)
             {
                 data = new MaterialPassData();
+                static u64 nextUid = 0;
+                data->uid = ++nextUid;
                 data->variant = v;
                 data->pass = pass;
                 data->target = target;

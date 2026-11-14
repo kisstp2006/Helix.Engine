@@ -112,6 +112,14 @@ namespace helix::engine
         static ScriptableObject* currentRenderPipeline();
         static u32 defaultRenderingLayerMask();
         static void SetDefaultRenderingLayerMask(u32 mask);
+        // The distance metric of SortingSettings made from a camera (Default: by the camera's projection).
+        // Materials and objects keep their blocks in persistent GPU memory, bound by offset (where the device can).
+        static bool useScriptableRenderPipelineBatching();
+        static void SetUseScriptableRenderPipelineBatching(bool value);
+        static TransparencySortMode transparencySortMode();
+        static void SetTransparencySortMode(TransparencySortMode mode);
+        static Vector3 transparencySortAxis();
+        static void SetTransparencySortAxis(Vector3 axis);
     };
 
     class QualitySettings
@@ -123,6 +131,11 @@ namespace helix::engine
         // The asset of a quality level (there is one level until the quality levels come).
         static ScriptableObject* GetRenderPipelineAssetAt(i32 index);
         static i32 levelCount() { return 1; }
+        // LOD selection: heights on the screen are multiplied by the bias; levels below the maximum are not drawn.
+        static f32 lodBias();
+        static void SetLodBias(f32 value);
+        static i32 maximumLODLevel();
+        static void SetMaximumLODLevel(i32 value);
     };
 
     namespace render

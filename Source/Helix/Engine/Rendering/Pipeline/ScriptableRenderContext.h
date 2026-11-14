@@ -32,6 +32,8 @@ namespace helix::engine
         void SetupCameraProperties(Camera* camera, bool stereoSetup = false);
         // A copy of the buffer's commands after the context's.
         void ExecuteCommandBuffer(const CommandBuffer& commandBuffer);
+        // The devices have one queue: the commands run in order with the others.
+        void ExecuteCommandBufferAsync(const CommandBuffer& commandBuffer, ComputeQueueType) { ExecuteCommandBuffer(commandBuffer); }
         // OnRenderObject of every script, where the commands before it ran.
         void InvokeOnRenderObjectCallback();
         // Runs the recorded commands on the device.

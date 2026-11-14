@@ -91,6 +91,13 @@ namespace helix::engine::render
         bool depthTest = true, depthWrite = true;
         rhi::CompareFunction depthCompare = rhi::CompareFunction::Less;
         rhi::CullMode cull = rhi::CullMode::Back;
+        i32 depthBias = 0;
+        f32 depthBiasSlope = 0;
+        bool depthClip = true, conservative = false, alphaToCoverage = false;
+        bool logicOpEnabled = false;
+        rhi::LogicOp logicOp = rhi::LogicOp::Copy;
+        rhi::StencilState stencil;
+        u32 stencilReference = 0;
         u64 hash = 0;
     };
     StateOverride MakeOverride(const RenderStateBlock& block);
@@ -108,6 +115,22 @@ namespace helix::engine::render
     rhi::PipelineHandle PipelineOf(const ShaderVariant& variant, const GpuMesh& mesh, rhi::PrimitiveTopology topology, const StateOverride* state = nullptr,
                                    const TargetFormats* target = nullptr);
     void Upload(const void* data, u32 size, rhi::TransientAllocation& out);
+
+    // A part of a persistent uniform buffer (the SRP-batcher style path, PersistentBlocks.cpp).
+    struct UniformPart
+    {
+        rhi::BufferHandle buffer;
+        u32 offset = 0;
+        u32 size = 0;
+    };
+    // The frame's start: frees what can be freed; on when the setting is and the device can bind by offset.
+    void BeginPersistentBlocks(rhi::Device* device, u64 frame);
+    bool PersistentBlocksEnabled();
+    // The persistent parts of a pass's material blocks, written into `cl` when its values changed.
+    Span<const UniformPart> MaterialBlockParts(rhi::CommandList& cl, const MaterialPassData& data);
+    // The persistent object block (object to world and back) of a renderer by its render data index.
+    UniformPart ObjectBlockPart(rhi::CommandList& cl, u32 renderIndex);
+    void ReleasePersistentBlocks();
     // The magenta material of objects without a usable shader.
     Material* ErrorMaterial();
     // A projection of the reference (clip depth -1..1) as the device takes it (0..1); flipped upside down for a texture
@@ -123,9 +146,25 @@ namespace helix::engine::render
         Array<u32> renderers = Array<u32>();
         Array<u32> queued = Array<u32>();
         Array<VisibleLight> lights = Array<VisibleLight>();
+        // The shadow casters of the visible lights: lights[i]'s are casters[casterStart[i] .. casterStart[i + 1]).
+        Array<u32> casters = Array<u32>();
+        Array<u32> casterStart = Array<u32>();
         EntityId camera;
         Vector3 origin;
     };
+
+    // A draw list entry: sorted by hi, then by lo's bits above the low 24, which hold the draw's index (the sort is
+    // stable, so entries made in index order keep it among equal keys).
+    struct SortEntry
+    {
+        static constexpr u32 kIndexBits = 24;
+        static constexpr u64 kIndexMask = (1ull << kIndexBits) - 1;
+        u64 hi;
+        u64 lo;
+        u32 item() const { return u32(lo & kIndexMask); }
+    };
+    // Stable LSD radix sort by (hi, lo above the index bits); large lists on the jobs.
+    void RadixSort(Array<SortEntry>& entries, Array<SortEntry>& scratch);
 
     // The fallback pipeline: whether the first camera clears the whole target (RenderFrame's first camera does).
     bool ClearFirstCamera();

@@ -33,6 +33,15 @@ namespace helix::engine
 
     RendererManager::RendererManager() { transformSystem_ = RegisterTransformSystem("Renderers"); }
 
+    namespace
+    {
+        u32 NextRenderVersion()
+        {
+            static u32 next = 0;
+            return ++next;
+        }
+    }
+
     void RendererManager::Add(Renderer& r)
     {
         u32& index = RendererAccess::Index(r);
@@ -51,6 +60,12 @@ namespace helix::engine
         layerMasks_.Push(0);
         sortingOrders_.Push(0);
         drawn_.Push(0);
+        castShadows_.Push(0);
+        lodSlots_.Push(~0u);
+        lodMasks_.Push(0);
+        materials_.Emplace();
+        renderingLayers_.Push(0);
+        subMeshes_.Push(0);
         worldOverride_.Push(0);
         if (t)
         {
@@ -66,6 +81,13 @@ namespace helix::engine
         d.layerMask.Push(0);
         d.sortingOrder.Push(0);
         d.drawn.Push(0);
+        d.castShadows.Push(0);
+        d.lodSlot.Push(~0u);
+        d.lodMask.Push(0);
+        d.version.Push(NextRenderVersion());
+        d.materials.Emplace();
+        d.renderingLayerMask.Push(0);
+        d.subMeshes.Push(0);
         d.visible.Push(0);
         d.wasVisible.Push(0);
         Refresh(index, r);
@@ -115,6 +137,12 @@ namespace helix::engine
         SwapRemove(layerMasks_, i);
         SwapRemove(sortingOrders_, i);
         SwapRemove(drawn_, i);
+        SwapRemove(castShadows_, i);
+        SwapRemove(lodSlots_, i);
+        SwapRemove(lodMasks_, i);
+        SwapRemove(materials_, i);
+        SwapRemove(renderingLayers_, i);
+        SwapRemove(subMeshes_, i);
         SwapRemove(worldOverride_, i);
         RenderData& d = render_;
         for (Array<f32>* a : {&d.centerX, &d.centerY, &d.centerZ, &d.extentX, &d.extentY, &d.extentZ})
@@ -125,6 +153,13 @@ namespace helix::engine
         SwapRemove(d.layerMask, i);
         SwapRemove(d.sortingOrder, i);
         SwapRemove(d.drawn, i);
+        SwapRemove(d.castShadows, i);
+        SwapRemove(d.lodSlot, i);
+        SwapRemove(d.lodMask, i);
+        SwapRemove(d.version, i);
+        SwapRemove(d.materials, i);
+        SwapRemove(d.renderingLayerMask, i);
+        SwapRemove(d.subMeshes, i);
         SwapRemove(d.visible, i);
         SwapRemove(d.wasVisible, i);
     }
@@ -154,6 +189,17 @@ namespace helix::engine
         layerMasks_[i] = g ? 1u << g->layer() : 0u;
         sortingOrders_[i] = r.sortingOrder();
         drawn_[i] = RendererAccess::Drawn(r) ? 1 : 0;
+        castShadows_[i] = RendererAccess::CastsShadows(r) ? 1 : 0;
+        lodSlots_[i] = RendererAccess::LodSlot(r);
+        lodMasks_[i] = RendererAccess::LodMask(r);
+        RenderMaterials& mats = materials_[i];
+        Span<const PPtr<Material>> list = r.Materials();
+        mats.count = u8(Min<usize>(list.Size(), RenderMaterials::kInline));
+        mats.more = list.Size() > RenderMaterials::kInline;
+        for (u32 k = 0; k < mats.count; k++)
+            mats.ids[k] = list[k].Id();
+        renderingLayers_[i] = r.renderingLayerMask();
+        subMeshes_[i] = m ? u16(Min(m->subMeshCount(), 0xFFFF)) : 0;
         dirty_[i] = 1;
     }
 
@@ -198,6 +244,13 @@ namespace helix::engine
             d.layerMask[i] = layerMasks_[i];
             d.sortingOrder[i] = sortingOrders_[i];
             d.drawn[i] = drawn_[i];
+            d.castShadows[i] = castShadows_[i];
+            d.lodSlot[i] = lodSlots_[i];
+            d.lodMask[i] = lodMasks_[i];
+            d.version[i] = NextRenderVersion();
+            d.materials[i] = materials_[i];
+            d.renderingLayerMask[i] = renderingLayers_[i];
+            d.subMeshes[i] = subMeshes_[i];
         }
     }
 
@@ -435,6 +488,18 @@ namespace helix::engine
     void Renderer::SetSortingOrder(i32 value)
     {
         sortingOrder_ = value;
+        Touch();
+    }
+
+    void Renderer::SetRenderingLayerMask(u32 value)
+    {
+        renderingLayerMask_ = value;
+        Touch();
+    }
+
+    void Renderer::SetShadowCastingMode(ShadowCastingMode value)
+    {
+        shadowCasting_ = value;
         Touch();
     }
 

@@ -47,6 +47,9 @@ namespace helix::engine
         Array<TextureSlot> textures = Array<TextureSlot>();
         // The material and global versions the data was written for.
         u32 version = ~0u, globalsVersion = ~0u;
+        // Unique per pass data, and how often its values were written (the renderer's persistent copies follow them).
+        u64 uid = 0;
+        u32 writes = 0;
     };
 
     // A property block by its id in the block table (what scripts hold).
@@ -409,7 +412,8 @@ namespace helix::engine
         const PropertySheet& Properties() const { return values_; }
         // The blocks and textures of one pass (an index into the shader definition's passes) for a target, written
         // again when values or globals changed; null without a shader that has the pass.
-        const MaterialPassData* GetPassData(u32 pass, shadercompiler::ShaderTarget target);
+        // `instanced`: the variant with INSTANCING_ON (for shaders that declare it).
+        const MaterialPassData* GetPassData(u32 pass, shadercompiler::ShaderTarget target, bool instanced = false);
         // Bumped by every change.
         u32 Version() const { return version_; }
         // Writes values into a variant's blocks and texture slots. Without `overlay` the blocks start from their defaults,

@@ -135,6 +135,25 @@ namespace helix::engine
         CommonTransparent = 23,
     };
 
+    // How transparent objects are sorted by distance (GraphicsSettings.transparencySortMode).
+    HX_ENUM(Namespace = "HelixEngine")
+    enum class TransparencySortMode : i32
+    {
+        Default = 0,
+        Perspective = 1,
+        Orthographic = 2,
+        CustomAxis = 3,
+    };
+
+    // The queue of ExecuteCommandBufferAsync (the devices have one queue: the commands run in order).
+    HX_ENUM(Namespace = "HelixEngine.Rendering")
+    enum class ComputeQueueType : i32
+    {
+        Default = 0,
+        Background = 1,
+        Urgent = 2,
+    };
+
     HX_ENUM(Namespace = "HelixEngine.Rendering")
     enum class DistanceMetric : i32
     {
@@ -274,7 +293,7 @@ namespace helix::engine
         BlendOp alphaBlendOperation = BlendOp::Add;
     };
 
-    // Targets other than the first, alphaToMask: kept for the targets and devices of later steps.
+    // Each target's blend state (separateMRTBlendStates), alpha to coverage, logical operations as BlendOp values.
     struct BlendState
     {
         bool separateMRTBlendStates = false;
@@ -292,7 +311,7 @@ namespace helix::engine
         static DepthState defaultValue() { return DepthState(); }
     };
 
-    // Offsets, depth clip and conservative rasterization are kept until the devices have them.
+    // Depth bias (offsets), depth clip and conservative rasterization (where the device has it).
     struct RasterState
     {
         CullMode cullingMode = CullMode::Back;
@@ -304,7 +323,7 @@ namespace helix::engine
         static RasterState defaultValue() { return RasterState(); }
     };
 
-    // Kept until the devices have stencil state.
+    // Applied where the target has stencil (D24UnormS8Uint); the reference value is RenderStateBlock.stencilReference.
     struct StencilState
     {
         bool enabled = false;
@@ -337,6 +356,16 @@ namespace helix::engine
 
     // ------------------------------------------------------------------------------------------------ culling
 
+    // What LOD selection needs of a camera.
+    struct LODParameters
+    {
+        bool isOrthographic = false;
+        Vector3 cameraPosition;
+        f32 fieldOfView = 60;
+        f32 orthoSize = 5;
+        i32 cameraPixelHeight = 0;
+    };
+
     struct ScriptableCullingParameters
     {
         static constexpr i32 maximumCullingPlanes = 10;
@@ -349,6 +378,13 @@ namespace helix::engine
         bool isOrthographic = false;
         // The camera the parameters came from: its renderers' OnWillRenderObject and Camera.current while culling.
         EntityId camera;
+        LODParameters lodParameters;
+        // -1: every light.
+        i32 maximumVisibleLights = -1;
+        // Per layer the distance beyond which its renderers are culled (0: the far plane); spherical: from the origin,
+        // else along the view direction.
+        f32 layerCullDistances[32] = {};
+        bool layerCullSpherical = false;
 
         Plane GetCullingPlane(i32 index) const { return index >= 0 && index < cullingPlaneCount ? planes[index] : Plane(); }
         void SetCullingPlane(i32 index, const Plane& plane)
@@ -391,6 +427,8 @@ namespace helix::engine
         render::CullingData* data = nullptr;
 
         Span<const VisibleLight> visibleLights() const;
+        // The shadow casters of a visible light (render data indices; none for lights without shadows).
+        Span<const u32> ShadowCasters(i32 visibleLightIndex) const;
         bool IsValid() const;
     };
 }

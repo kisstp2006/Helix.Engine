@@ -8,6 +8,15 @@
 // (the render thread of the pipelines milestone will own that side).
 namespace helix::engine
 {
+    // A renderer's materials as the draw lists read them: up to four by id; more than that are read from the renderer.
+    struct RenderMaterials
+    {
+        static constexpr u32 kInline = 4;
+        EntityId ids[kInline];
+        u8 count = 0;
+        bool more = false;
+    };
+
     // What the render side reads, structure of arrays (bounds as the culling functions of Helix.Math take them).
     struct RenderData
     {
@@ -21,6 +30,17 @@ namespace helix::engine
         Array<i32> sortingOrder = Array<i32>();
         // Drawn at all (enabled, not forced off, not shadows only).
         Array<u8> drawn = Array<u8>();
+        // Casts shadows (enabled, not forced off, shadow casting on, shadows only included).
+        Array<u8> castShadows = Array<u8>();
+        // The LOD group's slot (~0: none) and the levels it draws on.
+        Array<u32> lodSlot = Array<u32>();
+        Array<u8> lodMask = Array<u8>();
+        // Changes when the render side copy of the renderer changes (unique across renderers).
+        Array<u32> version = Array<u32>();
+        Array<RenderMaterials> materials = Array<RenderMaterials>();
+        Array<u32> renderingLayerMask = Array<u32>();
+        // The mesh's submesh count (0: no mesh).
+        Array<u16> subMeshes = Array<u16>();
         // Written by the renderer: some camera drew it.
         Array<u8> visible = Array<u8>();
         // Visible in the frame before (OnBecameVisible / OnBecameInvisible are the changes).
@@ -39,6 +59,9 @@ namespace helix::engine
         static const Bounds* LocalOverride(const Renderer& r) { return r.hasLocalBounds_ ? &r.localBounds_ : nullptr; }
         static const Bounds* WorldOverride(const Renderer& r) { return r.hasWorldBounds_ ? &r.worldBounds_ : nullptr; }
         static bool Drawn(const Renderer& r) { return r.enabled_ && !r.forceRenderingOff_ && r.shadowCasting_ != ShadowCastingMode::ShadowsOnly; }
+        static bool CastsShadows(const Renderer& r) { return r.enabled_ && !r.forceRenderingOff_ && r.shadowCasting_ != ShadowCastingMode::Off; }
+        static u32& LodSlot(Renderer& r) { return r.lodSlot_; }
+        static u8& LodMask(Renderer& r) { return r.lodMask_; }
     };
 
     class RendererManager
@@ -79,6 +102,12 @@ namespace helix::engine
         Array<u32> layerMasks_ = Array<u32>();
         Array<i32> sortingOrders_ = Array<i32>();
         Array<u8> drawn_ = Array<u8>();
+        Array<u8> castShadows_ = Array<u8>();
+        Array<u32> lodSlots_ = Array<u32>();
+        Array<u8> lodMasks_ = Array<u8>();
+        Array<RenderMaterials> materials_ = Array<RenderMaterials>();
+        Array<u32> renderingLayers_ = Array<u32>();
+        Array<u16> subMeshes_ = Array<u16>();
         Array<u8> worldOverride_ = Array<u8>();
         HashMap<EntityId, u32> byTransform_;
         u32 transformSystem_ = 0;

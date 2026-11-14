@@ -2,11 +2,15 @@
 #include <Helix/Engine/Rendering/Pipeline/RenderPipeline.h>
 #include <Helix/Engine/Rendering/Implementation/RenderCore.h>
 #include <Helix/Engine/Rendering/Implementation/RendererManager.h>
+#include <Helix/Engine/Rendering/CullingGroup.h>
+#include <Helix/Engine/Rendering/LODGroup.h>
 #include <Helix/Engine/Rendering/Light.h>
 #include <Helix/Engine/Texture/Texture.h>
 
 #include <Helix/Core/Hashing/Hash.h>
 #include <Helix/Core/Logging/Log.h>
+#include <Helix/Jobs/Jobs.h>
+#include <Helix/Platform/Time/Time.h>
 #include <Helix/Profiler/Profiler.h>
 
 #include <algorithm>
@@ -29,6 +33,8 @@ namespace helix::engine
             HashMap<u64, CommandBuffer*> buffers;
             HashMap<u64, ScriptableRenderContext*> contexts;
             HashMap<u64, u8> culling;
+            // Culling data of ended contexts, reused (its arrays keep their memory).
+            Array<CullingData*> spareCulling = Array<CullingData*>();
             u64 next = 0;
         };
 
@@ -76,6 +82,7 @@ namespace helix::engine
                 Draws,
                 Targets,
                 Descriptors,
+                Numbers,
             };
             constexpr Refers kRefers[] = {
                 Refers::Nothing,  // ClearTarget
@@ -104,6 +111,9 @@ namespace helix::engine
                 Refers::Draws,    // DrawRenderers
                 Refers::Nothing,  // SetupCamera
                 Refers::Nothing,  // RenderObjects
+                Refers::Matrices, // DrawMeshInstanced
+                Refers::Nothing,  // InvertCulling
+                Refers::Numbers,  // GlobalArray
             };
             static_assert(sizeof(kRefers) / sizeof(kRefers[0]) == usize(Op::Count), "a table entry per command kind");
         }
@@ -117,7 +127,7 @@ namespace helix::engine
 
         void CommandList::Append(const CommandList& other)
         {
-            const u32 base[] = {0, u32(matrices.Size()), u32(texts.Size()), u32(draws.Size()), u32(targets.Size()), u32(descriptors.Size())};
+            const u32 base[] = {0, u32(matrices.Size()), u32(texts.Size()), u32(draws.Size()), u32(targets.Size()), u32(descriptors.Size()), u32(numbers.Size())};
             u32 sheetBase = u32(sheets.Size());
             for (Command c : other.commands)
             {
@@ -138,6 +148,7 @@ namespace helix::engine
                 targets.Push(t);
             for (const RenderTextureDescriptor& d : other.descriptors)
                 descriptors.Push(d);
+            numbers.Append(other.numbers.Data(), other.numbers.Size());
         }
 
         void CommandList::Clear()
@@ -149,6 +160,7 @@ namespace helix::engine
             draws.Clear();
             targets.Clear();
             descriptors.Clear();
+            numbers.Clear();
         }
 
         usize CommandList::Bytes() const
@@ -257,6 +269,44 @@ namespace helix::engine
         c.flag = value;
         c.index = u32(list_.texts.Size());
         list_.texts.Push(String(keyword.name()));
+    }
+
+    void CommandBuffer::GlobalArray(i32 nameID, i32 kind, const f32* values, u32 count, u32 width)
+    {
+        Command& c = list_.Add(Op::GlobalArray);
+        c.a = nameID, c.b = kind, c.c = i32(count);
+        c.index = u32(list_.numbers.Size());
+        if (count)
+            list_.numbers.Append(values, usize(count) * width);
+    }
+
+    void CommandBuffer::SetInvertCulling(bool invertCulling) { list_.Add(Op::InvertCulling).flag = invertCulling; }
+
+    void CommandBuffer::DrawMeshInstanced(Mesh* mesh, i32 submeshIndex, Material* material, i32 shaderPass, Span<const Matrix4x4> matrices,
+                                          const MaterialPropertyBlock* properties)
+    {
+        if (!mesh || !material)
+        {
+            HX_LOG_ERROR(ContextLog, "CommandBuffer.DrawMeshInstanced: the {} is null.", !mesh ? "mesh" : "material");
+            return;
+        }
+        if (!material->enableInstancing())
+        {
+            HX_LOG_ERROR(ContextLog, "CommandBuffer.DrawMeshInstanced: the material '{}' needs to enable instancing.", material->Name());
+            return;
+        }
+        Command& c = list_.Add(Op::DrawMeshInstanced);
+        c.object = mesh->GetEntityId();
+        c.object2 = material->GetEntityId();
+        c.a = submeshIndex, c.b = shaderPass, c.c = i32(matrices.Size());
+        c.index = u32(list_.matrices.Size());
+        for (const Matrix4x4& m : matrices)
+            list_.matrices.Push(m);
+        if (properties && !properties->isEmpty())
+        {
+            c.sheet = u32(list_.sheets.Size());
+            list_.sheets.Push(properties->Sheet());
+        }
     }
 
     void CommandBuffer::DrawMesh(Mesh* mesh, const Matrix4x4& matrix, Material* material, i32 submeshIndex, i32 shaderPass,
@@ -512,6 +562,8 @@ namespace helix::engine
             i32 cameraWidth = 0, cameraHeight = 0;
             // The temporary render textures by property id.
             HashMap<i32, EntityId> temporaries = HashMap<i32, EntityId>();
+            // SetInvertCulling: front faces turned around for the draws.
+            bool invertCulling = false;
         };
 
         ContextState WholeTarget()
@@ -535,6 +587,26 @@ namespace helix::engine
 
     namespace
     {
+        // What the command list bound last, so repeated bindings are left out (forgotten at each render pass).
+        struct Binds
+        {
+            bool pipelineKnown = false;
+            rhi::PipelineHandle pipeline;
+            u32 vertexKnown = 0;
+            rhi::BufferHandle vertex[rhi::kMaxVertexBuffers];
+            u32 vertexOffset[rhi::kMaxVertexBuffers] = {};
+            bool indexKnown = false;
+            rhi::BufferHandle index;
+            u32 uniformKnown = 0;
+            rhi::BufferHandle uniform[rhi::kMaxUniformSlots];
+            u32 uniformOffset[rhi::kMaxUniformSlots] = {};
+            u32 uniformSize[rhi::kMaxUniformSlots] = {};
+            u32 textureKnown = 0;
+            rhi::TextureHandle texture[rhi::kMaxTextureSlots];
+            rhi::SamplerHandle sampler[rhi::kMaxTextureSlots];
+        };
+
+
         struct Executor
         {
             rhi::Device& device;
@@ -552,7 +624,99 @@ namespace helix::engine
             Array<Array<u8>> blocks = Array<Array<u8>>();
             Array<MaterialPassData::TextureSlot> textures = Array<MaterialPassData::TextureSlot>();
             u64 drawSerial = 0;
+            Binds binds;
+            // The dynamic keyword block of each variant drawn in this submit.
+            HashMap<const ShaderVariant*, rhi::TransientAllocation> keywordBlocks = HashMap<const ShaderVariant*, rhi::TransientAllocation>();
+            // The stencil reference set last (the device starts each submit at 0; render passes keep it).
+            u32 stencilReference = 0;
+            // The target's formats with the facing turned around (SetInvertCulling).
+            TargetFormats inverted;
         };
+
+        // The formats pipelines of draws are made for: the target's, with the facing turned when culling is inverted.
+        const TargetFormats* DrawFormats(Executor& e)
+        {
+            if (!e.state.invertCulling)
+                return &e.state.bound.formats;
+            e.inverted = e.state.bound.formats;
+            e.inverted.flipped = !e.inverted.flipped;
+            return &e.inverted;
+        }
+
+        void BindPipeline(Executor& e, rhi::PipelineHandle p)
+        {
+            if (e.binds.pipelineKnown && e.binds.pipeline == p)
+                return;
+            e.cl.SetPipeline(p);
+            e.binds.pipelineKnown = true;
+            e.binds.pipeline = p;
+            Stats().setPassCalls++;
+        }
+
+        void BindVertex(Executor& e, u32 slot, rhi::BufferHandle b, u32 offset)
+        {
+            Binds& k = e.binds;
+            if ((k.vertexKnown >> slot & 1) && k.vertex[slot] == b && k.vertexOffset[slot] == offset)
+                return;
+            e.cl.SetVertexBuffer(slot, b, offset);
+            k.vertexKnown |= 1u << slot;
+            k.vertex[slot] = b;
+            k.vertexOffset[slot] = offset;
+        }
+
+        void BindIndex(Executor& e, rhi::BufferHandle b)
+        {
+            if (e.binds.indexKnown && e.binds.index == b)
+                return;
+            e.cl.SetIndexBuffer(b, rhi::IndexType::U32);
+            e.binds.indexKnown = true;
+            e.binds.index = b;
+        }
+
+        bool UniformBound(Executor& e, u32 slot, rhi::BufferHandle b, u32 offset, u32 size)
+        {
+            Binds& k = e.binds;
+            if ((k.uniformKnown >> slot & 1) && k.uniform[slot] == b && k.uniformOffset[slot] == offset && k.uniformSize[slot] == size)
+                return true;
+            k.uniformKnown |= 1u << slot;
+            k.uniform[slot] = b;
+            k.uniformOffset[slot] = offset;
+            k.uniformSize[slot] = size;
+            return false;
+        }
+
+        void BindUniform(Executor& e, u32 slot, const rhi::TransientAllocation& a)
+        {
+            if (!UniformBound(e, slot, a.buffer, a.offset, a.size))
+                e.cl.SetUniformBuffer(slot, a);
+        }
+
+        void BindUniform(Executor& e, u32 slot, const UniformPart& p, u32 size)
+        {
+            if (!UniformBound(e, slot, p.buffer, p.offset, size))
+                e.cl.SetUniformBuffer(slot, p.buffer, p.offset, size);
+        }
+
+        // The stencil reference of a draw: the override's where it sets stencil, else the pass's.
+        void BindStencilReference(Executor& e, const ShaderVariant& v, const StateOverride* state)
+        {
+            u32 reference = state && HasFlag(state->mask, RenderStateMask::Stencil) ? state->stencilReference : u32(v.state->stencilReference);
+            if (reference == e.stencilReference)
+                return;
+            e.cl.SetStencilReference(reference);
+            e.stencilReference = reference;
+        }
+
+        void BindTexture(Executor& e, u32 slot, rhi::TextureHandle t, rhi::SamplerHandle s)
+        {
+            Binds& k = e.binds;
+            if ((k.textureKnown >> slot & 1) && k.texture[slot] == t && k.sampler[slot] == s)
+                return;
+            e.cl.SetTexture(slot, t, s);
+            k.textureKnown |= 1u << slot;
+            k.texture[slot] = t;
+            k.sampler[slot] = s;
+        }
 
         void ApplyViewport(Executor& e)
         {
@@ -563,6 +727,7 @@ namespace helix::engine
 
         void BeginPass(Executor& e, rhi::LoadOp color, rhi::LoadOp depth, const f32* clearColor, f32 clearDepth)
         {
+            e.binds = Binds();
             const BoundTarget& b = e.state.bound;
             rhi::RenderPassDesc pass;
             pass.colorCount = b.formats.colorCount;
@@ -739,7 +904,7 @@ namespace helix::engine
         // One submesh with one pass's data: the camera block, its matrices, the material's blocks (once per pass data
         // in a Submit; a property block makes its own), textures and dynamic keywords.
         void DrawOne(Executor& e, Mesh& mesh, u32 submesh, const MaterialPassData& data, const Matrix4x4& world, u64 worldKey,
-                     const PropertySheet* block, const StateOverride* state)
+                     const PropertySheet* block, const StateOverride* state, i32 renderIndex = -1)
         {
             const ShaderVariant& v = *data.variant;
             const GpuMesh* gm = MeshOf(mesh);
@@ -748,7 +913,8 @@ namespace helix::engine
             EnsurePass(e);
             UploadCamera(e);
             const GpuMesh::Sub& sub = gm->subs[submesh];
-            e.cl.SetPipeline(PipelineOf(v, *gm, sub.topology, state, &e.state.bound.formats));
+            BindPipeline(e, PipelineOf(v, *gm, sub.topology, state, DrawFormats(e)));
+            BindStencilReference(e, v, state);
             u32 k = 0;
             for (const shadercompiler::ReflectedValue& in : v.reflection.vertexInputs)
             {
@@ -756,23 +922,33 @@ namespace helix::engine
                     break;
                 u32 a = in.index < kVertexAttributeCount ? in.index : kNone;
                 if (a != kNone && gm->offsets[a] != kNone)
-                    e.cl.SetVertexBuffer(k, gm->vertices, gm->offsets[a]);
+                    BindVertex(e, k, gm->vertices, gm->offsets[a]);
                 else
-                    e.cl.SetVertexBuffer(k, gm->zeros, 0);
+                    BindVertex(e, k, gm->zeros, 0);
                 k++;
             }
-            e.cl.SetIndexBuffer(gm->indices, rhi::IndexType::U32);
-            e.cl.SetUniformBuffer(9, e.cameraBlock);
-            if (worldKey != e.lastWorld)
+            BindIndex(e, gm->indices);
+            BindUniform(e, 9, e.cameraBlock);
+            bool persistent = PersistentBlocksEnabled();
+            if (persistent && renderIndex >= 0)
+                BindUniform(e, 10, ObjectBlockPart(e.cl, u32(renderIndex)), u32(sizeof(Matrix4x4) * 2));
+            else
             {
-                Matrix4x4 m[2] = {world, world.inverse()};
-                Upload(m, sizeof(m), e.drawBlock);
-                e.lastWorld = worldKey;
+                if (worldKey != e.lastWorld)
+                {
+                    Matrix4x4 m[2] = {world, world.inverse()};
+                    Upload(m, sizeof(m), e.drawBlock);
+                    e.lastWorld = worldKey;
+                }
+                BindUniform(e, 10, e.drawBlock);
             }
-            e.cl.SetUniformBuffer(10, e.drawBlock);
             BindMaterial(e, data, block);
             e.cl.DrawIndexed(sub.count, 1, sub.start, sub.baseVertex);
-            Stats().drawCalls++;
+            RenderStats& stats = Stats();
+            stats.drawCalls++;
+            stats.triangles += sub.count / 3;
+            if (persistent && renderIndex >= 0 && !block)
+                stats.persistentDraws++;
         }
 
         // A pass's material blocks (once per pass data in a Submit; a property block makes its own), textures and the
@@ -794,6 +970,13 @@ namespace helix::engine
                 for (const Array<u8>& b : *bytes)
                     Upload(b.Data(), u32(b.Size()), e.uploaded.Emplace());
             }
+            else if (PersistentBlocksEnabled())
+            {
+                Span<const UniformPart> parts = MaterialBlockParts(e.cl, data);
+                for (u32 b = 0; b < v.layout.blocks.Size() && b < parts.Size(); b++)
+                    BindUniform(e, v.layout.blocks[b].slot, parts[b], u32(data.blocks[b].Size()));
+                firstUpload = ~usize(0);
+            }
             else if (const u32* at = e.materialBlocks.Find(&data))
                 firstUpload = *at;
             else
@@ -803,20 +986,26 @@ namespace helix::engine
                 for (const Array<u8>& b : *bytes)
                     Upload(b.Data(), u32(b.Size()), e.uploaded.Emplace());
             }
-            for (u32 b = 0; b < v.layout.blocks.Size(); b++)
-                e.cl.SetUniformBuffer(v.layout.blocks[b].slot, e.uploaded[firstUpload + b]);
+            if (firstUpload != ~usize(0))
+                for (u32 b = 0; b < v.layout.blocks.Size(); b++)
+                    BindUniform(e, v.layout.blocks[b].slot, e.uploaded[firstUpload + b]);
             for (const MaterialPassData::TextureSlot& t : *slots)
             {
                 Texture* tex = EntityIdToObject<Texture>(t.texture);
                 const GpuTexture* gt = tex ? TextureOf(*tex) : nullptr;
                 if (!gt || !gt->texture.IsValid())
                     gt = TextureOf(*Texture2D::whiteTexture());
-                e.cl.SetTexture(t.slot, gt->texture, gt->sampler);
+                BindTexture(e, t.slot, gt->texture, gt->sampler);
             }
-            // The dynamic keywords of the variant.
+            // The dynamic keywords of the variant (one block per variant in a submit).
             for (const shadercompiler::ReflectedBlock& rb : v.reflection.blocks)
                 if (rb.name == StringView(shadercompiler::kKeywordBlockName))
                 {
+                    if (const rhi::TransientAllocation* made = e.keywordBlocks.Find(&v))
+                    {
+                        BindUniform(e, rb.slot, *made);
+                        continue;
+                    }
                     Array<u8> values;
                     values.Resize(rb.size);
                     std::memset(values.Data(), 0, values.Size());
@@ -829,8 +1018,71 @@ namespace helix::engine
                             }
                     rhi::TransientAllocation keywordBlock;
                     Upload(values.Data(), u32(values.Size()), keywordBlock);
-                    e.cl.SetUniformBuffer(rb.slot, keywordBlock);
+                    e.keywordBlocks.Set(&v, keywordBlock);
+                    BindUniform(e, rb.slot, keywordBlock);
                 }
+        }
+
+        // The most instances of one draw (ShaderVariables.MaxInstances) and the size of their block.
+        constexpr u32 kMaxInstances = 128;
+        constexpr u32 kInstanceBytes = 2 * sizeof(Matrix4x4);
+
+        bool TakesInstancing(const Material& m)
+        {
+            const Shader* shader = m.shader();
+            const shadercompiler::ShaderDescription* d = shader ? shader->Description() : nullptr;
+            return m.enableInstancing() && d && d->FindKeyword("INSTANCING_ON");
+        }
+
+        // One draw of a submesh for several objects: the INSTANCING_ON variant reads each one's matrices by instance id.
+        bool DrawInstanced(Executor& e, Mesh& mesh, u32 submesh, Material& material, const MaterialPassData& data, Span<const Matrix4x4* const> worlds,
+                           const StateOverride* state)
+        {
+            const MaterialPassData* instanced = material.GetPassData(data.pass, e.shaderTarget, true);
+            const GpuMesh* gm = MeshOf(mesh);
+            if (!instanced || !gm->vertices.IsValid() || !gm->indices.IsValid() || submesh >= gm->subs.Size() || gm->subs[submesh].count == 0)
+                return false;
+            const ShaderVariant& v = *instanced->variant;
+            EnsurePass(e);
+            UploadCamera(e);
+            const GpuMesh::Sub& sub = gm->subs[submesh];
+            BindPipeline(e, PipelineOf(v, *gm, sub.topology, state, DrawFormats(e)));
+            BindStencilReference(e, v, state);
+            u32 k = 0;
+            for (const shadercompiler::ReflectedValue& in : v.reflection.vertexInputs)
+            {
+                if (k >= rhi::kMaxVertexBuffers)
+                    break;
+                u32 a = in.index < kVertexAttributeCount ? in.index : kNone;
+                if (a != kNone && gm->offsets[a] != kNone)
+                    BindVertex(e, k, gm->vertices, gm->offsets[a]);
+                else
+                    BindVertex(e, k, gm->zeros, 0);
+                k++;
+            }
+            BindIndex(e, gm->indices);
+            BindUniform(e, 9, e.cameraBlock);
+            // The whole block is bound (its declared size), the instances fill its start.
+            rhi::TransientAllocation block = e.device.AllocateTransient(kMaxInstances * kInstanceBytes);
+            if (!block.data)
+                return false;
+            u8* out = static_cast<u8*>(block.data);
+            for (const Matrix4x4* w : worlds)
+            {
+                Matrix4x4 m[2] = {*w, w->inverse()};
+                std::memcpy(out, m, kInstanceBytes);
+                out += kInstanceBytes;
+            }
+            BindUniform(e, 10, block);
+            e.lastWorld = ~0ull;
+            BindMaterial(e, *instanced, nullptr);
+            e.cl.DrawIndexed(sub.count, u32(worlds.Size()), sub.start, sub.baseVertex);
+            RenderStats& stats = Stats();
+            stats.drawCalls++;
+            stats.instancedBatches++;
+            stats.instances += u32(worlds.Size());
+            stats.triangles += u64(sub.count / 3) * worlds.Size();
+            return true;
         }
 
         // Draws a material's passes (pass < 0: every pass, else the shader pass of that index).
@@ -855,30 +1107,42 @@ namespace helix::engine
 
         // ------------------------------------------------------------------------------------------ DrawRenderers
 
+        // A draw of the list: its sort key (the criteria's fields, then the distance and the pass name's index) and what
+        // it draws.
         struct Item
         {
-            u64 key;
-            f32 distance;
-            u32 tag;
+            u64 hi;
+            u64 lo;
+            Material* material;
+            const MaterialPassData* data;
             // A renderer index of the render data, or a queued mesh's index with the top bit.
             u32 source;
             u32 submesh;
+        };
+
+        // What a material draws for a request: its passes of the request's names, with the key bits they bring.
+        struct PassTemplate
+        {
             Material* material;
             const MaterialPassData* data;
+            u64 key;
+            u32 tag;
         };
 
         constexpr u32 kQueuedBit = 0x80000000u;
         // Light modes the fallback pipeline does not draw.
         constexpr StringView kNotForward[] = {"ShadowCaster", "DepthOnly", "Meta", "MotionVectors"};
 
-        // The draws of one material on one object.
+        // The pass templates of each material a request meets, made once per material.
         struct MaterialDraws
         {
             Executor& e;
             const DrawRequest& request;
-            Array<Item>& items;
+            Array<PassTemplate>& templates;
             // Materials made for an override shader, by the material and the shader.
             HashMap<u64, EntityId>& swapped;
+            // Material id to its templates' range (begin, end) in `templates`.
+            HashMap<u64, u64>& ranges;
 
             Material* WithOverrideShader(Material& source, Shader& shader)
             {
@@ -898,7 +1162,7 @@ namespace helix::engine
                 return m;
             }
 
-            void Push(Material* m, i32 shaderPass, u32 tag, u64 order, f32 distance, u32 source, u32 submesh)
+            void Push(Material* m, i32 shaderPass, u32 tag)
             {
                 if (!m || !m->shader() || shaderPass < 0 || shaderPass >= m->shader()->passCount())
                     return;
@@ -909,20 +1173,16 @@ namespace helix::engine
                 if (!request.filtering.renderQueueRange.Contains(queue))
                     return;
                 SortingCriteria c = request.drawing.sortingSettings.criteria;
-                bool backToFront = HasFlag(c, SortingCriteria::BackToFront);
                 u64 key = 0;
                 if (HasFlag(c, SortingCriteria::RenderQueue))
                     key |= u64(u32(queue) & 0xFFFF) << 48;
-                if (HasFlag(c, SortingCriteria::SortingLayer))
-                    key |= order << 32;
-                if (HasFlag(c, SortingCriteria::OptimizeStateChanges) && !backToFront)
+                if (HasFlag(c, SortingCriteria::OptimizeStateChanges) && !HasFlag(c, SortingCriteria::BackToFront))
                     key |= u64(data->variant->serial & 0xFFFFFF) << 8;
-                f32 d = backToFront ? -distance : HasFlag(c, SortingCriteria::QuantizedFrontToBack) ? distance : 0.0f;
-                items.Push({key, d, tag, source, submesh, m, data});
+                templates.Push({m, data, key, tag});
             }
 
-            // The object's passes of the request's names (or the fallback pipeline's forward pass).
-            void Add(Material* m, i32 sortingOrder, f32 distance, u32 source, u32 submesh)
+            // The material's passes of the request's names (or the fallback pipeline's forward pass).
+            void Make(Material* m)
             {
                 if (!m || !m->shader())
                     m = ErrorMaterial();
@@ -932,7 +1192,6 @@ namespace helix::engine
                 const shadercompiler::ShaderDescription* d = shader->Description();
                 if (!d)
                     return;
-                u64 order = u64(u32(sortingOrder + 0x8000) & 0xFFFF);
                 if (request.forward)
                 {
                     for (i32 p = 0; p < shader->passCount(); p++)
@@ -943,7 +1202,7 @@ namespace helix::engine
                             skipped |= mode == k;
                         if (!skipped && m->GetShaderPassEnabled(mode))
                         {
-                            Push(m, p, 0, order, distance, source, submesh);
+                            Push(m, p, 0);
                             return;
                         }
                     }
@@ -962,17 +1221,34 @@ namespace helix::engine
                             continue;
                         matched = true;
                         if (Material* over = EntityIdToObject<Material>(request.overrideMaterial))
-                            Push(over, request.drawing.overrideMaterialPassIndex, t, order, distance, source, submesh);
+                            Push(over, request.drawing.overrideMaterialPassIndex, t);
                         else if (Shader* overShader = EntityIdToObject<Shader>(request.overrideShader))
-                            Push(WithOverrideShader(*m, *overShader), request.drawing.overrideShaderPassIndex, t, order, distance, source, submesh);
+                            Push(WithOverrideShader(*m, *overShader), request.drawing.overrideShaderPassIndex, t);
                         else
-                            Push(m, p, t, order, distance, source, submesh);
+                            Push(m, p, t);
                         break;
                     }
                 }
                 if (!matched)
                     if (Material* fallback = EntityIdToObject<Material>(request.fallbackMaterial))
-                        Push(fallback, 0, 0, order, distance, source, submesh);
+                        Push(fallback, 0, 0);
+            }
+
+            // `key`: the material id the range is kept under (a destroyed material's id draws the error material).
+            Span<const PassTemplate> Of(Material* m, u64 key = ~0ull)
+            {
+                u64 id = key != ~0ull ? key : m ? EntityId::ToULong(m->GetEntityId()) : 0;
+                u64 range;
+                if (const u64* found = ranges.Find(id))
+                    range = *found;
+                else
+                {
+                    u64 begin = templates.Size();
+                    Make(m);
+                    range = begin << 32 | u64(templates.Size());
+                    ranges.Set(id, range);
+                }
+                return Span<const PassTemplate>(templates.Data() + (range >> 32), usize(u32(range) - u32(range >> 32)));
             }
         };
 
@@ -999,6 +1275,146 @@ namespace helix::engine
             }
         }
 
+        // A float as an unsigned integer of the same order.
+        u32 SortableBits(f32 v)
+        {
+            u32 bits;
+            std::memcpy(&bits, &v, 4);
+            return bits & 0x80000000u ? ~bits : bits | 0x80000000u;
+        }
+
+        // ------------------------------------------------------------------------------------------ radix sort
+
+        using render::SortEntry;
+
+        constexpr u32 kSortChunk = 8192;
+        // Below this the sort runs on the calling thread.
+        constexpr u32 kParallelSort = 4 * kSortChunk;
+
+        // LSD radix sort by (hi, lo), 8 bits a pass; passes whose digit is the same everywhere are skipped. Large lists
+        // count and scatter per chunk on the jobs (each chunk's place within a digit comes from the counts before it).
+        void RadixSortEntries(Array<SortEntry>& a, Array<SortEntry>& scratch)
+        {
+            u32 n = u32(a.Size());
+            if (n < 2)
+                return;
+            scratch.Resize(n);
+            bool parallel = n >= kParallelSort && jobs::IsInitialized();
+            if (!parallel)
+            {
+                // Every digit's counts in one pass over the entries, then a scatter per digit that is not the same everywhere.
+                static u32 histogram[16][256];
+                std::memset(histogram, 0, sizeof(histogram));
+                constexpr u32 firstDigit = SortEntry::kIndexBits / 8;
+                for (u32 i = 0; i < n; i++)
+                {
+                    const SortEntry& e = a[i];
+                    for (u32 d = firstDigit; d < 8; d++)
+                        histogram[d][(e.lo >> (d * 8)) & 0xFF]++;
+                    for (u32 d = 0; d < 8; d++)
+                        histogram[8 + d][(e.hi >> (d * 8)) & 0xFF]++;
+                }
+                SortEntry* from = a.Data();
+                SortEntry* to = scratch.Data();
+                for (u32 d = firstDigit; d < 16; d++)
+                {
+                    u32* h = histogram[d];
+                    bool trivial = false;
+                    for (u32 k = 0; k < 256 && !trivial; k++)
+                        trivial = h[k] == n;
+                    if (trivial)
+                        continue;
+                    u32 at = 0;
+                    for (u32 k = 0; k < 256; k++)
+                    {
+                        u32 v = h[k];
+                        h[k] = at;
+                        at += v;
+                    }
+                    u32 shift = (d & 7) * 8;
+                    bool high = d >= 8;
+                    for (u32 i = 0; i < n; i++)
+                    {
+                        const SortEntry& e = from[i];
+                        to[h[((high ? e.hi : e.lo) >> shift) & 0xFF]++] = e;
+                    }
+                    SortEntry* t = from;
+                    from = to;
+                    to = t;
+                }
+                if (from != a.Data())
+                    std::memcpy(a.Data(), from, usize(n) * sizeof(SortEntry));
+                return;
+            }
+            u32 chunks = parallel ? (n + kSortChunk - 1) / kSortChunk : 1;
+            static Array<u32> counts;
+            counts.Resize(usize(chunks) * 256);
+            SortEntry* from = a.Data();
+            SortEntry* to = scratch.Data();
+            for (u32 word = 0; word < 2; word++)
+                for (u32 shift = word ? 0 : SortEntry::kIndexBits; shift < 64; shift += 8)
+                {
+                    struct Pass
+                    {
+                        const SortEntry* from;
+                        SortEntry* to;
+                        u32* counts;
+                        u32 n, word, shift, chunkSize;
+                    } pass{from, to, counts.Data(), n, word, shift, parallel ? kSortChunk : n};
+                    auto digit = [](const Pass& p, const SortEntry& e) { return u32(((p.word ? e.hi : e.lo) >> p.shift) & 0xFF); };
+                    auto count = [digit](const Pass& p, u32 c) {
+                        u32* h = p.counts + c * 256;
+                        std::memset(h, 0, 256 * sizeof(u32));
+                        for (u32 i = c * p.chunkSize, end = Min(p.n, i + p.chunkSize); i < end; i++)
+                            h[digit(p, p.from[i])]++;
+                    };
+                    if (parallel)
+                    {
+                        const Pass* pp = &pass;
+                        jobs::Complete(jobs::ParallelFor(chunks, 1, [pp, count](u32 c) { count(*pp, c); }));
+                    }
+                    else
+                        count(pass, 0);
+                    // Skipped when one digit holds every entry.
+                    bool trivial = false;
+                    for (u32 d = 0; d < 256 && !trivial; d++)
+                    {
+                        u32 total = 0;
+                        for (u32 c = 0; c < chunks; c++)
+                            total += counts[c * 256 + d];
+                        trivial = total == n;
+                    }
+                    if (trivial)
+                        continue;
+                    // Offsets: by digit, then by chunk.
+                    u32 at = 0;
+                    for (u32 d = 0; d < 256; d++)
+                        for (u32 c = 0; c < chunks; c++)
+                        {
+                            u32 v = counts[c * 256 + d];
+                            counts[c * 256 + d] = at;
+                            at += v;
+                        }
+                    auto scatter = [digit](const Pass& p, u32 c) {
+                        u32* h = p.counts + c * 256;
+                        for (u32 i = c * p.chunkSize, end = Min(p.n, i + p.chunkSize); i < end; i++)
+                            p.to[h[digit(p, p.from[i])]++] = p.from[i];
+                    };
+                    if (parallel)
+                    {
+                        const Pass* pp = &pass;
+                        jobs::Complete(jobs::ParallelFor(chunks, 1, [pp, scatter](u32 c) { scatter(*pp, c); }));
+                    }
+                    else
+                        scatter(pass, 0);
+                    SortEntry* t = from;
+                    from = to;
+                    to = t;
+                }
+            if (from != a.Data())
+                std::memcpy(a.Data(), from, usize(n) * sizeof(SortEntry));
+        }
+
         void RunDrawRenderers(Executor& e, const DrawRequest& request)
         {
             if (!ScriptableRenderContext::IsLive(request.culling))
@@ -1006,27 +1422,177 @@ namespace helix::engine
                 HX_LOG_ERROR(ContextLog, "DrawRenderers: the culling results are not of a context that renders.");
                 return;
             }
+            platform::Stopwatch listTime;
             const CullingData& cull = *request.culling;
             RenderData& d = RendererManager::Get().RenderMutable();
             Span<const Queued> queued = QueuedMeshes();
-            Array<Item> items;
-            MaterialDraws draws{e, request, items, SwappedMaterials()};
+            // Kept from call to call: their memory is reused.
+            static Array<PassTemplate> templates;
+            static Array<Item> items;
+            static Array<SortEntry> order, scratch;
+            static HashMap<u64, u64> ranges;
+            templates.Clear();
+            items.Clear();
+            ranges.Clear();
+            MaterialDraws draws{e, request, templates, SwappedMaterials(), ranges};
             u32 layers = u32(request.filtering.layerMask);
             u32 renderingLayers = request.filtering.renderingLayerMask;
-            for (u32 i : cull.renderers)
+            SortingCriteria criteria = request.drawing.sortingSettings.criteria;
+            bool backToFront = HasFlag(criteria, SortingCriteria::BackToFront);
+            bool byDistance = backToFront || HasFlag(criteria, SortingCriteria::QuantizedFrontToBack);
+            bool byOrder = HasFlag(criteria, SortingCriteria::SortingLayer);
+            auto add = [&](Material* m, i32 sortingOrder, f32 distance, u32 source, u32 submesh) {
+                u64 orderBits = byOrder ? u64(u32(sortingOrder + 0x8000) & 0xFFFF) << 32 : 0;
+                u64 distanceBits = byDistance ? u64(SortableBits(backToFront ? -distance : distance)) << 32 : 0;
+                for (const PassTemplate& t : draws.Of(m))
+                    items.Push({t.key | orderBits, distanceBits | u64(t.tag) << SortEntry::kIndexBits, t.material, t.data, source, submesh});
+            };
+            // The visible renderers in chunks on the jobs, from the render side data only: first the materials they use
+            // (made into pass templates here, where shaders may compile), then their items.
+            struct Build
             {
-                if (i >= d.Count() || !(d.layerMask[i] & layers))
-                    continue;
-                Renderer* r = EntityIdToObject<Renderer>(d.renderer[i]);
-                Mesh* mesh = EntityIdToObject<Mesh>(d.mesh[i]);
-                if (!r || !mesh || mesh->subMeshCount() == 0 || !(r->renderingLayerMask() & renderingLayers))
-                    continue;
-                f32 distance = SortDistance(request.drawing.sortingSettings, Vector3(d.centerX[i], d.centerY[i], d.centerZ[i]));
-                Span<const PPtr<Material>> materials = r->Materials();
-                u32 subs = u32(mesh->subMeshCount());
-                // Extra materials draw the last submesh again; submeshes without a material are not drawn.
-                for (u32 k = 0; k < materials.Size(); k++)
-                    draws.Add(materials[k].Get(), r->sortingOrder(), distance, i, k < subs ? k : subs - 1);
+                const RenderData* d;
+                const u32* visible;
+                u32 count;
+                u32 layers, renderingLayers;
+                const SortingSettings* sorting;
+                bool byOrder, byDistance, backToFront;
+                const HashMap<u64, u64>* ranges;
+                const PassTemplate* templates;
+                Array<u64>* found;
+                Array<Item>* out;
+                Array<u32>* more;
+            };
+            constexpr u32 kBuildChunk = 2048;
+            u32 chunks = (u32(cull.renderers.Size()) + kBuildChunk - 1) / kBuildChunk;
+            static Array<Array<u64>> found;
+            static Array<Array<Item>> chunkItems;
+            static Array<Array<u32>> chunkMore;
+            while (found.Size() < chunks)
+            {
+                found.Emplace();
+                chunkItems.Emplace();
+                chunkMore.Emplace();
+            }
+            Build build{&d, cull.renderers.Data(), u32(cull.renderers.Size()), layers, renderingLayers, &request.drawing.sortingSettings, byOrder, byDistance,
+                        backToFront, &ranges, nullptr, found.Data(), chunkItems.Data(), chunkMore.Data()};
+            auto passes = [](const Build& b, u32 i) {
+                const RenderData& rd = *b.d;
+                return (rd.layerMask[i] & b.layers) && (rd.renderingLayerMask[i] & b.renderingLayers) && rd.subMeshes[i] > 0 && rd.mesh[i].IsValid();
+            };
+            auto gather = [passes](const Build& b, u32 c) {
+                Array<u64>& ids = b.found[c];
+                ids.Clear();
+                // A small open addressing set of the ids seen (id + 1, 0 is empty); when it fills, ids may repeat.
+                constexpr u32 kSlots = 256;
+                u64 seenIds[kSlots] = {};
+                u32 used = 0;
+                u64 last = ~0ull;
+                for (u32 k = c * kBuildChunk, end = Min(b.count, k + kBuildChunk); k < end; k++)
+                {
+                    u32 i = b.visible[k];
+                    if (!passes(b, i))
+                        continue;
+                    const RenderMaterials& mats = b.d->materials[i];
+                    for (u32 m = 0; m < mats.count; m++)
+                    {
+                        u64 id = EntityId::ToULong(mats.ids[m]);
+                        if (id == last)
+                            continue;
+                        last = id;
+                        bool seen = false;
+                        if (used < kSlots / 2)
+                        {
+                            u32 slot = u32(MixHash(id)) & (kSlots - 1);
+                            while (seenIds[slot] && seenIds[slot] != id + 1)
+                                slot = (slot + 1) & (kSlots - 1);
+                            seen = seenIds[slot] != 0;
+                            if (!seen)
+                            {
+                                seenIds[slot] = id + 1;
+                                used++;
+                            }
+                        }
+                        if (!seen)
+                            ids.Push(id);
+                    }
+                }
+            };
+            auto make = [passes](const Build& b, u32 c) {
+                Array<Item>& out = b.out[c];
+                Array<u32>& more = b.more[c];
+                out.Clear();
+                more.Clear();
+                constexpr u32 kCacheSlots = 64;
+                u64 cacheIds[kCacheSlots] = {};
+                u64 cacheRanges[kCacheSlots] = {};
+                const RenderData& rd = *b.d;
+                for (u32 k = c * kBuildChunk, end = Min(b.count, k + kBuildChunk); k < end; k++)
+                {
+                    u32 i = b.visible[k];
+                    if (!passes(b, i))
+                        continue;
+                    const RenderMaterials& mats = rd.materials[i];
+                    if (mats.more)
+                    {
+                        more.Push(i);
+                        continue;
+                    }
+                    f32 distance = b.byDistance ? SortDistance(*b.sorting, Vector3(rd.centerX[i], rd.centerY[i], rd.centerZ[i])) : 0.0f;
+                    u64 orderBits = b.byOrder ? u64(u32(rd.sortingOrder[i] + 0x8000) & 0xFFFF) << 32 : 0;
+                    u64 distanceBits = b.byDistance ? u64(SortableBits(b.backToFront ? -distance : distance)) << 32 : 0;
+                    u32 subs = rd.subMeshes[i];
+                    // Extra materials draw the last submesh again.
+                    for (u32 m = 0; m < mats.count; m++)
+                    {
+                        // The ranges of the materials met in this chunk, direct mapped (id + 1, 0 is empty).
+                        u64 id = EntityId::ToULong(mats.ids[m]);
+                        u32 slot = u32(MixHash(id)) & (kCacheSlots - 1);
+                        if (cacheIds[slot] != id + 1)
+                        {
+                            const u64* known = b.ranges->Find(id);
+                            cacheIds[slot] = id + 1;
+                            cacheRanges[slot] = known ? *known : 0;
+                        }
+                        u64 range = cacheRanges[slot];
+                        for (u32 t = u32(range >> 32); t < u32(range); t++)
+                        {
+                            const PassTemplate& pt = b.templates[t];
+                            out.Push({pt.key | orderBits, distanceBits | u64(pt.tag) << SortEntry::kIndexBits, pt.material, pt.data, i, m < subs ? m : subs - 1});
+                        }
+                    }
+                }
+            };
+            bool parallel = chunks > 1 && jobs::IsInitialized();
+            const Build* bp = &build;
+            if (parallel)
+                jobs::Complete(jobs::ParallelFor(chunks, 1, [bp, gather](u32 c) { gather(*bp, c); }));
+            else
+                for (u32 c = 0; c < chunks; c++)
+                    gather(build, c);
+            for (u32 c = 0; c < chunks; c++)
+                for (u64 id : found[c])
+                    if (!ranges.Find(id))
+                        draws.Of(EntityIdToObject<Material>(EntityId::FromULong(id)), id);
+            build.templates = templates.Data();
+            if (parallel)
+                jobs::Complete(jobs::ParallelFor(chunks, 1, [bp, make](u32 c) { make(*bp, c); }));
+            else
+                for (u32 c = 0; c < chunks; c++)
+                    make(build, c);
+            for (u32 c = 0; c < chunks; c++)
+            {
+                items.Append(chunkItems[c].Data(), chunkItems[c].Size());
+                // Renderers with more materials than the render side keeps.
+                for (u32 i : chunkMore[c])
+                    if (Renderer* r = EntityIdToObject<Renderer>(d.renderer[i]))
+                    {
+                        f32 distance = byDistance ? SortDistance(request.drawing.sortingSettings, Vector3(d.centerX[i], d.centerY[i], d.centerZ[i])) : 0.0f;
+                        Span<const PPtr<Material>> materials = r->Materials();
+                        u32 subs = d.subMeshes[i];
+                        for (u32 k = 0; k < materials.Size(); k++)
+                            add(materials[k].Get(), d.sortingOrder[i], distance, i, k < subs ? k : subs - 1);
+                    }
             }
             for (u32 q : cull.queued)
             {
@@ -1038,27 +1604,76 @@ namespace helix::engine
                 Mesh* mesh = EntityIdToObject<Mesh>(item.mesh);
                 if (!mesh || item.submesh >= u32(mesh->subMeshCount()))
                     continue;
-                draws.Add(EntityIdToObject<Material>(item.material), 0, SortDistance(request.drawing.sortingSettings, item.bounds.center), kQueuedBit | q,
-                          item.submesh);
+                add(EntityIdToObject<Material>(item.material), 0, SortDistance(request.drawing.sortingSettings, item.bounds.center), kQueuedBit | q, item.submesh);
             }
-            std::sort(items.begin(), items.end(), [](const Item& a, const Item& b) {
-                return a.key != b.key ? a.key < b.key : a.distance != b.distance ? a.distance < b.distance : a.tag < b.tag;
-            });
+            order.Resize(items.Size());
+            for (u32 i = 0; i < items.Size(); i++)
+                order[i] = {items[i].hi, items[i].lo | i};
+            RadixSortEntries(order, scratch);
+            Stats().drawListTime += listTime.ElapsedMilliseconds();
             StateOverride state;
             bool overridden = request.state.mask != RenderStateMask::Nothing;
             if (overridden)
                 state = MakeOverride(request.state);
-            for (const Item& item : items)
+            // An item's object: its mesh, world matrix, property block and whether it may join an instanced draw.
+            struct Source
             {
+                EntityId mesh;
+                const Matrix4x4* world;
+                const PropertySheet* block;
+                u32 layerMask;
+            };
+            auto sourceOf = [&](const Item& item) {
+                u32 index = item.source & ~kQueuedBit;
+                if (item.source & kQueuedBit)
+                {
+                    const Queued& q = queued[index];
+                    return Source{q.mesh, &q.world, q.hasBlock ? &q.block : nullptr, q.layerMask};
+                }
+                Renderer* r = EntityIdToObject<Renderer>(d.renderer[index]);
+                return Source{d.mesh[index], &d.world[index], r ? r->PropertyBlock(i32(item.submesh)) : nullptr, d.layerMask[index]};
+            };
+            bool instancing = request.drawing.enableInstancing;
+            u32 batchLayers = request.filtering.batchLayerMask;
+            static Array<const Matrix4x4*> worlds;
+            for (u32 at = 0; at < order.Size();)
+            {
+                const Item& item = items[order[at].item()];
+                Source src = sourceOf(item);
+                Mesh* mesh = EntityIdToObject<Mesh>(src.mesh);
+                if (!mesh)
+                {
+                    at++;
+                    continue;
+                }
+                // Consecutive draws of the same mesh, submesh and pass without property blocks share one instanced draw.
+                u32 run = 1;
+                if (instancing && !src.block && (src.layerMask & batchLayers) && TakesInstancing(*item.material))
+                {
+                    worlds.Clear();
+                    worlds.Push(src.world);
+                    while (at + run < order.Size() && run < kMaxInstances)
+                    {
+                        const Item& next = items[order[at + run].item()];
+                        if (next.data != item.data || next.submesh != item.submesh)
+                            break;
+                        Source s2 = sourceOf(next);
+                        if (s2.mesh != src.mesh || s2.block || !(s2.layerMask & batchLayers))
+                            break;
+                        worlds.Push(s2.world);
+                        run++;
+                    }
+                }
+                if (run > 1 && DrawInstanced(e, *mesh, item.submesh, *item.material, *item.data, worlds, overridden ? &state : nullptr))
+                {
+                    at += run;
+                    continue;
+                }
                 bool isQueued = (item.source & kQueuedBit) != 0;
                 u32 index = item.source & ~kQueuedBit;
-                const Queued* q = isQueued ? &queued[index] : nullptr;
-                Renderer* r = q ? nullptr : EntityIdToObject<Renderer>(d.renderer[index]);
-                Mesh* mesh = EntityIdToObject<Mesh>(q ? q->mesh : d.mesh[index]);
-                if (!mesh)
-                    continue;
-                const PropertySheet* block = q ? (q->hasBlock ? &q->block : nullptr) : r ? r->PropertyBlock(i32(item.submesh)) : nullptr;
-                DrawOne(e, *mesh, item.submesh, *item.data, q ? q->world : d.world[index], u64(item.source), block, overridden ? &state : nullptr);
+                DrawOne(e, *mesh, item.submesh, *item.data, *src.world, u64(item.source), src.block, overridden ? &state : nullptr,
+                        isQueued ? -1 : i32(index));
+                at++;
             }
         }
 
@@ -1096,6 +1711,7 @@ namespace helix::engine
                 e.cl.SetUniformBuffer(0, clearBlock);
             }
             e.cl.Draw(3);
+            e.binds = Binds();
         }
 
         void RunViewport(Executor& e, const Command& c)
@@ -1154,6 +1770,50 @@ namespace helix::engine
                 return;
             const PropertySheet* block = c.sheet != kNone ? &e.list.sheets[c.sheet] : nullptr;
             DrawPasses(e, *mesh, u32(c.a), EntityIdToObject<Material>(c.object2), c.b, e.list.matrices[c.index], (1ull << 63) | ++e.drawSerial, block);
+        }
+
+        void RunDrawMeshInstanced(Executor& e, const Command& c)
+        {
+            Mesh* mesh = EntityIdToObject<Mesh>(c.object);
+            Material* material = EntityIdToObject<Material>(c.object2);
+            if (!mesh || !material || !material->shader() || c.a < 0 || c.a >= mesh->subMeshCount())
+                return;
+            const PropertySheet* block = c.sheet != kNone ? &e.list.sheets[c.sheet] : nullptr;
+            Shader* shader = material->shader();
+            i32 first = c.b < 0 ? 0 : c.b, last = c.b < 0 ? shader->passCount() - 1 : Min(c.b, shader->passCount() - 1);
+            bool instanced = !block && TakesInstancing(*material);
+            static Array<const Matrix4x4*> worlds;
+            for (i32 p = first; p <= last; p++)
+            {
+                const MaterialPassData* data = material->GetPassData(u32(shader->PassIndex(p)), e.shaderTarget);
+                if (!data)
+                    continue;
+                for (u32 at = 0; at < u32(c.c);)
+                {
+                    u32 n = instanced ? Min(u32(c.c) - at, kMaxInstances) : 1u;
+                    worlds.Clear();
+                    for (u32 i = 0; i < n; i++)
+                        worlds.Push(&e.list.matrices[c.index + at + i]);
+                    if (n < 2 || !DrawInstanced(e, *mesh, u32(c.a), *material, *data, worlds, nullptr))
+                        for (u32 i = 0; i < n; i++)
+                            DrawOne(e, *mesh, u32(c.a), *data, *worlds[i], (1ull << 63) | ++e.drawSerial, block, nullptr);
+                    at += n;
+                }
+            }
+        }
+
+        void RunInvertCulling(Executor& e, const Command& c) { e.state.invertCulling = c.flag; }
+
+        void RunGlobalArray(Executor& e, const Command& c)
+        {
+            const f32* v = e.list.numbers.Data() + c.index;
+            u32 n = u32(c.c);
+            if (c.b == 0)
+                Shader::SetGlobalFloatArray(c.a, Span<const f32>(v, n));
+            else if (c.b == 1)
+                Shader::SetGlobalVectorArray(c.a, Span<const Vector4>(reinterpret_cast<const Vector4*>(v), n));
+            else
+                Shader::SetGlobalMatrixArray(c.a, Span<const Matrix4x4>(reinterpret_cast<const Matrix4x4*>(v), n));
         }
 
         void RunDrawRenderer(Executor& e, const Command& c)
@@ -1244,7 +1904,11 @@ namespace helix::engine
         {
             // The scripts' OnRenderObject draw with the device themselves: what is recorded so far goes first.
             EndPass(e);
-            e.device.Submit(e.cl);
+            {
+                platform::Stopwatch submit;
+                e.device.Submit(e.cl);
+                Stats().submitTime += submit.ElapsedMilliseconds();
+            }
             e.cl = rhi::CommandList();
             e.materialBlocks = HashMap<const MaterialPassData*, u32>();
             e.cameraDirty = true;
@@ -1309,6 +1973,7 @@ namespace helix::engine
             e.cl.SetUniformBuffer(9, e.cameraBlock);
             BindMaterial(e, *data, &block);
             e.cl.Draw(3);
+            e.binds = Binds();
         }
 
         // A texture object for an identifier as a source: render textures, textures, the screen (copied into a temporary).
@@ -1498,7 +2163,8 @@ namespace helix::engine
             RunClear,         RunViewport,     RunScissor,     RunNoScissor,    RunViewProjection, RunGlobalFloat,          RunGlobalInteger,
             RunGlobalVector,  RunGlobalMatrix, RunGlobalTexture, RunKeyword,    RunDrawMesh,       RunDrawRenderer,         RunBeginSample,
             RunEndSample,     RunSetTarget,    RunBlit,        RunCopyTexture,  RunResolveTarget,  RunGenerateMips,         RunGetTemporary,
-            RunReleaseTemporary, RunGlobalTextureTarget, RunDrawRenderersCommand, RunSetupCamera, RunRenderObjects,
+            RunReleaseTemporary, RunGlobalTextureTarget, RunDrawRenderersCommand, RunSetupCamera, RunRenderObjects, RunDrawMeshInstanced,
+            RunInvertCulling, RunGlobalArray,
         };
         static_assert(sizeof(kRun) / sizeof(kRun[0]) == usize(Op::Count), "a table entry per command kind");
 
@@ -1512,7 +2178,11 @@ namespace helix::engine
                 kRun[u32(c.op)](e, c);
             EndPass(e);
             FinishTarget(e);
-            device->Submit(e.cl);
+            {
+                platform::Stopwatch submit;
+                device->Submit(e.cl);
+                Stats().submitTime += submit.ElapsedMilliseconds();
+            }
         }
     }
 
@@ -1532,7 +2202,7 @@ namespace helix::engine
         for (CullingData* c : culling_)
         {
             L().culling.Remove(u64(reinterpret_cast<uintptr_t>(c)));
-            delete c;
+            L().spareCulling.Push(c);
         }
         if (state_)
             ReleaseTemporaries(*state_);
@@ -1577,6 +2247,117 @@ namespace helix::engine
         };
     }
 
+    namespace
+    {
+        constexpr u32 kCullChunk = 4096;
+
+        // One culling pass over the render data: six planes through the batched test, the rest per renderer.
+        struct CullPass
+        {
+            const RenderData* d = nullptr;
+            u32 count = 0;
+            Plane six[6];
+            const Plane* extra = nullptr;
+            i32 extraCount = 0;
+            u32 layerMask = ~0u;
+            // Shadow casters instead of drawn renderers.
+            bool casters = false;
+            const u8* lodLevels = nullptr;
+            u32 lodSlots = 0;
+            const f32* layerDistances = nullptr;
+            bool spherical = false;
+            Vector3 origin;
+            Vector3 forward;
+            // Point and spot lights: casters within the sphere.
+            bool sphere = false;
+            Vector3 sphereCenter;
+            f32 sphereRadius = 0;
+            // Per chunk: its indices at out + chunk * kCullChunk, their count in counts[chunk].
+            u32* out = nullptr;
+            u32* counts = nullptr;
+            u8* inside = nullptr;
+        };
+
+        void CullChunk(const CullPass& p, u32 chunk)
+        {
+            const RenderData& d = *p.d;
+            u32 begin = chunk * kCullChunk, end = Min(p.count, begin + kCullChunk);
+            BoundsSoA bounds{d.centerX.Data() + begin, d.centerY.Data() + begin, d.centerZ.Data() + begin, d.extentX.Data() + begin,
+                             d.extentY.Data() + begin, d.extentZ.Data() + begin, end - begin};
+            CullBoundsSoA(p.six, bounds, p.inside + begin);
+            u32* out = p.out + begin;
+            u32 n = 0;
+            for (u32 i = begin; i < end; i++)
+            {
+                if (!p.inside[i] || !(p.casters ? d.castShadows[i] : d.drawn[i]) || !(d.layerMask[i] & p.layerMask))
+                    continue;
+                if (u32 slot = d.lodSlot[i]; slot != ~0u)
+                {
+                    u8 level = slot < p.lodSlots ? p.lodLevels[slot] : u8(0xFF);
+                    if (level == 0xFF || !((d.lodMask[i] >> level) & 1))
+                        continue;
+                }
+                Vector3 center(d.centerX[i], d.centerY[i], d.centerZ[i]), extent(d.extentX[i], d.extentY[i], d.extentZ[i]);
+                bool in = true;
+                for (i32 k = 0; in && k < p.extraCount; k++)
+                    in = Inside(p.extra[k], center, extent);
+                if (!in)
+                    continue;
+                if (p.layerDistances)
+                {
+                    u32 layer = 0;
+                    for (u32 m = d.layerMask[i]; m > 1; m >>= 1)
+                        layer++;
+                    f32 limit = p.layerDistances[layer];
+                    if (limit > 0)
+                    {
+                        f32 distance;
+                        if (p.spherical)
+                            distance = (center - p.origin).magnitude() - extent.magnitude();
+                        else
+                            distance = Vector3::Dot(p.forward, center - p.origin) -
+                                       (std::fabs(p.forward.x) * extent.x + std::fabs(p.forward.y) * extent.y + std::fabs(p.forward.z) * extent.z);
+                        if (distance > limit)
+                            continue;
+                    }
+                }
+                if (p.sphere)
+                {
+                    Vector3 q = center - p.sphereCenter;
+                    Vector3 c(std::fmax(std::fabs(q.x) - extent.x, 0.0f), std::fmax(std::fabs(q.y) - extent.y, 0.0f), std::fmax(std::fabs(q.z) - extent.z, 0.0f));
+                    if (Vector3::Dot(c, c) > p.sphereRadius * p.sphereRadius)
+                        continue;
+                }
+                out[n++] = i;
+            }
+            p.counts[chunk] = n;
+        }
+
+        // Runs a pass over every chunk (on the jobs when there are several) and appends what passed to `result`.
+        void RunCullPass(CullPass& p, Array<u32>& result)
+        {
+            static Array<u32> out, counts;
+            static Array<u8> inside;
+            u32 chunks = (p.count + kCullChunk - 1) / kCullChunk;
+            out.Resize(p.count);
+            counts.Resize(chunks);
+            inside.Resize(p.count);
+            p.out = out.Data();
+            p.counts = counts.Data();
+            p.inside = inside.Data();
+            if (chunks > 1 && jobs::IsInitialized())
+            {
+                const CullPass* pass = &p;
+                jobs::Complete(jobs::ParallelFor(chunks, 1, [pass](u32 chunk) { CullChunk(*pass, chunk); }));
+            }
+            else
+                for (u32 c = 0; c < chunks; c++)
+                    CullChunk(p, c);
+            for (u32 c = 0; c < chunks; c++)
+                result.Append(out.Data() + c * kCullChunk, counts[c]);
+        }
+    }
+
     CullingResults ScriptableRenderContext::Cull(const ScriptableCullingParameters& parameters)
     {
         i32 planeCount = parameters.cullingPlaneCount;
@@ -1586,44 +2367,69 @@ namespace helix::engine
                          ScriptableCullingParameters::maximumCullingPlanes);
             return {};
         }
-        auto* data = new CullingData();
+        CullingData* data;
         {
             std::lock_guard<std::mutex> lock(L().mutex);
+            if (!L().spareCulling.Empty())
+            {
+                data = L().spareCulling.Back();
+                L().spareCulling.Pop();
+            }
+            else
+                data = new CullingData();
             L().culling.Set(u64(reinterpret_cast<uintptr_t>(data)), 1);
         }
+        data->renderers.Clear();
+        data->queued.Clear();
+        data->lights.Clear();
+        data->casters.Clear();
+        data->casterStart.Clear();
         culling_.Push(data);
         data->camera = parameters.camera;
         data->origin = parameters.origin;
+        RenderData& d = RendererManager::Get().RenderMutable();
+        // LOD levels of the groups for this camera.
+        static Array<u8> lodLevels;
+        render::LODSelection lod;
+        lod.cameraPosition = parameters.lodParameters.cameraPosition;
+        lod.fieldOfView = parameters.lodParameters.fieldOfView;
+        lod.orthoSize = parameters.lodParameters.orthoSize;
+        lod.orthographic = parameters.lodParameters.isOrthographic;
+        lod.bias = QualitySettings::lodBias();
+        lod.maximumLevel = QualitySettings::maximumLODLevel();
+        render::SelectLODs(lod, lodLevels);
         // The first six planes through the batched test (missing ones let everything through), the rest one by one.
-        Plane six[6];
+        CullPass pass;
+        pass.d = &d;
+        pass.count = d.Count();
         for (u32 i = 0; i < 6; i++)
         {
             if (i32(i) < planeCount)
-                six[i] = parameters.planes[i];
+                pass.six[i] = parameters.planes[i];
             else
-                six[i].distance = 1e30f;
+                pass.six[i].distance = 1e30f;
         }
-        RenderData& d = RendererManager::Get().RenderMutable();
-        u32 n = d.Count();
-        Array<u8> inside;
-        inside.Resize(n);
-        if (n)
-            CullBoundsSoAParallel(six, d.Bounds(), inside.Data());
-        u32 mask = u32(parameters.cullingMask);
-        for (u32 i = 0; i < n; i++)
+        pass.extra = parameters.planes + 6;
+        pass.extraCount = Max(planeCount - 6, 0);
+        pass.layerMask = u32(parameters.cullingMask);
+        pass.lodLevels = lodLevels.Data();
+        pass.lodSlots = u32(lodLevels.Size());
+        bool layerCulling = false;
+        for (f32 v : parameters.layerCullDistances)
+            layerCulling |= v > 0;
+        if (layerCulling)
         {
-            if (!inside[i] || !d.drawn[i] || !(d.layerMask[i] & mask))
-                continue;
-            Vector3 center(d.centerX[i], d.centerY[i], d.centerZ[i]), extent(d.extentX[i], d.extentY[i], d.extentZ[i]);
-            bool in = true;
-            for (i32 k = 6; in && k < planeCount; k++)
-                in = Inside(parameters.planes[k], center, extent);
-            if (!in || !EntityIdToObject<Renderer>(d.renderer[i]))
-                continue;
-            data->renderers.Push(i);
-            d.visible[i] = 1;
-            Stats().visible++;
+            pass.layerDistances = parameters.layerCullDistances;
+            pass.spherical = parameters.layerCullSpherical;
+            pass.origin = parameters.origin;
+            // A camera's near plane (the fifth) faces along its view.
+            pass.forward = planeCount >= 5 ? parameters.planes[4].normal : Vector3(0, 0, 1);
         }
+        RunCullPass(pass, data->renderers);
+        for (u32 i : data->renderers)
+            d.visible[i] = 1;
+        Stats().visible += u32(data->renderers.Size());
+        u32 mask = u32(parameters.cullingMask);
         Span<const Queued> queued = QueuedMeshes();
         for (u32 q = 0; q < queued.Size(); q++)
         {
@@ -1697,6 +2503,51 @@ namespace helix::engine
                 }
             }
         }
+        // At most maximumVisibleLights, directional ones first.
+        if (parameters.maximumVisibleLights >= 0 && data->lights.Size() > usize(parameters.maximumVisibleLights))
+        {
+            std::stable_sort(data->lights.begin(), data->lights.end(), [](const VisibleLight& a, const VisibleLight& b) {
+                return (a.lightType == LightType::Directional) > (b.lightType == LightType::Directional);
+            });
+            data->lights.Resize(usize(parameters.maximumVisibleLights));
+        }
+        // The shadow casters of each light with shadows: the camera's volume extruded toward a directional light (its
+        // planes the light goes through are dropped), a point or spot light's range.
+        bool wantCasters = (i32(parameters.cullingOptions) & i32(CullingOptions::ShadowCasters)) != 0;
+        for (const VisibleLight& v : data->lights)
+        {
+            data->casterStart.Push(u32(data->casters.Size()));
+            Light* l = v.light();
+            if (!wantCasters || !l || l->shadows() == LightShadows::None)
+                continue;
+            CullPass caster;
+            caster.d = &d;
+            caster.count = d.Count();
+            caster.casters = true;
+            caster.layerMask = mask & l->cullingMask();
+            caster.lodLevels = lodLevels.Data();
+            caster.lodSlots = u32(lodLevels.Size());
+            for (Plane& p : caster.six)
+                p.distance = 1e30f;
+            if (v.lightType == LightType::Directional)
+            {
+                Vector3 direction = v.localToWorldMatrix.MultiplyVector(Vector3(0, 0, 1));
+                u32 kept = 0;
+                for (i32 k = 0; k < planeCount && kept < 6; k++)
+                    if (Vector3::Dot(parameters.planes[k].normal, direction) <= 0)
+                        caster.six[kept++] = parameters.planes[k];
+            }
+            else
+            {
+                caster.sphere = true;
+                caster.sphereCenter = v.localToWorldMatrix.GetPosition();
+                caster.sphereRadius = v.range;
+            }
+            RunCullPass(caster, data->casters);
+        }
+        data->casterStart.Push(u32(data->casters.Size()));
+        // Culling groups that watch this camera.
+        render::EvaluateCullingGroups(parameters.camera, parameters.planes, planeCount);
         // The camera's visible renderers' scripts hear of it.
         if (camera && detail::gRenderStage)
         {
@@ -1801,7 +2652,16 @@ namespace helix::engine
             return;
         worldToCameraMatrix = camera->worldToCameraMatrix();
         cameraPosition = camera->transform() ? camera->transform()->position() : Vector3();
-        distanceMetric = camera->orthographic() ? DistanceMetric::Orthographic : DistanceMetric::Perspective;
+        switch (GraphicsSettings::transparencySortMode())
+        {
+        case TransparencySortMode::Perspective: distanceMetric = DistanceMetric::Perspective; break;
+        case TransparencySortMode::Orthographic: distanceMetric = DistanceMetric::Orthographic; break;
+        case TransparencySortMode::CustomAxis:
+            distanceMetric = DistanceMetric::CustomAxis;
+            customAxis = GraphicsSettings::transparencySortAxis();
+            break;
+        default: distanceMetric = camera->orthographic() ? DistanceMetric::Orthographic : DistanceMetric::Perspective; break;
+        }
     }
 
     Light* VisibleLight::light() const { return EntityIdToObject<Light>(EntityId::FromULong(lightId)); }
@@ -1814,6 +2674,14 @@ namespace helix::engine
     }
 
     bool CullingResults::IsValid() const { return ScriptableRenderContext::IsLive(data); }
+
+    Span<const u32> CullingResults::ShadowCasters(i32 visibleLightIndex) const
+    {
+        if (!IsValid() || visibleLightIndex < 0 || usize(visibleLightIndex) + 1 >= data->casterStart.Size())
+            return {};
+        u32 begin = data->casterStart[u32(visibleLightIndex)], end = data->casterStart[u32(visibleLightIndex) + 1];
+        return Span<const u32>(data->casters.Data() + begin, end - begin);
+    }
 
     bool Camera::TryGetCullingParameters(ScriptableCullingParameters& out) const
     {
@@ -1831,6 +2699,18 @@ namespace helix::engine
         out.origin = transform() ? transform()->position() : Vector3();
         out.isOrthographic = orthographic();
         out.camera = GetEntityId();
+        out.cullingOptions = CullingOptions(i32(CullingOptions::NeedsLighting) | i32(CullingOptions::NeedsReflectionProbes) |
+                                            i32(CullingOptions::ShadowCasters) | (useOcclusionCulling() ? i32(CullingOptions::OcclusionCull) : 0));
+        out.lodParameters = {orthographic(), out.origin, fieldOfView(), orthographicSize(), i32(pr.height)};
+        Span<const f32> distances = layerCullDistances();
+        for (u32 i = 0; i < 32; i++)
+            out.layerCullDistances[i] = distances[i];
+        out.layerCullSpherical = layerCullSpherical();
         return true;
+    }
+
+    namespace render
+    {
+        void RadixSort(Array<SortEntry>& entries, Array<SortEntry>& scratch) { RadixSortEntries(entries, scratch); }
     }
 }

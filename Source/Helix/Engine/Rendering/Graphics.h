@@ -23,12 +23,26 @@ namespace helix::engine
         rhi::Format depthFormat = rhi::Format::Unknown;
     };
 
+    enum class ComputeQueueType : i32;
+
     struct RenderStats
     {
         u32 cameras = 0;
         // Renderers that passed culling, summed over the cameras.
         u32 visible = 0;
         u32 drawCalls = 0;
+        // Pipeline changes between draws, and the triangles drawn.
+        u32 setPassCalls = 0;
+        u64 triangles = 0;
+        // Draws whose material and object blocks came from persistent memory.
+        u32 persistentDraws = 0;
+        // Instanced draws and the instances they drew.
+        // Milliseconds of the frame's draw list building and sorting, and of the device's submits (its translation
+        // of the command lists; with a render thread only the hand over).
+        f64 drawListTime = 0;
+        f64 submitTime = 0;
+        u32 instancedBatches = 0;
+        u32 instances = 0;
         // Pipelines and GPU resources made this frame.
         u32 pipelinesCreated = 0;
         u32 uploads = 0;
@@ -75,10 +89,17 @@ namespace helix::engine
 
         // A submesh drawn by the cameras of this frame (or by the one of the params), dropped once the frame is drawn.
         static void RenderMesh(const RenderParams& params, Mesh* mesh, i32 submeshIndex, const Matrix4x4& objectToWorld);
+        // Instances of a submesh, drawn instanced where the material takes part (enableInstancing, a shader with INSTANCING_ON).
+        static void RenderMeshInstanced(const RenderParams& params, Mesh* mesh, i32 submeshIndex, Span<const Matrix4x4> instances);
+        // At most 1023 instances, as the reference allows.
+        static void DrawMeshInstanced(Mesh* mesh, i32 submeshIndex, Material* material, Span<const Matrix4x4> matrices,
+                                      const MaterialPropertyBlock* properties = nullptr, i32 layer = 0, Camera* camera = nullptr);
         // Meshes RenderMesh queued for the frame.
         static u32 QueuedMeshCount();
         // Runs a command buffer's commands now, into the target with the whole target as the viewport.
         static void ExecuteCommandBuffer(const CommandBuffer& buffer);
+        // The devices have one queue: the commands run now, in order.
+        static void ExecuteCommandBufferAsync(const CommandBuffer& buffer, ComputeQueueType) { ExecuteCommandBuffer(buffer); }
         // The source over the whole destination (null: the screen) with Hidden/BlitCopy or a material's pass (-1: every
         // pass); the source is the material's _MainTex.
         static void Blit(Texture* source, RenderTexture* dest, Material* material = nullptr, i32 pass = -1);
@@ -111,6 +132,17 @@ namespace helix::engine
             p.renderingLayerMask = renderingLayerMask, p.rendererPriority = rendererPriority, p.worldBounds = worldBounds;
             p.shadowCastingMode = shadowCastingMode, p.receiveShadows = receiveShadows;
             Graphics::RenderMesh(p, mesh, submeshIndex, objectToWorld);
+        }
+        HX_FUNCTION()
+        static void RenderMeshInstanced(Material* material, Camera* camera, PropertyBlockId matProps, i32 layer, u32 renderingLayerMask,
+                                        i32 rendererPriority, Bounds worldBounds, ShadowCastingMode shadowCastingMode, bool receiveShadows, Mesh* mesh,
+                                        i32 submeshIndex, Span<const Matrix4x4> instances)
+        {
+            RenderParams p;
+            p.material = material, p.camera = camera, p.matProps = MaterialPropertyBlock::Find(matProps), p.layer = layer;
+            p.renderingLayerMask = renderingLayerMask, p.rendererPriority = rendererPriority, p.worldBounds = worldBounds;
+            p.shadowCastingMode = shadowCastingMode, p.receiveShadows = receiveShadows;
+            Graphics::RenderMeshInstanced(p, mesh, submeshIndex, instances);
         }
     };
 }

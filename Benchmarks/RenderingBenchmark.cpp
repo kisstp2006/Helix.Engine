@@ -1,7 +1,12 @@
 #include <Helix/Engine/Asset/Asset.h>
 #include <Helix/Engine/GameObject/Lifecycle.h>
 #include <Helix/Engine/Rendering/Graphics.h>
+#include <Helix/Engine/Rendering/Implementation/RenderCore.h>
+#include <Helix/Engine/Rendering/Light.h>
+#include <Helix/Engine/Rendering/Pipeline/RenderPipeline.h>
+#include <Helix/Engine/Rendering/Pipeline/ScriptableRenderContext.h>
 #include <Helix/Engine/Rendering/Renderer.h>
+#include <Helix/Jobs/Jobs.h>
 #include <Helix/Engine/Transform/Hierarchy.h>
 #include <Helix/Platform/IO/FileSystem.h>
 #include <Helix/Testing/Bench.h>
@@ -153,4 +158,150 @@ HX_BENCH(PlaceholderFrame10000Renderers)
     device->Destroy(color);
     device->Destroy(depth);
     rhi::Device::Destroy(device);
+}
+
+namespace
+{
+    // Quads on a grid, 16 materials; the camera sees about half of them; a directional light with shadows.
+    struct Field
+    {
+        Array<EntityId> objects;
+        Camera* camera = nullptr;
+        Field(u32 count, u32 columns)
+        {
+            Mesh* quad = NewObject<Mesh>();
+            const Vector3 v[] = {{-0.5f, -0.5f, 0}, {-0.5f, 0.5f, 0}, {0.5f, 0.5f, 0}, {0.5f, -0.5f, 0}};
+            const i32 t[] = {0, 1, 2, 0, 2, 3};
+            quad->SetVertices(Span<const Vector3>(v, 4));
+            quad->SetTriangles(Span<const i32>(t, 6));
+            Material* materials[16];
+            for (u32 i = 0; i < 16; i++)
+            {
+                materials[i] = Material::Create(Unlit());
+                materials[i]->SetColor("color", Color(f32(i) / 16, 0.5f, 1, 1));
+            }
+            for (u32 i = 0; i < count; i++)
+            {
+                GameObject* g = GameObject::Create("Quad");
+                g->transform()->SetPosition(Vector3(f32(i % columns), f32(i / columns), 0));
+                g->AddComponent<MeshFilter>()->SetSharedMesh(quad);
+                g->AddComponent<MeshRenderer>()->SetSharedMaterial(materials[i % 16]);
+                objects.Push(g->GetEntityId());
+            }
+            f32 rows = f32((count + columns - 1) / columns);
+            GameObject* c = GameObject::Create("Camera");
+            c->transform()->SetPosition(Vector3(f32(columns) * 0.25f - 0.5f, rows * 0.5f - 0.5f, -10));
+            camera = c->AddComponent<Camera>();
+            objects.Push(c->GetEntityId());
+            camera->SetOrthographic(true);
+            camera->SetOrthographicSize(rows * 0.5f);
+            camera->SetAspect(f32(columns) * 0.5f / rows);
+            GameObject* sun = GameObject::Create("Sun");
+            sun->transform()->SetRotation(Quaternion::Euler(50, 30, 0));
+            Light* light = sun->AddComponent<Light>();
+            light->SetType(LightType::Directional);
+            light->SetShadows(LightShadows::Hard);
+            objects.Push(sun->GetEntityId());
+            UpdateWorldMatrices();
+            Graphics::RenderFrame();
+        }
+        ~Field()
+        {
+            for (EntityId id : objects)
+                if (Object* o = EntityIdToObject(id))
+                    DestroyImmediate(o, true);
+        }
+    };
+
+    // Frames of a field on a D3D11 device with the persistent blocks: the draw list and submit times per frame.
+    void MeasureFrames(testing::BenchState& state, u32 count, const char* budget)
+    {
+        if (!jobs::IsInitialized())
+            jobs::Initialize();
+        rhi::Device* device = rhi::Device::IsBackendAvailable(rhi::Backend::D3D11)
+                                  ? rhi::Device::Create({.backend = rhi::Backend::D3D11, .vsync = false, .transientBufferSize = 32u << 20})
+                                  : nullptr;
+        if (!device)
+        {
+            std::printf("no D3D11 device, skipped\n");
+            while (state.KeepRunning())
+            {
+            }
+            return;
+        }
+        constexpr u32 size = 256;
+        rhi::TextureHandle color = device->CreateTexture({.format = rhi::Format::RGBA8Unorm, .width = size, .height = size, .usage = rhi::TextureRenderTarget});
+        rhi::TextureHandle depth = device->CreateTexture({.format = rhi::Format::D32Float, .width = size, .height = size, .usage = rhi::TextureDepthStencil});
+        Graphics::SetDevice(device);
+        Graphics::SetTarget({color, depth, size, size, rhi::Format::RGBA8Unorm, rhi::Format::D32Float});
+        GraphicsSettings::SetUseScriptableRenderPipelineBatching(true);
+        {
+            Field field(count, 200);
+            Graphics::RenderFrame();
+            f64 lists = 0, submits = 0;
+            u32 frames = 0;
+            state.SetItemsPerIteration(count / 2);
+            while (state.KeepRunning())
+            {
+                Graphics::RenderFrame();
+                device->WaitIdle();
+                lists += Graphics::LastStats().drawListTime;
+                submits += Graphics::LastStats().submitTime;
+                frames++;
+            }
+            std::printf("%u draws (%u persistent): draw list %.3f ms, submit %.3f ms (budget %s)\n", Graphics::LastStats().drawCalls,
+                        Graphics::LastStats().persistentDraws, lists / Max(frames, 1u), submits / Max(frames, 1u), budget);
+        }
+        GraphicsSettings::SetUseScriptableRenderPipelineBatching(false);
+        Graphics::SetDevice(nullptr);
+        device->Destroy(color);
+        device->Destroy(depth);
+        rhi::Device::Destroy(device);
+    }
+}
+
+// Budget (13): culling 100k renderers with a shadowed directional light, 0.8 ms on the jobs.
+HX_BENCH(BudgetCull100kRenderersAndShadowCasters)
+{
+    if (!jobs::IsInitialized())
+        jobs::Initialize();
+    Field field(100000, 400);
+    ScriptableCullingParameters p;
+    field.camera->TryGetCullingParameters(p);
+    state.SetItemsPerIteration(100000);
+    u32 visible = 0, casters = 0;
+    while (state.KeepRunning())
+    {
+        ScriptableRenderContext context;
+        CullingResults r = context.Cull(p);
+        visible = u32(r.data->renderers.Size());
+        casters = u32(r.ShadowCasters(0).Size());
+    }
+    std::printf("visible %u, shadow casters %u (budget 0.8 ms)\n", visible, casters);
+}
+
+// Budget (13): draw list building and sorting of 20k draws, 0.6 ms.
+HX_BENCH(BudgetDrawList20kDraws) { MeasureFrames(state, 40000, "20k draw list 0.6 ms"); }
+
+// Budget (13): the render thread's submit of 5k draws on D3D11 with the SRP-batcher style path, 2.0 ms.
+HX_BENCH(BudgetSubmit5kDraws) { MeasureFrames(state, 10000, "5k submit 2.0 ms"); }
+
+// The sort of a 20k draw list alone (keys like DrawRenderers' with 16 materials and quantized distances).
+HX_BENCH(DrawListSort20k)
+{
+    if (!jobs::IsInitialized())
+        jobs::Initialize();
+    Array<render::SortEntry> source, entries, scratch;
+    u64 seed = 7;
+    for (u32 i = 0; i < 20000; i++)
+    {
+        seed = seed * 6364136223846793005ull + 1442695040888963407ull;
+        source.Push({u64(2000) << 48 | (seed >> 40 & 15) << 8, (seed >> 16 & 0xFFFFFFFF) << 32 | i});
+    }
+    state.SetItemsPerIteration(20000);
+    while (state.KeepRunning())
+    {
+        entries = source;
+        render::RadixSort(entries, scratch);
+    }
 }

@@ -44,6 +44,9 @@ namespace helix::engine
             DrawRenderers,
             SetupCamera,
             RenderObjects,
+            DrawMeshInstanced,
+            InvertCulling,
+            GlobalArray,
             Count,
         };
 
@@ -81,6 +84,7 @@ namespace helix::engine
             Array<DrawRequest> draws = Array<DrawRequest>();
             Array<RenderTargetIdentifier> targets = Array<RenderTargetIdentifier>();
             Array<RenderTextureDescriptor> descriptors = Array<RenderTextureDescriptor>();
+            Array<f32> numbers = Array<f32>();
 
             Command& Add(Op op);
             // The commands of another list after these (their indices moved).
@@ -127,12 +131,21 @@ namespace helix::engine
         void SetGlobalMatrix(i32 nameID, const Matrix4x4& value);
         void SetGlobalMatrix(StringView name, const Matrix4x4& value) { SetGlobalMatrix(PropertyToID(name), value); }
         void SetGlobalTexture(i32 nameID, Texture* value);
+        void SetGlobalFloatArray(i32 nameID, Span<const f32> values) { GlobalArray(nameID, 0, values.Data(), u32(values.Size()), 1); }
+        void SetGlobalVectorArray(i32 nameID, Span<const Vector4> values) { GlobalArray(nameID, 1, &values.Data()->x, u32(values.Size()), 4); }
+        void SetGlobalMatrixArray(i32 nameID, Span<const Matrix4x4> values) { GlobalArray(nameID, 2, &values.Data()->m00, u32(values.Size()), 16); }
+        // Front faces turn around for the draws after it (mirrored views).
+        void SetInvertCulling(bool invertCulling);
         void SetGlobalTexture(StringView name, Texture* value) { SetGlobalTexture(PropertyToID(name), value); }
         void EnableShaderKeyword(StringView keyword);
         void DisableShaderKeyword(StringView keyword);
         void SetKeyword(const GlobalKeyword& keyword, bool value);
 
         // One submesh with one pass of the material (-1: every pass) at the matrix, with values of the block over it.
+        // Instances of a submesh in one draw (several of at most 128 instances each) where the material takes part in
+        // instancing, else one draw each.
+        void DrawMeshInstanced(Mesh* mesh, i32 submeshIndex, Material* material, i32 shaderPass, Span<const Matrix4x4> matrices,
+                               const MaterialPropertyBlock* properties = nullptr);
         void DrawMesh(Mesh* mesh, const Matrix4x4& matrix, Material* material, i32 submeshIndex = 0, i32 shaderPass = -1,
                       const MaterialPropertyBlock* properties = nullptr);
         // A renderer's mesh (its submesh) with a material's pass (-1: every pass), its matrix and its property block.
@@ -204,6 +217,7 @@ namespace helix::engine
         static CommandBuffer* Find(u64 id);
 
     private:
+        void GlobalArray(i32 nameID, i32 kind, const f32* values, u32 count, u32 width);
         void SetRenderTarget(const RenderTargetIdentifier* colors, u32 count, const RenderTargetIdentifier& depth, bool separateDepth,
                              RenderBufferLoadAction load = RenderBufferLoadAction::Load, RenderBufferStoreAction store = RenderBufferStoreAction::Store);
 

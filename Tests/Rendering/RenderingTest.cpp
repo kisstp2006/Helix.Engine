@@ -8,16 +8,24 @@
 #include <Scripts/TestScripts.h>
 #include <Helix/Engine/Script/ScriptRuntime.h>
 #include <Helix/Scripting/Bindings/Interop.h>
+#include <Helix/Engine/Rendering/CullingGroup.h>
+#include <Helix/Engine/Rendering/LODGroup.h>
+#include <Helix/Engine/Rendering/SystemInfo.h>
 #include <Helix/Engine/Rendering/Light.h>
+#include <Helix/Engine/Rendering/Implementation/RendererManager.h>
+#include <Helix/Engine/Rendering/Pipeline/ScriptableRenderContext.h>
 #include <Helix/Engine/Rendering/Renderer.h>
 #include <Helix/Engine/Rendering/ScreenCapture.h>
 #include <Helix/Image/Codecs/Png.h>
 #include <Helix/Engine/Transform/Hierarchy.h>
 #include <Helix/Platform/Window/Window.h>
+#include <Helix/Jobs/Jobs.h>
 #include <Helix/Testing/Test.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 
 using namespace helix;
 using namespace helix::engine;
@@ -90,7 +98,12 @@ namespace
                 adapters++;
             for (i32 adapter = adapters ? 0 : -1; adapter < i32(adapters); adapter++)
             {
-                rhi::Device* device = rhi::Device::Create({.backend = b, .adapter = adapter, .vsync = false});
+                // HELIX_RENDER_BATCHING=1: the persistent material and object blocks; HELIX_RENDER_THREAD=1: devices of the
+                // threaded mode (a render thread owns the backend).
+                static const bool batching = std::getenv("HELIX_RENDER_BATCHING") != nullptr;
+                static const bool threaded = std::getenv("HELIX_RENDER_THREAD") != nullptr;
+                GraphicsSettings::SetUseScriptableRenderPipelineBatching(batching);
+                rhi::Device* device = rhi::Device::Create({.backend = b, .adapter = adapter, .vsync = false, .threaded = threaded});
                 if (!device)
                     continue;
                 if (adapter >= 0)
@@ -754,6 +767,465 @@ HX_TEST(Rendering, RenderTexturesAsTargetsAndTextures)
         HX_CHECK(!rt->IsCreated() && rt->width() == 32);
 
         into->SetTargetTexture(nullptr);
+        Graphics::ReleaseResources();
+        device.Destroy(color);
+        device.Destroy(depth);
+    });
+}
+
+namespace
+{
+    // The names of the renderers in a list of render data indices, sorted.
+    String NamesOf(Span<const u32> indices)
+    {
+        const RenderData& d = RendererManager::Get().Render();
+        Array<String> names;
+        for (u32 i : indices)
+            if (Renderer* r = EntityIdToObject<Renderer>(d.renderer[i]))
+                names.Push(String(r->gameObject()->Name()));
+        std::sort(names.begin(), names.end(), [](const String& a, const String& b) { return StringView(a) < StringView(b); });
+        String all;
+        for (const String& n : names)
+        {
+            if (!all.Empty())
+                all.Append(',');
+            all.Append(n);
+        }
+        return all;
+    }
+}
+
+HX_TEST(Culling, LODsLayerDistancesLightsAndShadowCasters)
+{
+    TestShaderFolder shaders;
+    Mesh* quad = Quad();
+    Material* m = Material::Create(Shader::Find("Tests/Unlit"));
+    Array<GameObject*> made;
+    // A perspective camera at the origin looking along +z.
+    Camera* camera = MakeCamera(Vector3(0, 0, 0), 5);
+    camera->SetOrthographic(false);
+    camera->SetFieldOfView(60);
+    made.Push(camera->gameObject());
+    // A LOD group 10 units away: a detailed and a coarse quad (the coarse one also on the second level).
+    GameObject* group = GameObject::Create("Group");
+    group->transform()->SetPosition(Vector3(0, 0, 10));
+    made.Push(group);
+    GameObject* detailed = Thing("Detailed", quad, m, Vector3(0, 0, 10));
+    GameObject* coarse = Thing("Coarse", quad, m, Vector3(0, 0, 10));
+    made.Push(detailed), made.Push(coarse);
+    LODGroup* lods = group->AddComponent<LODGroup>();
+    lods->SetSize(2);
+    Renderer* rd = detailed->GetComponent<Renderer>();
+    Renderer* rc = coarse->GetComponent<Renderer>();
+    // At 10 units with 60 degrees the group's 2 units are about 0.17 of the screen's height.
+    LOD levels[2] = {LOD(0.3f, Span<Renderer* const>(&rd, 1)), LOD(0.05f, Span<Renderer* const>(&rc, 1))};
+    lods->SetLODs(Span<const LOD>(levels, 2));
+    // Layer 9 culled beyond 5 units; a far quad on it and a near one.
+    GameObject* far = Thing("Far", quad, m, Vector3(1, 0, 20));
+    far->SetLayer(9);
+    GameObject* near = Thing("Near", quad, m, Vector3(-1, 0, 3));
+    near->SetLayer(9);
+    made.Push(far), made.Push(near);
+    // A shadow caster behind the camera (toward the light), one that casts no shadows, one only casting shadows.
+    GameObject* behind = Thing("Behind", quad, m, Vector3(0, 0, -5));
+    GameObject* noShadow = Thing("NoShadow", quad, m, Vector3(2, 0, 8));
+    noShadow->GetComponent<Renderer>()->SetShadowCastingMode(ShadowCastingMode::Off);
+    GameObject* shadowOnly = Thing("ShadowOnly", quad, m, Vector3(-2, 0, 8));
+    shadowOnly->GetComponent<Renderer>()->SetShadowCastingMode(ShadowCastingMode::ShadowsOnly);
+    made.Push(behind), made.Push(noShadow), made.Push(shadowOnly);
+    // A directional light shining along +z (casters behind the camera count) and two point lights.
+    GameObject* sun = GameObject::Create("Sun");
+    Light* sunLight = sun->AddComponent<Light>();
+    sunLight->SetType(LightType::Directional);
+    sunLight->SetShadows(LightShadows::Hard);
+    GameObject* lamp = GameObject::Create("Lamp");
+    lamp->transform()->SetPosition(Vector3(0, 0, 8));
+    Light* lampLight = lamp->AddComponent<Light>();
+    lampLight->SetRange(3);
+    lampLight->SetShadows(LightShadows::Soft);
+    GameObject* lamp2 = GameObject::Create("Lamp2");
+    lamp2->transform()->SetPosition(Vector3(0, 0, -30));
+    lamp2->AddComponent<Light>()->SetRange(1);
+    made.Push(sun), made.Push(lamp), made.Push(lamp2);
+    UpdateWorldMatrices();
+    Graphics::RenderFrame();
+
+    ScriptableRenderContext context;
+    auto cull = [&](auto&& edit) -> CullingResults {
+        ScriptableCullingParameters p;
+        HX_CHECK(camera->TryGetCullingParameters(p));
+        edit(p);
+        return context.Cull(p);
+    };
+    CullingResults all = cull([](ScriptableCullingParameters&) {});
+    HX_CHECK(NamesOf(Span<const u32>(all.data->renderers.Data(), all.data->renderers.Size())) == StringView("Coarse,Far,Near,NoShadow"));
+    // Closer: the detailed level.
+    group->transform()->SetPosition(Vector3(0, 0, 4));
+    UpdateWorldMatrices();
+    Graphics::RenderFrame();
+    CullingResults closer = cull([](ScriptableCullingParameters&) {});
+    String names = NamesOf(Span<const u32>(closer.data->renderers.Data(), closer.data->renderers.Size()));
+    HX_CHECK(StringView(names).Contains("Detailed") && !StringView(names).Contains("Coarse"));
+    // The maximum level skips the detailed one.
+    QualitySettings::SetMaximumLODLevel(1);
+    CullingResults coarseOnly = cull([](ScriptableCullingParameters&) {});
+    names = NamesOf(Span<const u32>(coarseOnly.data->renderers.Data(), coarseOnly.data->renderers.Size()));
+    HX_CHECK(StringView(names).Contains("Coarse") && !StringView(names).Contains("Detailed"));
+    QualitySettings::SetMaximumLODLevel(0);
+    // Layer distances, planar and spherical.
+    CullingResults layered = cull([](ScriptableCullingParameters& p) { p.layerCullDistances[9] = 5; });
+    names = NamesOf(Span<const u32>(layered.data->renderers.Data(), layered.data->renderers.Size()));
+    HX_CHECK(StringView(names).Contains("Near") && !StringView(names).Contains("Far"));
+    // Lights: the sun and the lamp in range of the view, at most two; then only one (the directional one first).
+    HX_CHECK(all.visibleLights().Size() == 2);
+    CullingResults oneLight = cull([](ScriptableCullingParameters& p) { p.maximumVisibleLights = 1; });
+    HX_CHECK(oneLight.visibleLights().Size() == 1 && oneLight.visibleLights()[0].lightType == LightType::Directional);
+    // Shadow casters: the sun's include the one behind the camera and the shadow only one; the lamp's are near it.
+    String sunCasters, lampCasters;
+    for (i32 i = 0; i < 2; i++)
+    {
+        String n = NamesOf(closer.ShadowCasters(i));
+        (closer.visibleLights()[u32(i)].lightType == LightType::Directional ? sunCasters : lampCasters) = n;
+    }
+    std::printf("    sun: %s; lamp: %s\n", sunCasters.CStr(), lampCasters.CStr());
+    HX_CHECK(StringView(sunCasters).Contains("Behind") && StringView(sunCasters).Contains("ShadowOnly") && !StringView(sunCasters).Contains("NoShadow"));
+    HX_CHECK(StringView(lampCasters).Contains("ShadowOnly") && !StringView(lampCasters).Contains("Behind") && !StringView(lampCasters).Contains("Far"));
+    // Without the option there are none.
+    CullingResults noCasters = cull([](ScriptableCullingParameters& p) { p.cullingOptions = CullingOptions::None; });
+    HX_CHECK(noCasters.ShadowCasters(0).Empty());
+
+    for (GameObject* g : made)
+        DestroyImmediate(g);
+}
+
+HX_TEST(Culling, CullingGroupsReportStateChanges)
+{
+    constexpr u32 size = 16;
+    ForEachDevice([&](rhi::Device& device) {
+        TestShaderFolder shaders;
+        rhi::TextureHandle color =
+            device.CreateTexture({.format = rhi::Format::RGBA8Unorm, .width = size, .height = size, .usage = rhi::TextureRenderTarget | rhi::TextureSampled});
+        rhi::TextureHandle depth = device.CreateTexture({.format = rhi::Format::D32Float, .width = size, .height = size, .usage = rhi::TextureDepthStencil});
+        Graphics::SetDevice(&device);
+        Graphics::SetTarget({color, depth, size, size, rhi::Format::RGBA8Unorm, rhi::Format::D32Float});
+        // A camera at the origin looking along +z (orthographic, 5 units up and down); spheres in and out of view.
+        Camera* camera = MakeCamera(Vector3(0, 0, 0), 5);
+        BoundingSphere spheres[4] = {BoundingSphere(Vector3(0, 0, 3), 1), BoundingSphere(Vector3(0, 0, 30), 1), BoundingSphere(Vector3(50, 0, 3), 1),
+                                     BoundingSphere(Vector3(0, 0, -20), 1)};
+        struct Seen
+        {
+            Array<CullingGroupEvent> events;
+        } seen;
+        CullingGroup group;
+        group.SetStateChanged([](void* user, const CullingGroupEvent& e) { static_cast<Seen*>(user)->events.Push(e); }, &seen);
+        group.SetTargetCamera(camera);
+        group.SetBoundingSpheres(spheres, 4);
+        group.SetBoundingSphereCount(3);
+        const f32 bands[] = {10, 50};
+        group.SetBoundingDistances(Span<const f32>(bands, 2));
+        group.SetDistanceReferencePoint(Vector3(0, 0, 0));
+        UpdateWorldMatrices();
+        Graphics::RenderFrame();
+        // Visible: the near and the far one in front; bands 0, 1 and 2 (the side one, 49 away, in band 1).
+        HX_CHECK(group.IsVisible(0) && group.IsVisible(1) && !group.IsVisible(2));
+        HX_CHECK(group.GetDistance(0) == 0 && group.GetDistance(1) == 1 && group.GetDistance(2) == 1);
+        // Changes only: the side one stayed invisible but moved to band 1, so three events.
+        HX_CHECK(seen.events.Size() == 3 && seen.events[0].hasBecomeVisible() && seen.events[1].currentDistance() == 1 &&
+                 !seen.events[2].isVisible() && seen.events[2].currentDistance() == 1);
+        i32 indices[4];
+        HX_CHECK(group.QueryIndices(true, Span<i32>(indices, 4), 0) == 2 && indices[0] == 0 && indices[1] == 1);
+        HX_CHECK(group.QueryIndices(1, Span<i32>(indices, 4), 0) == 2 && indices[0] == 1 && indices[1] == 2);
+        // Nothing changed: no events; a sphere moved out of view: one.
+        seen.events.Clear();
+        Graphics::RenderFrame();
+        HX_CHECK(seen.events.Empty());
+        spheres[0].position = Vector3(0, 0, -3);
+        Graphics::RenderFrame();
+        HX_CHECK(seen.events.Size() == 1 && seen.events[0].index == 0 && seen.events[0].hasBecomeInvisible());
+        // Erasing swaps the last state in; a disabled group hears nothing.
+        group.EraseSwapBack(0);
+        HX_CHECK(!group.IsVisible(0) && group.GetDistance(0) == 1);
+        group.SetEnabled(false);
+        seen.events.Clear();
+        spheres[1].position = Vector3(0, 0, 3);
+        Graphics::RenderFrame();
+        HX_CHECK(seen.events.Empty());
+        DestroyImmediate(camera->gameObject());
+        Graphics::ReleaseResources();
+        device.Destroy(color);
+        device.Destroy(depth);
+    });
+}
+
+HX_TEST(Culling, DrawListsSortStablyByTheirKeys)
+{
+    // Small lists on this thread, large ones on the jobs: the same order as a stable comparison sort.
+    if (!jobs::IsInitialized())
+        jobs::Initialize();
+    for (u32 n : {1000u, 100000u})
+    {
+        Array<render::SortEntry> entries, scratch;
+        u64 seed = 12345;
+        auto next = [&] {
+            seed = seed * 6364136223846793005ull + 1442695040888963407ull;
+            return seed >> 11;
+        };
+        for (u32 i = 0; i < n; i++)
+            entries.Push({next() % 7 << 48 | next() % 3, (next() % 50 << 32 | (next() % 2) << 24) | i});
+        Array<render::SortEntry> expected = entries;
+        std::stable_sort(expected.begin(), expected.end(),
+                         [](const render::SortEntry& a, const render::SortEntry& b) { return a.hi != b.hi ? a.hi < b.hi : (a.lo >> 24) < (b.lo >> 24); });
+        render::RadixSort(entries, scratch);
+        bool same = true;
+        for (u32 i = 0; i < n && same; i++)
+            same = entries[i].item() == expected[i].item();
+        HX_CHECK(same);
+    }
+}
+
+HX_TEST(Rendering, PersistentBlocksDrawWhatTransientOnesDraw)
+{
+    constexpr u32 size = 32;
+    ForEachDevice([&](rhi::Device& device) {
+        TestShaderFolder shaders;
+        rhi::TextureHandle color =
+            device.CreateTexture({.format = rhi::Format::RGBA8Unorm, .width = size, .height = size, .usage = rhi::TextureRenderTarget | rhi::TextureSampled});
+        rhi::TextureHandle depth = device.CreateTexture({.format = rhi::Format::D32Float, .width = size, .height = size, .usage = rhi::TextureDepthStencil});
+        Graphics::SetDevice(&device);
+        Graphics::SetTarget({color, depth, size, size, rhi::Format::RGBA8Unorm, rhi::Format::D32Float});
+        Mesh* quad = Quad();
+        Material* red = Material::Create(Shader::Find("Tests/Unlit"));
+        red->SetColor("color", Color(1, 0, 0, 1));
+        Material* blue = Material::Create(Shader::Find("Tests/Unlit"));
+        blue->SetColor("color", Color(0, 0, 1, 1));
+        GameObject* a = Thing("A", quad, red, Vector3(-1, 0, 0), 1.5f);
+        GameObject* b = Thing("B", quad, blue, Vector3(1, 0, 0), 1.5f);
+        Camera* camera = MakeCamera(Vector3(0, 0, -10), 2);
+        auto frame = [&](bool batching) {
+            GraphicsSettings::SetUseScriptableRenderPipelineBatching(batching);
+            UpdateWorldMatrices();
+            Graphics::RenderFrame();
+            Array<u32> pixels;
+            pixels.Resize(size * size);
+            HX_CHECK(device.ReadTexture(color, 0, pixels.Data(), pixels.Size() * 4));
+            return pixels;
+        };
+        auto same = [](const Array<u32>& x, const Array<u32>& y) {
+            for (usize i = 0; i < x.Size(); i++)
+                if (x[i] != y[i])
+                    return false;
+            return true;
+        };
+        bool can = device.Caps().uniformBufferOffsets && device.Caps().uniformBufferPartialUpdates;
+        HX_CHECK(SystemInfo::renderingThreadingMode() == (device.Threaded() ? RenderingThreadingMode::MultiThreaded : RenderingThreadingMode::Direct));
+        Array<u32> transient = frame(false);
+        Array<u32> persistent = frame(true);
+        HX_CHECK(same(transient, persistent));
+        HX_CHECK(Graphics::LastStats().persistentDraws == (can ? 2u : 0u));
+        // A material's value and an object's place change: written into fresh parts, the same image as without.
+        red->SetColor("color", Color(0, 1, 0, 1));
+        b->transform()->SetPosition(Vector3(1, 1, 0));
+        Array<u32> on = frame(true);
+        Array<u32> again = frame(true);
+        Array<u32> off = frame(false);
+        HX_CHECK(same(on, off) && same(again, off));
+        HX_CHECK(NearColor(Pixel(off, size, 8, 16), Rgba(0, 255, 0)));
+        GraphicsSettings::SetUseScriptableRenderPipelineBatching(false);
+        DestroyImmediate(a);
+        DestroyImmediate(b);
+        DestroyImmediate(camera->gameObject());
+        Graphics::ReleaseResources();
+        device.Destroy(color);
+        device.Destroy(depth);
+    });
+}
+
+HX_TEST(Rendering, InstancedDrawsDrawWhatSeparateOnesDraw)
+{
+    constexpr u32 size = 32;
+    ForEachDevice([&](rhi::Device& device) {
+        TestShaderFolder shaders;
+        rhi::TextureHandle color =
+            device.CreateTexture({.format = rhi::Format::RGBA8Unorm, .width = size, .height = size, .usage = rhi::TextureRenderTarget | rhi::TextureSampled});
+        rhi::TextureHandle depth = device.CreateTexture({.format = rhi::Format::D32Float, .width = size, .height = size, .usage = rhi::TextureDepthStencil});
+        Graphics::SetDevice(&device);
+        Graphics::SetTarget({color, depth, size, size, rhi::Format::RGBA8Unorm, rhi::Format::D32Float});
+        Mesh* quad = Quad();
+        Material* m = Material::Create(Shader::Find("Tests/InstancedUnlit"));
+        m->SetColor("color", Color(1, 0.5f, 0, 1));
+        Material* plain = Material::Create(Shader::Find("Tests/Unlit"));
+        plain->SetColor("color", Color(0, 0, 1, 1));
+        Array<GameObject*> made;
+        // Eight small quads in two rows with the instancing material, one with a material that does not take part.
+        for (u32 i = 0; i < 8; i++)
+            made.Push(Thing("Q", quad, m, Vector3(-3.5f + f32(i % 4) * 2, i < 4 ? 1.5f : -1.5f, 0), 1));
+        made.Push(Thing("Plain", quad, plain, Vector3(0, 0, 0), 0.5f));
+        Camera* camera = MakeCamera(Vector3(0, 0, -10), 4);
+        made.Push(camera->gameObject());
+        auto frame = [&](bool instancing) {
+            m->SetEnableInstancing(instancing);
+            UpdateWorldMatrices();
+            Graphics::RenderFrame();
+            Array<u32> pixels;
+            pixels.Resize(size * size);
+            HX_CHECK(device.ReadTexture(color, 0, pixels.Data(), pixels.Size() * 4));
+            return pixels;
+        };
+        Array<u32> separate = frame(false);
+        HX_CHECK(Graphics::LastStats().drawCalls == 9 && Graphics::LastStats().instancedBatches == 0);
+        Array<u32> instanced = frame(true);
+        const RenderStats& stats = Graphics::LastStats();
+        std::printf("    draws %u, instanced %u of %u instances\n", stats.drawCalls, stats.instancedBatches, stats.instances);
+        HX_CHECK(stats.drawCalls == 2 && stats.instancedBatches == 1 && stats.instances == 8);
+        bool same = true;
+        for (u32 i = 0; i < size * size; i++)
+            same = same && separate[i] == instanced[i];
+        HX_CHECK(same);
+        HX_CHECK(NearColor(Pixel(instanced, size, 2, 10), Rgba(255, 128, 0)) && NearColor(Pixel(instanced, size, 16, 16), Rgba(0, 0, 255)));
+        // The same eight from Graphics.DrawMeshInstanced (renderers of the material hidden), and from a command buffer.
+        Array<Matrix4x4> matrices;
+        for (u32 i = 0; i < 8; i++)
+        {
+            matrices.Push(made[i]->transform()->localToWorldMatrix());
+            made[i]->SetActive(false);
+        }
+        Graphics::DrawMeshInstanced(quad, 0, m, matrices, nullptr, 0, nullptr);
+        Array<u32> queued = frame(true);
+        HX_CHECK(Graphics::LastStats().instancedBatches == 1 && Graphics::LastStats().instances == 8);
+        same = true;
+        for (u32 i = 0; i < size * size; i++)
+            same = same && separate[i] == queued[i];
+        HX_CHECK(same);
+        UpdateWorldMatrices();
+        Graphics::RenderFrame();
+        CommandBuffer buffer;
+        buffer.ClearRenderTarget(true, true, Color(0, 0, 0, 1));
+        buffer.SetViewProjectionMatrices(camera->worldToCameraMatrix(), camera->projectionMatrix());
+        buffer.DrawMeshInstanced(quad, 0, m, 0, matrices);
+        Graphics::ExecuteCommandBuffer(buffer);
+        Array<u32> commanded;
+        commanded.Resize(size * size);
+        HX_REQUIRE(device.ReadTexture(color, 0, commanded.Data(), commanded.Size() * 4));
+        // The eight quads where the renderers drew them; nothing where the plain one was.
+        same = true;
+        for (u32 i = 0; i < size * size; i++)
+            if (!NearColor(separate[i], Rgba(0, 0, 255)))
+                same = same && NearColor(separate[i], commanded[i]);
+        HX_CHECK(same && NearColor(Pixel(commanded, size, 16, 16), Rgba(0, 0, 0)));
+        for (GameObject* g : made)
+            DestroyImmediate(g);
+        Graphics::ReleaseResources();
+        device.Destroy(color);
+        device.Destroy(depth);
+    });
+}
+
+HX_TEST(Rendering, StateBlocksSetStencilOnTheDevices)
+{
+    constexpr u32 size = 32;
+    ForEachDevice([&](rhi::Device& device) {
+        TestShaderFolder shaders;
+        rhi::TextureHandle color =
+            device.CreateTexture({.format = rhi::Format::RGBA8Unorm, .width = size, .height = size, .usage = rhi::TextureRenderTarget | rhi::TextureSampled});
+        rhi::TextureHandle depth = device.CreateTexture({.format = rhi::Format::D24UnormS8Uint, .width = size, .height = size, .usage = rhi::TextureDepthStencil});
+        Graphics::SetDevice(&device);
+        Graphics::SetTarget({color, depth, size, size, rhi::Format::RGBA8Unorm, rhi::Format::D24UnormS8Uint});
+        Mesh* quad = Quad();
+        Material* red = Material::Create(Shader::Find("Tests/Unlit"));
+        red->SetColor("color", Color(1, 0, 0, 1));
+        Material* green = Material::Create(Shader::Find("Tests/Unlit"));
+        green->SetColor("color", Color(0, 1, 0, 1));
+        // A mask quad on the left half (layer 8), a full screen quad (layer 9) in front of it.
+        GameObject* mask = Thing("Mask", quad, red, Vector3(-2, 0, 1), 4);
+        mask->SetLayer(8);
+        GameObject* full = Thing("Full", quad, green, Vector3(0, 0, 0), 8);
+        full->SetLayer(9);
+        Camera* camera = MakeCamera(Vector3(0, 0, -10), 4);
+        UpdateWorldMatrices();
+        Graphics::RenderFrame();
+        {
+            ScriptableRenderContext context;
+            context.SetupCameraProperties(camera);
+            CommandBuffer clear;
+            clear.ClearRenderTarget(true, true, Color(0, 0, 0, 1));
+            context.ExecuteCommandBuffer(clear);
+            ScriptableCullingParameters p;
+            HX_REQUIRE(camera->TryGetCullingParameters(p));
+            CullingResults culling = context.Cull(p);
+            SortingSettings sorting(camera);
+            DrawingSettings drawing(ShaderTagId("SRPDefaultUnlit"), sorting);
+            // The mask writes 1 into the stencil and no color; the full quad draws where the stencil is 1.
+            RenderStateBlock write(RenderStateMask(i32(RenderStateMask::Stencil) | i32(RenderStateMask::Blend)));
+            write.blendState.targets[0].writeMask = ColorWriteMask(0);
+            write.stencilState.enabled = true;
+            write.stencilState.passOperationFront = write.stencilState.passOperationBack = StencilOp::Replace;
+            write.stencilReference = 1;
+            FilteringSettings maskOnly(RenderQueueRange::all(), 1 << 8);
+            context.DrawRenderers(culling, drawing, maskOnly, write);
+            RenderStateBlock test(RenderStateMask::Stencil);
+            test.stencilState.enabled = true;
+            test.stencilState.compareFunctionFront = test.stencilState.compareFunctionBack = CompareFunction::Equal;
+            test.stencilState.writeMask = 0;
+            test.stencilReference = 1;
+            FilteringSettings fullOnly(RenderQueueRange::all(), 1 << 9);
+            context.DrawRenderers(culling, drawing, fullOnly, test);
+            context.Submit();
+        }
+        Array<u32> pixels;
+        pixels.Resize(size * size);
+        HX_REQUIRE(device.ReadTexture(color, 0, pixels.Data(), pixels.Size() * 4));
+        std::printf("    left %08x right %08x\n", Pixel(pixels, size, 8, 16), Pixel(pixels, size, 24, 16));
+        HX_CHECK(NearColor(Pixel(pixels, size, 8, 16), Rgba(0, 255, 0)) && NearColor(Pixel(pixels, size, 24, 16), Rgba(0, 0, 0)));
+        DestroyImmediate(mask);
+        DestroyImmediate(full);
+        DestroyImmediate(camera->gameObject());
+        Graphics::ReleaseResources();
+        device.Destroy(color);
+        device.Destroy(depth);
+    });
+}
+
+HX_TEST(Rendering, InvertedCullingAndGlobalArraysFromCommandBuffers)
+{
+    constexpr u32 size = 16;
+    ForEachDevice([&](rhi::Device& device) {
+        TestShaderFolder shaders;
+        rhi::TextureHandle color =
+            device.CreateTexture({.format = rhi::Format::RGBA8Unorm, .width = size, .height = size, .usage = rhi::TextureRenderTarget | rhi::TextureSampled});
+        rhi::TextureHandle depth = device.CreateTexture({.format = rhi::Format::D32Float, .width = size, .height = size, .usage = rhi::TextureDepthStencil});
+        Graphics::SetDevice(&device);
+        Graphics::SetTarget({color, depth, size, size, rhi::Format::RGBA8Unorm, rhi::Format::D32Float});
+        Mesh* quad = Quad();
+        Material* red = Material::Create(Shader::Find("Tests/Unlit"));
+        red->SetColor("color", Color(1, 0, 0, 1));
+        Camera* camera = MakeCamera(Vector3(0, 0, -10), 2);
+        auto center = [&](bool invert) {
+            CommandBuffer b;
+            b.ClearRenderTarget(true, true, Color(0, 0, 0, 1));
+            b.SetViewProjectionMatrices(camera->worldToCameraMatrix(), camera->projectionMatrix());
+            b.SetInvertCulling(invert);
+            b.DrawMesh(quad, Matrix4x4::TRS(Vector3(), Quaternion::identity, Vector3(2, 2, 2)), red);
+            Graphics::ExecuteCommandBuffer(b);
+            Array<u32> pixels;
+            pixels.Resize(size * size);
+            HX_CHECK(device.ReadTexture(color, 0, pixels.Data(), pixels.Size() * 4));
+            return Pixel(pixels, size, 8, 8);
+        };
+        // The quad faces the camera: drawn; with culling inverted its front faces count as back faces.
+        HX_CHECK(NearColor(center(false), Rgba(255, 0, 0)) && NearColor(center(true), Rgba(0, 0, 0)));
+        // Global arrays set by a command buffer.
+        const f32 floats[] = {1, 2, 3};
+        const Vector4 vectors[] = {Vector4(1, 2, 3, 4), Vector4(5, 6, 7, 8)};
+        CommandBuffer b;
+        b.SetGlobalFloatArray(PropertyToID("_TestFloats"), Span<const f32>(floats, 3));
+        b.SetGlobalVectorArray(PropertyToID("_TestVectors"), Span<const Vector4>(vectors, 2));
+        Graphics::ExecuteCommandBuffer(b);
+        Array<f32> f;
+        Array<Vector4> v;
+        Shader::Globals().GetFloatArray(PropertyToID("_TestFloats"), f);
+        Shader::Globals().GetVectorArray(PropertyToID("_TestVectors"), v);
+        HX_CHECK(f.Size() == 3 && f[2] == 3 && v.Size() == 2 && v[1].w == 8);
+        DestroyImmediate(camera->gameObject());
         Graphics::ReleaseResources();
         device.Destroy(color);
         device.Destroy(depth);

@@ -36,6 +36,12 @@ namespace helix::engine
             // Culling data of ended contexts, reused (its arrays keep their memory).
             Array<CullingData*> spareCulling = Array<CullingData*>();
             u64 next = 0;
+
+            ~Live()
+            {
+                for (CullingData* c : spareCulling)
+                    delete c;
+            }
         };
 
         Live& L()

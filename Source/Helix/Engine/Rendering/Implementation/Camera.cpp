@@ -103,7 +103,8 @@ namespace helix::engine
 
     Rect Camera::pixelRect() const
     {
-        Vector2 size = DisplaySize();
+        RenderTexture* target = targetTexture();
+        Vector2 size = target ? Vector2(f32(target->width()), f32(target->height())) : DisplaySize();
         // The viewport rectangle clipped to the target.
         f32 x0 = rect_.x < 0 ? 0 : rect_.x, y0 = rect_.y < 0 ? 0 : rect_.y;
         f32 x1 = rect_.x + rect_.width > 1 ? 1 : rect_.x + rect_.width, y1 = rect_.y + rect_.height > 1 ? 1 : rect_.y + rect_.height;
@@ -112,7 +113,8 @@ namespace helix::engine
 
     void Camera::SetPixelRect(const Rect& value)
     {
-        Vector2 size = DisplaySize();
+        RenderTexture* target = targetTexture();
+        Vector2 size = target ? Vector2(f32(target->width()), f32(target->height())) : DisplaySize();
         rect_ = Rect{value.x / size.x, value.y / size.y, value.width / size.x, value.height / size.y};
     }
 
@@ -244,6 +246,7 @@ namespace helix::engine
         allowHDR_ = o.allowHDR_, allowMSAA_ = o.allowMSAA_, depthTextureMode_ = o.depthTextureMode_;
         customProjection_ = o.customProjection_, customView_ = o.customView_, projection_ = o.projection_, view_ = o.view_;
         customCulling_ = o.customCulling_, culling_ = o.culling_, targetDisplay_ = o.targetDisplay_, scene_ = o.scene_;
+        targetTexture_ = o.targetTexture_, forceIntoRenderTexture_ = o.forceIntoRenderTexture_;
         std::memcpy(layerCullDistances_, o.layerCullDistances_, sizeof(layerCullDistances_));
     }
 

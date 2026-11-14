@@ -10,6 +10,23 @@
 // Without an asset the built-in fallback pipeline draws (the forward passes of every material, the camera messages).
 namespace helix::engine
 {
+    // The reference's RenderPipeline.StandardRequest: render a camera into a render texture (its mip, face and slice).
+    struct StandardRequest
+    {
+        RenderTexture* destination = nullptr;
+        i32 mipLevel = 0;
+        CubemapFace face = CubemapFace::Unknown;
+        i32 slice = 0;
+    };
+
+    // A render request as the engine hands it to a pipeline: a standard request, or a C# request object (its GC handle).
+    struct RenderRequest
+    {
+        bool standard = true;
+        StandardRequest request;
+        u64 managed = 0;
+    };
+
     class RenderPipeline
     {
     public:
@@ -24,8 +41,32 @@ namespace helix::engine
 
         virtual void Render(ScriptableRenderContext& context, Span<Camera* const> cameras) = 0;
 
+        // Render requests (a camera rendered somewhere else than its target): a pipeline says which it takes and
+        // processes them. Standard requests reach the two below; C# requests reach C# pipelines.
+        virtual bool IsRequestSupported(Camera* camera, const RenderRequest& request)
+        {
+            return request.standard && IsRenderRequestSupported(camera, request.request);
+        }
+        virtual void ProcessRequest(ScriptableRenderContext& context, Camera* camera, const RenderRequest& request)
+        {
+            if (request.standard)
+                ProcessRenderRequest(context, camera, request.request);
+        }
+        // Whether the active pipeline takes the request; the request rendered by it now (an error when it does not take it).
+        static bool SupportsRenderRequest(Camera* camera, const StandardRequest& request);
+        static void SubmitRenderRequest(Camera* camera, const StandardRequest& request);
+
     protected:
         virtual void Dispose(bool disposing) { (void)disposing; }
+        virtual bool IsRenderRequestSupported(Camera* camera, const StandardRequest& request)
+        {
+            (void)camera, (void)request;
+            return false;
+        }
+        virtual void ProcessRenderRequest(ScriptableRenderContext& context, Camera* camera, const StandardRequest& request)
+        {
+            (void)context, (void)camera, (void)request;
+        }
 
     public:
         // The manager's events (pipelines call them around their work).
@@ -86,6 +127,8 @@ namespace helix::engine
 
     namespace render
     {
+        // A request through the active pipeline (false when it does not take it; `process` false only asks).
+        bool RenderRequestThroughPipeline(Camera* camera, const RenderRequest& request, bool process);
         // The pipeline renders the cameras (by depth) into the engine's target; the first one clears it when `clearFirst`.
         void RenderWithPipeline(Span<Camera* const> cameras, bool clearFirst);
         // Lets the pipeline go (the engine's end, a device change).

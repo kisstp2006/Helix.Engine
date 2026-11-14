@@ -37,12 +37,13 @@ helix_bindgen(helix_engine MODULE HelixEngine NAMESPACE HelixEngine KIND Engine 
                       "${engine_source}/Helix/Engine/Screen/Screen.h" "${engine_source}/Helix/Engine/Scene/Scene.h"
                       "${engine_source}/Helix/Engine/Scene/SceneManager.h" "${engine_source}/Helix/Engine/Asset/Resources.h"
                       "${engine_source}/Helix/Engine/Scene/SceneNative.h" "${engine_source}/Helix/Engine/Texture/Texture.h"
+                      "${engine_source}/Helix/Engine/Texture/RenderTexture.h"
                       "${engine_source}/Helix/Engine/Shader/ShaderKeywords.h" "${engine_source}/Helix/Engine/Shader/Shader.h"
                       "${engine_source}/Helix/Engine/Material/Material.h" "${engine_source}/Helix/Engine/Mesh/Mesh.h" "${engine_source}/Helix/Engine/Mesh/MeshData.h"
                       "${engine_source}/Helix/Engine/Rendering/Renderer.h" "${engine_source}/Helix/Engine/Rendering/Camera.h"
                       "${engine_source}/Helix/Engine/Rendering/Light.h" "${engine_source}/Helix/Engine/Rendering/Graphics.h"
                       "${engine_source}/Helix/Engine/Rendering/ScreenCapture.h" "${engine_source}/Helix/Engine/Script/ScriptableObject.h"
-                      "${engine_source}/Helix/Engine/Jobs/ManagedJobs.h" "${engine_source}/Helix/Engine/Rendering/Pipeline/RenderStates.h"
+                      "${engine_source}/Helix/Engine/Jobs/ManagedJobs.h" "${engine_source}/Helix/Engine/Rendering/Pipeline/RenderStates.h" "${engine_source}/Helix/Engine/Rendering/Pipeline/RenderTargets.h"
                       "${engine_source}/Helix/Engine/Rendering/Pipeline/RenderPipelineNative.h"
               CS_OUTPUT engine_cs)
 set(HELIX_ENGINE_BINDINGS_CS "${engine_cs}" CACHE INTERNAL "")

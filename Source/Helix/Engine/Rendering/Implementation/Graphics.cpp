@@ -3,6 +3,7 @@
 #include <Helix/Engine/Rendering/Implementation/RenderCore.h>
 #include <Helix/Engine/Rendering/Implementation/RendererManager.h>
 #include <Helix/Engine/Rendering/Pipeline/RenderPipeline.h>
+#include <Helix/Engine/Rendering/Pipeline/CommandBuffer.h>
 #include <Helix/Engine/Application/Application.h>
 #include <Helix/Engine/Rendering/Light.h>
 #include <Helix/Engine/Rendering/ScreenCapture.h>
@@ -41,6 +42,7 @@ namespace helix::engine
             Color ambient{0.2f, 0.2f, 0.2f, 1};
             HashMap<EntityId, GpuMesh> meshes;
             HashMap<EntityId, GpuTexture> textures;
+            HashMap<EntityId, render::GpuRenderTarget> renderTargets;
             HashMap<u32, GpuShader> shaders;
             HashMap<u64, rhi::PipelineHandle> pipelines;
             RenderStats stats;
@@ -53,6 +55,8 @@ namespace helix::engine
             };
             Array<Capture> captures = Array<Capture>();
             Array<render::Queued> queued = Array<render::Queued>();
+            // CaptureScreenshotIntoRenderTexture's textures for the end of the frame.
+            Array<EntityId> textureCaptures = Array<EntityId>();
             // RenderFrame's first camera clears the whole target.
             bool clearFirst = false;
         };
@@ -131,7 +135,7 @@ namespace helix::engine
         Span<const Queued> QueuedMeshes() { return Span<const Queued>(R().queued.Data(), R().queued.Size()); }
         bool ClearFirstCamera() { return R().clearFirst; }
 
-        Matrix4x4 GpuProjection(const Matrix4x4& projection)
+        Matrix4x4 GpuProjection(const Matrix4x4& projection, bool intoTexture)
         {
             // Clip depth -1..1 to 0..1: z' = (z + w) / 2.
             Matrix4x4 p = projection;
@@ -139,7 +143,72 @@ namespace helix::engine
             p.m21 = 0.5f * (p.m21 + p.m31);
             p.m22 = 0.5f * (p.m22 + p.m32);
             p.m23 = 0.5f * (p.m23 + p.m33);
+            if (intoTexture)
+                p.m10 = -p.m10, p.m11 = -p.m11, p.m12 = -p.m12, p.m13 = -p.m13;
             return p;
+        }
+
+        TargetFormats ScreenFormats()
+        {
+            TargetFormats f;
+            f.colors[0] = R().target.colorFormat;
+            f.depth = R().target.depthFormat;
+            return f;
+        }
+
+        // ------------------------------------------------------------------------------------------------ render textures
+
+        // Graphics formats as the devices have them.
+        struct DeviceFormatRow
+        {
+            GraphicsFormat format;
+            rhi::Format device;
+        };
+        constexpr DeviceFormatRow kDeviceFormats[] = {
+            {GraphicsFormat::R8_UNorm, rhi::Format::R8Unorm},
+            {GraphicsFormat::R8G8_UNorm, rhi::Format::RG8Unorm},
+            {GraphicsFormat::R8G8B8A8_UNorm, rhi::Format::RGBA8Unorm},
+            {GraphicsFormat::R8G8B8A8_SRGB, rhi::Format::RGBA8Srgb},
+            {GraphicsFormat::B8G8R8A8_UNorm, rhi::Format::BGRA8Unorm},
+            {GraphicsFormat::B8G8R8A8_SRGB, rhi::Format::BGRA8Srgb},
+            {GraphicsFormat::R16_SFloat, rhi::Format::R16Float},
+            {GraphicsFormat::R16G16_SFloat, rhi::Format::RG16Float},
+            {GraphicsFormat::R16G16B16A16_SFloat, rhi::Format::RGBA16Float},
+            {GraphicsFormat::R32_SFloat, rhi::Format::R32Float},
+            {GraphicsFormat::R32G32_SFloat, rhi::Format::RG32Float},
+            {GraphicsFormat::R32G32B32A32_SFloat, rhi::Format::RGBA32Float},
+            {GraphicsFormat::R32_UInt, rhi::Format::R32Uint},
+            {GraphicsFormat::R32G32_UInt, rhi::Format::RG32Uint},
+            {GraphicsFormat::R32G32B32A32_UInt, rhi::Format::RGBA32Uint},
+            {GraphicsFormat::R32_SInt, rhi::Format::R32Sint},
+            {GraphicsFormat::R32G32_SInt, rhi::Format::RG32Sint},
+            {GraphicsFormat::R32G32B32A32_SInt, rhi::Format::RGBA32Sint},
+            {GraphicsFormat::A2B10G10R10_UNormPack32, rhi::Format::RGB10A2Unorm},
+            {GraphicsFormat::B10G11R11_UFloatPack32, rhi::Format::RG11B10Float},
+            {GraphicsFormat::D16_UNorm, rhi::Format::D16Unorm},
+            {GraphicsFormat::D24_UNorm, rhi::Format::D24UnormS8Uint},
+            {GraphicsFormat::D24_UNorm_S8_UInt, rhi::Format::D24UnormS8Uint},
+            {GraphicsFormat::D32_SFloat, rhi::Format::D32Float},
+            // Stencil comes with the devices' stencil state.
+            {GraphicsFormat::D32_SFloat_S8_UInt, rhi::Format::D32Float},
+        };
+
+        rhi::Format DeviceFormat(GraphicsFormat format)
+        {
+            for (const DeviceFormatRow& r : kDeviceFormats)
+                if (r.format == format)
+                    return r.device;
+            return rhi::Format::Unknown;
+        }
+
+        void DestroyRenderTarget(GpuRenderTarget& g)
+        {
+            rhi::Device* d = R().device;
+            d->Destroy(g.color);
+            d->Destroy(g.msaa);
+            d->Destroy(g.depth);
+            d->Destroy(g.sampled.sampler);
+            g = GpuRenderTarget();
         }
 
         ShaderTagId PassTag(const ShaderDescription& description, u32 descriptionPass)
@@ -339,7 +408,114 @@ namespace helix::engine
             }
         }
 
+        const GpuRenderTarget* RenderTargetOf(RenderTexture& texture)
+        {
+            RenderState& s = R();
+            if (!s.device)
+                return nullptr;
+            // A render texture is created by its first use.
+            if (!texture.IsCreated() && !texture.Create())
+                return nullptr;
+            GpuRenderTarget* g = s.renderTargets.Find(texture.GetEntityId());
+            u32 version = texture.GpuVersion() ^ (texture.Version() << 12);
+            if (g && g->version == version)
+                return g;
+            if (!g)
+                g = &s.renderTargets.Set(texture.GetEntityId(), GpuRenderTarget());
+            DestroyRenderTarget(*g);
+            g->version = version;
+            const RenderTextureDescriptor& d = texture.descriptor();
+            g->width = u32(d.width), g->height = u32(d.height);
+            g->samples = u32(d.msaaSamples > 1 ? d.msaaSamples : 1);
+            if (g->samples > s.device->Caps().maxSamples)
+                g->samples = s.device->Caps().maxSamples;
+            g->mips = u32(texture.mipmapCount() > 0 ? texture.mipmapCount() : 1);
+            rhi::TextureType type = d.dimension == TextureDimension::Cube         ? rhi::TextureType::TextureCube
+                                    : d.dimension == TextureDimension::Tex2DArray ? rhi::TextureType::Texture2DArray
+                                    : d.dimension == TextureDimension::Tex3D      ? rhi::TextureType::Texture3D
+                                                                                  : rhi::TextureType::Texture2D;
+            g->layers = type == rhi::TextureType::TextureCube ? 6u : type == rhi::TextureType::Texture2D ? 1u : u32(d.volumeDepth > 0 ? d.volumeDepth : 1);
+            if (type != rhi::TextureType::Texture2D)
+                g->samples = 1;
+            g->colorFormat = DeviceFormat(d.graphicsFormat);
+            g->depthFormat = DeviceFormat(d.depthStencilFormat);
+            if (d.graphicsFormat != GraphicsFormat::None && g->colorFormat == rhi::Format::Unknown)
+            {
+                HX_LOG_ERROR(RenderLog, "RenderTexture '{}': the format {} is not supported on this device.", texture.Name(), i32(d.graphicsFormat));
+                return g;
+            }
+            if (g->colorFormat != rhi::Format::Unknown)
+            {
+                g->color = s.device->CreateTexture({.type = type, .format = g->colorFormat, .width = g->width, .height = g->height,
+                                                    .depthOrLayers = type == rhi::TextureType::TextureCube ? 1u : g->layers, .mipLevels = g->mips,
+                                                    .usage = rhi::TextureRenderTarget | rhi::TextureSampled, .debugName = texture.Name()});
+                if (g->samples > 1)
+                    g->msaa = s.device->CreateTexture({.format = g->colorFormat, .width = g->width, .height = g->height, .sampleCount = g->samples,
+                                                       .usage = rhi::TextureRenderTarget, .debugName = texture.Name()});
+            }
+            if (g->depthFormat != rhi::Format::Unknown)
+                g->depth = s.device->CreateTexture({.type = type == rhi::TextureType::Texture3D ? rhi::TextureType::Texture2D : type,
+                                                    .format = g->depthFormat, .width = g->width, .height = g->height,
+                                                    .depthOrLayers = type == rhi::TextureType::Texture2DArray ? g->layers : 1u, .sampleCount = g->samples,
+                                                    .usage = rhi::TextureDepthStencil, .debugName = texture.Name()});
+            const TextureSettings& st = texture.settings();
+            rhi::SamplerDesc sd;
+            sd.minFilter = sd.magFilter = st.filterMode == FilterMode::Point ? rhi::Filter::Nearest : rhi::Filter::Linear;
+            sd.mipFilter = st.filterMode == FilterMode::Trilinear ? rhi::Filter::Linear : rhi::Filter::Nearest;
+            sd.addressU = Address(st.wrapU);
+            sd.addressV = Address(st.wrapV);
+            sd.addressW = Address(st.wrapW);
+            g->sampled.texture = g->color;
+            g->sampled.sampler = s.device->CreateSampler(sd);
+            g->sampled.version = version;
+            return g;
+        }
+
+        void ResolveRenderTexture(RenderTexture& source, RenderTexture* target)
+        {
+            const GpuRenderTarget* g = RenderTargetOf(source);
+            const GpuRenderTarget* t = target ? RenderTargetOf(*target) : g;
+            if (!g || !t || !g->msaa.IsValid() || !t->color.IsValid())
+                return;
+            rhi::CommandList cl;
+            cl.ResolveTexture(g->msaa, t->color);
+            R().device->Submit(cl);
+        }
+
+        void GenerateRenderTextureMips(RenderTexture& texture)
+        {
+            const GpuRenderTarget* g = RenderTargetOf(texture);
+            if (!g || !g->color.IsValid() || g->mips < 2)
+                return;
+            rhi::CommandList cl;
+            cl.GenerateMips(g->color);
+            R().device->Submit(cl);
+        }
+
+        // Textures draws sample, by the texture's class (render textures from their target, others from their pixels).
+        using TextureSource = const GpuTexture* (*)(Texture& texture);
+        const GpuTexture* PixelTextureOf(Texture& texture);
+        const GpuTexture* RenderTextureOf(Texture& texture)
+        {
+            const GpuRenderTarget* g = RenderTargetOf(static_cast<RenderTexture&>(texture));
+            return g ? &g->sampled : nullptr;
+        }
+
         const GpuTexture* TextureOf(Texture& texture)
+        {
+            static HashMap<u32, TextureSource> sources = [] {
+                HashMap<u32, TextureSource> m;
+                m.Set(ClassOf<Texture>(), &PixelTextureOf);
+                m.Set(ClassOf<RenderTexture>(), &RenderTextureOf);
+                return m;
+            }();
+            for (u32 k = texture.ClassIndex(); k != kNoClass; k = GetClass(k).base)
+                if (TextureSource* source = sources.Find(k))
+                    return (*source)(texture);
+            return nullptr;
+        }
+
+        const GpuTexture* PixelTextureOf(Texture& texture)
         {
             RenderState& s = R();
             GpuTexture* g = s.textures.Find(texture.GetEntityId());
@@ -394,16 +570,25 @@ namespace helix::engine
         }
 
         // The pipeline of a variant for a mesh layout, a topology and the target.
-        rhi::PipelineHandle PipelineOf(const ShaderVariant& v, const GpuMesh& m, rhi::PrimitiveTopology topology, const StateOverride* state)
+        rhi::PipelineHandle PipelineOf(const ShaderVariant& v, const GpuMesh& m, rhi::PrimitiveTopology topology, const StateOverride* state,
+                                       const TargetFormats* target)
         {
             RenderState& s = R();
+            TargetFormats screen;
+            if (!target)
+            {
+                screen = ScreenFormats();
+                target = &screen;
+            }
             u64 key = CombineHash(MixHash(v.serial), MixHash(u64(topology)));
             for (const ReflectedValue& in : v.reflection.vertexInputs)
             {
                 u32 a = in.index < kVertexAttributeCount ? in.index : kNone;
                 key = CombineHash(key, MixHash(u64(a != kNone && m.offsets[a] != kNone ? u32(m.formats[a]) + 1 : 0)));
             }
-            key = CombineHash(key, CombineHash(MixHash(u64(s.target.colorFormat)), MixHash(u64(s.target.depthFormat))));
+            for (u32 c = 0; c < target->colorCount; c++)
+                key = CombineHash(key, MixHash(u64(target->colors[c]) + 1));
+            key = CombineHash(key, MixHash(u64(target->depth) | u64(target->colorCount) << 8 | u64(target->samples) << 16 | u64(target->flipped) << 24));
             if (state && state->mask != RenderStateMask::Nothing)
                 key = CombineHash(key, state->hash);
             if (rhi::PipelineHandle* p = s.pipelines.Find(key))
@@ -430,10 +615,12 @@ namespace helix::engine
             d.cull = st.cull == shadercompiler::CullMode::Off     ? rhi::CullMode::None
                      : st.cull == shadercompiler::CullMode::Front ? rhi::CullMode::Front
                                                                   : rhi::CullMode::Back;
-            d.depthTest = s.target.depthFormat != rhi::Format::Unknown && (st.zWrite || st.zTest != shadercompiler::CompareFunction::Always);
-            d.depthWrite = s.target.depthFormat != rhi::Format::Unknown && st.zWrite;
+            d.depthTest = target->depth != rhi::Format::Unknown && (st.zWrite || st.zTest != shadercompiler::CompareFunction::Always);
+            d.depthWrite = target->depth != rhi::Format::Unknown && st.zWrite;
+            // A texture target is drawn upside down (its projection is flipped): front faces turn around too.
+            d.frontCounterClockwise = target->flipped;
             d.depthCompare = Compare(st.zTest);
-            for (u32 t = 0; t < 1; t++)
+            for (u32 t = 0; t < target->colorCount; t++)
             {
                 rhi::BlendState& b = d.blend[t];
                 b.writeMask = st.colorMask;
@@ -450,9 +637,10 @@ namespace helix::engine
                         b.alphaOp = BlendOperation(bs.operationAlpha);
                     }
             }
-            bool hasDepth = s.target.depthFormat != rhi::Format::Unknown;
+            bool hasDepth = target->depth != rhi::Format::Unknown;
             if (state && HasFlag(state->mask, RenderStateMask::Blend))
-                d.blend[0] = state->blend;
+                for (u32 t = 0; t < target->colorCount; t++)
+                    d.blend[t] = state->blends[t];
             if (state && HasFlag(state->mask, RenderStateMask::Depth))
             {
                 d.depthTest = hasDepth && state->depthTest;
@@ -461,9 +649,11 @@ namespace helix::engine
             }
             if (state && HasFlag(state->mask, RenderStateMask::Raster))
                 d.cull = state->cull;
-            d.colorFormats[0] = s.target.colorFormat;
-            d.colorTargetCount = 1;
-            d.depthFormat = s.target.depthFormat;
+            for (u32 t = 0; t < target->colorCount; t++)
+                d.colorFormats[t] = target->colors[t];
+            d.colorTargetCount = target->colorCount;
+            d.depthFormat = target->depth;
+            d.sampleCount = target->samples;
             d.debugName = v.description ? StringView(v.description->name) : StringView();
             rhi::PipelineHandle p = s.device->CreatePipeline(d);
             s.pipelines.Set(key, p);
@@ -487,19 +677,25 @@ namespace helix::engine
             auto op = [](BlendOp o) { return u32(o) <= u32(BlendOp::Max) ? rhi::BlendOp(u8(o)) : rhi::BlendOp::Add; };
             StateOverride o;
             o.mask = block.mask;
-            const RenderTargetBlendState& t = block.blendState.targets[0];
-            u32 w = u32(t.writeMask);
-            // The reference's mask is A, B, G, R from bit 0; the device's R, G, B, A.
-            o.blend.writeMask = u8(((w >> 3) & 1) | (((w >> 2) & 1) << 1) | (((w >> 1) & 1) << 2) | ((w & 1) << 3));
-            o.blend.srcColor = factor(t.sourceColorBlendMode);
-            o.blend.dstColor = factor(t.destinationColorBlendMode);
-            o.blend.srcAlpha = factor(t.sourceAlphaBlendMode);
-            o.blend.dstAlpha = factor(t.destinationAlphaBlendMode);
-            o.blend.colorOp = op(t.colorBlendOperation);
-            o.blend.alphaOp = op(t.alphaBlendOperation);
-            o.blend.enabled = !(o.blend.srcColor == rhi::BlendFactor::One && o.blend.dstColor == rhi::BlendFactor::Zero &&
-                                o.blend.srcAlpha == rhi::BlendFactor::One && o.blend.dstAlpha == rhi::BlendFactor::Zero &&
-                                o.blend.colorOp == rhi::BlendOp::Add && o.blend.alphaOp == rhi::BlendOp::Add);
+            u64 blendHash = 0;
+            for (u32 i = 0; i < rhi::kMaxColorTargets; i++)
+            {
+                const RenderTargetBlendState& t = block.blendState.targets[block.blendState.separateMRTBlendStates ? i : 0];
+                rhi::BlendState& b = o.blends[i];
+                u32 w = u32(t.writeMask);
+                // The reference's mask is A, B, G, R from bit 0; the device's R, G, B, A.
+                b.writeMask = u8(((w >> 3) & 1) | (((w >> 2) & 1) << 1) | (((w >> 1) & 1) << 2) | ((w & 1) << 3));
+                b.srcColor = factor(t.sourceColorBlendMode);
+                b.dstColor = factor(t.destinationColorBlendMode);
+                b.srcAlpha = factor(t.sourceAlphaBlendMode);
+                b.dstAlpha = factor(t.destinationAlphaBlendMode);
+                b.colorOp = op(t.colorBlendOperation);
+                b.alphaOp = op(t.alphaBlendOperation);
+                b.enabled = !(b.srcColor == rhi::BlendFactor::One && b.dstColor == rhi::BlendFactor::Zero && b.srcAlpha == rhi::BlendFactor::One &&
+                              b.dstAlpha == rhi::BlendFactor::Zero && b.colorOp == rhi::BlendOp::Add && b.alphaOp == rhi::BlendOp::Add);
+                blendHash = CombineHash(blendHash, MixHash(u64(b.enabled) | u64(b.writeMask) << 1 | u64(b.srcColor) << 8 | u64(b.dstColor) << 16 |
+                                                           u64(b.srcAlpha) << 24 | u64(b.dstAlpha) << 32 | u64(b.colorOp) << 40 | u64(b.alphaOp) << 48));
+            }
             CompareFunction compare = block.depthState.compareFunction;
             o.depthTest = compare != CompareFunction::Disabled;
             o.depthWrite = block.depthState.writeEnabled;
@@ -507,9 +703,7 @@ namespace helix::engine
             o.cull = u32(block.rasterState.cullingMode) < 3 ? kCull[u32(block.rasterState.cullingMode)] : rhi::CullMode::Back;
             u64 h = MixHash(u64(o.mask));
             if (HasFlag(o.mask, RenderStateMask::Blend))
-                h = CombineHash(h, MixHash(u64(o.blend.enabled) | u64(o.blend.writeMask) << 1 | u64(o.blend.srcColor) << 8 | u64(o.blend.dstColor) << 16 |
-                                           u64(o.blend.srcAlpha) << 24 | u64(o.blend.dstAlpha) << 32 | u64(o.blend.colorOp) << 40 |
-                                           u64(o.blend.alphaOp) << 48));
+                h = CombineHash(h, blendHash);
             if (HasFlag(o.mask, RenderStateMask::Depth))
                 h = CombineHash(h, MixHash(u64(o.depthTest) | u64(o.depthWrite) << 1 | u64(o.depthCompare) << 2));
             if (HasFlag(o.mask, RenderStateMask::Raster))
@@ -548,6 +742,18 @@ namespace helix::engine
         void ForgetDead()
         {
             RenderState& s = R();
+            Array<EntityId> deadTargets;
+            for (auto e : s.renderTargets)
+            {
+                auto* t = EntityIdToObject<RenderTexture>(e.key);
+                if (!t || !t->IsCreated())
+                    deadTargets.Push(e.key);
+            }
+            for (EntityId id : deadTargets)
+            {
+                render::DestroyRenderTarget(*s.renderTargets.Find(id));
+                s.renderTargets.Remove(id);
+            }
             Array<EntityId> dead;
             for (auto e : s.meshes)
                 if (!EntityIdToObject(e.key))
@@ -722,6 +928,19 @@ namespace helix::engine
                     if (Renderer* r = EntityIdToObject<Renderer>(d.renderer[i]))
                         detail::gVisibilityChanged(r, d.visible[i] != 0);
                 }
+        if (!s.textureCaptures.Empty())
+        {
+            Array<EntityId> into = Move(s.textureCaptures);
+            s.textureCaptures = Array<EntityId>();
+            for (EntityId id : into)
+                if (auto* rt = EntityIdToObject<RenderTexture>(id))
+                {
+                    CommandBuffer b;
+                    b.Blit(RenderTargetIdentifier(BuiltinRenderTextureType::CameraTarget), RenderTargetIdentifier(rt));
+                    render::ExecuteNow(b.List(), false);
+                }
+        }
+        RenderTexture::ReleaseUnusedTemporaries(s.frame);
         if (!s.captures.Empty())
         {
             Array<RenderState::Capture> captures = Move(s.captures);
@@ -770,6 +989,109 @@ namespace helix::engine
         render::ExecuteNow(buffer.List());
     }
 
+    namespace
+    {
+        RenderTargetIdentifier DestinationOf(RenderTexture* dest)
+        {
+            return dest ? RenderTargetIdentifier(dest) : RenderTargetIdentifier(BuiltinRenderTextureType::CameraTarget);
+        }
+    }
+
+    void Graphics::Blit(Texture* source, RenderTexture* dest, Material* material, i32 pass)
+    {
+        if (!R().device)
+            return;
+        CommandBuffer b;
+        b.Blit(RenderTargetIdentifier(source), DestinationOf(dest), material, pass);
+        render::ExecuteNow(b.List(), false);
+    }
+
+    void Graphics::Blit(Texture* source, RenderTexture* dest, Vector2 scale, Vector2 offset)
+    {
+        if (!R().device)
+            return;
+        CommandBuffer b;
+        b.Blit(RenderTargetIdentifier(source), DestinationOf(dest), scale, offset);
+        render::ExecuteNow(b.List(), false);
+    }
+
+    void Graphics::Blit(Texture* source, Material* material, i32 pass) { Blit(source, RenderTexture::active(), material, pass); }
+
+    void Graphics::CopyTexture(Texture* source, Texture* dest)
+    {
+        if (!R().device || !source || !dest)
+            return;
+        CommandBuffer b;
+        b.CopyTexture(RenderTargetIdentifier(source), RenderTargetIdentifier(dest));
+        render::ExecuteNow(b.List(), false);
+    }
+
+    void Graphics::CopyTexture(Texture* source, i32 sourceElement, i32 sourceMip, Texture* dest, i32 destElement, i32 destMip)
+    {
+        if (!R().device || !source || !dest)
+            return;
+        CommandBuffer b;
+        b.CopyTexture(RenderTargetIdentifier(source), sourceElement, sourceMip, RenderTargetIdentifier(dest), destElement, destMip);
+        render::ExecuteNow(b.List(), false);
+    }
+
+    bool Graphics::ConvertTexture(Texture* source, i32 sourceElement, Texture* dest, i32 destElement)
+    {
+        RenderTexture* to = dest && dest->Is<RenderTexture>() ? static_cast<RenderTexture*>(dest) : nullptr;
+        if (!source || !to)
+        {
+            HX_LOG_ERROR(RenderLog, "Graphics.ConvertTexture: {}.", !source ? "the source is null" : "the destination is not a render texture");
+            return false;
+        }
+        if (!R().device)
+            return false;
+        // An element of an array or cube goes through a 2D temporary of its texture's size and format.
+        auto flat = [](const RenderTextureDescriptor& d) {
+            RenderTextureDescriptor f = d;
+            f.dimension = TextureDimension::Tex2D;
+            f.volumeDepth = 1;
+            f.msaaSamples = 1;
+            f.useMipMap = false;
+            f.depthStencilFormat = GraphicsFormat::None;
+            return f;
+        };
+        Texture* from = source;
+        RenderTexture* fromFlat = nullptr;
+        if (source->dimension() != TextureDimension::Tex2D)
+        {
+            if (!source->Is<RenderTexture>())
+            {
+                HX_LOG_ERROR(RenderLog, "Graphics.ConvertTexture: the elements of {} cannot be read.", source->Name());
+                return false;
+            }
+            fromFlat = RenderTexture::GetTemporary(flat(static_cast<RenderTexture*>(source)->descriptor()));
+            CopyTexture(source, sourceElement, 0, fromFlat, 0, 0);
+            from = fromFlat;
+        }
+        RenderTexture* into = to->dimension() == TextureDimension::Tex2D ? to : RenderTexture::GetTemporary(flat(to->descriptor()));
+        Blit(from, into);
+        if (into != to)
+        {
+            CopyTexture(into, 0, 0, to, destElement, 0);
+            RenderTexture::ReleaseTemporary(into);
+        }
+        if (fromFlat)
+            RenderTexture::ReleaseTemporary(fromFlat);
+        return true;
+    }
+
+    void Graphics::SetRenderTarget(RenderTexture* rt) { RenderTexture::SetActive(rt); }
+
+    void ScreenCapture::CaptureScreenshotIntoRenderTexture(RenderTexture* renderTexture)
+    {
+        if (!renderTexture)
+        {
+            HX_LOG_ERROR(RenderLog, "ScreenCapture.CaptureScreenshotIntoRenderTexture: the render texture is null.");
+            return;
+        }
+        R().textureCaptures.Push(renderTexture->GetEntityId());
+    }
+
     void Graphics::RenderCamera(Camera& camera)
     {
         RendererManager& m = RendererManager::Get();
@@ -805,7 +1127,10 @@ namespace helix::engine
             }
             for (auto e : s.pipelines)
                 s.device->Destroy(e.value);
+            for (auto e : s.renderTargets)
+                render::DestroyRenderTarget(e.value);
         }
+        s.renderTargets = HashMap<EntityId, render::GpuRenderTarget>();
         s.meshes = HashMap<EntityId, GpuMesh>();
         s.textures = HashMap<EntityId, GpuTexture>();
         s.shaders = HashMap<u32, GpuShader>();

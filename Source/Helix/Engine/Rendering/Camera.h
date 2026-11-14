@@ -2,6 +2,7 @@
 
 #include <Helix/Engine/GameObject/GameObject.h>
 #include <Helix/Engine/Math/MathTransfer.h>
+#include <Helix/Engine/Texture/RenderTexture.h>
 #include <Helix/Math/Color.h>
 #include <Helix/Math/Geometry.h>
 
@@ -108,6 +109,14 @@ namespace helix::engine
         HX_PROPERTY(ReadOnly) i32 scaledPixelHeight() const { return pixelHeight(); }
         // The display the camera draws to (one display until M7's multi display output).
         HX_PROPERTY() i32 targetDisplay() const { return targetDisplay_; }
+        // The render texture the camera draws into (null: the screen); its pixel rect is within the texture.
+        HX_PROPERTY() RenderTexture* targetTexture() const { return targetTexture_.Get(); }
+        void SetTargetTexture(RenderTexture* value) { targetTexture_ = value; }
+        // The texture it draws into now (its target texture).
+        HX_PROPERTY(ReadOnly) RenderTexture* activeTexture() const { return targetTexture(); }
+        // Accepted: a camera always draws into its target.
+        HX_PROPERTY() bool forceIntoRenderTexture() const { return forceIntoRenderTexture_; }
+        void SetForceIntoRenderTexture(bool value) { forceIntoRenderTexture_ = value; }
         void SetTargetDisplay(i32 value) { targetDisplay_ = value; }
         // Only the objects of this scene are drawn when it is valid (with M7's culling; stored until then).
         HX_PROPERTY() Scene scene() const { return scene_; }
@@ -228,6 +237,8 @@ namespace helix::engine
             v.Field("m_OcclusionCulling", occlusionCulling_);
             v.Field("m_AllowHDR", allowHDR_);
             v.Field("m_AllowMSAA", allowMSAA_);
+            v.Field("m_TargetTexture", targetTexture_);
+            v.Field("m_ForceIntoRT", forceIntoRenderTexture_);
         }
 
     private:
@@ -254,6 +265,8 @@ namespace helix::engine
         bool customView_ = false;
         bool customCulling_ = false;
         i32 targetDisplay_ = 0;
+        PPtr<RenderTexture> targetTexture_;
+        bool forceIntoRenderTexture_ = false;
         Scene scene_;
         Matrix4x4 projection_;
         Matrix4x4 view_;

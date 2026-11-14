@@ -24,7 +24,7 @@ namespace helix::engine
     }
 
     void RenderPipelineNative::DrawRenderers(u64 context, u64 culling, const DrawRendererData& d, Span<const ShaderTagId> passNames, Material* overrideMaterial,
-                                             Shader* overrideShader, Material* fallbackMaterial)
+                                             Shader* overrideShader, Material* fallbackMaterial, Span<const i32> blends)
     {
         ScriptableRenderContext* c = ScriptableRenderContext::Find(context);
         if (!c)
@@ -63,6 +63,17 @@ namespace helix::engine
         t.destinationAlphaBlendMode = BlendMode(d.destinationAlpha);
         t.colorBlendOperation = BlendOp(d.colorOperation);
         t.alphaBlendOperation = BlendOp(d.alphaOperation);
+        for (usize i = 0; i + 7 <= blends.Size() && i / 7 + 1 < rhi::kMaxColorTargets; i += 7)
+        {
+            RenderTargetBlendState& b = state.blendState.targets[i / 7 + 1];
+            b.writeMask = ColorWriteMask(blends[i]);
+            b.sourceColorBlendMode = BlendMode(blends[i + 1]);
+            b.destinationColorBlendMode = BlendMode(blends[i + 2]);
+            b.sourceAlphaBlendMode = BlendMode(blends[i + 3]);
+            b.destinationAlphaBlendMode = BlendMode(blends[i + 4]);
+            b.colorBlendOperation = BlendOp(blends[i + 5]);
+            b.alphaBlendOperation = BlendOp(blends[i + 6]);
+        }
         state.depthState.writeEnabled = d.depthWrite != 0;
         state.depthState.compareFunction = CompareFunction(d.depthCompare);
         state.rasterState.cullingMode = CullMode(d.cullingMode);

@@ -74,6 +74,8 @@ namespace helix::engine
                 Matrices,
                 Texts,
                 Draws,
+                Targets,
+                Descriptors,
             };
             constexpr Refers kRefers[] = {
                 Refers::Nothing,  // ClearTarget
@@ -91,6 +93,14 @@ namespace helix::engine
                 Refers::Nothing,  // DrawRenderer
                 Refers::Texts,    // BeginSample
                 Refers::Texts,    // EndSample
+                Refers::Targets,  // SetTarget
+                Refers::Targets,  // Blit
+                Refers::Targets,  // CopyTexture
+                Refers::Nothing,  // ResolveTarget
+                Refers::Targets,  // GenerateMips
+                Refers::Descriptors, // GetTemporary
+                Refers::Nothing,  // ReleaseTemporary
+                Refers::Targets,  // GlobalTextureTarget
                 Refers::Draws,    // DrawRenderers
                 Refers::Nothing,  // SetupCamera
                 Refers::Nothing,  // RenderObjects
@@ -107,7 +117,7 @@ namespace helix::engine
 
         void CommandList::Append(const CommandList& other)
         {
-            const u32 base[] = {0, u32(matrices.Size()), u32(texts.Size()), u32(draws.Size())};
+            const u32 base[] = {0, u32(matrices.Size()), u32(texts.Size()), u32(draws.Size()), u32(targets.Size()), u32(descriptors.Size())};
             u32 sheetBase = u32(sheets.Size());
             for (Command c : other.commands)
             {
@@ -124,6 +134,10 @@ namespace helix::engine
                 sheets.Push(s);
             for (const DrawRequest& d : other.draws)
                 draws.Push(d);
+            for (const RenderTargetIdentifier& t : other.targets)
+                targets.Push(t);
+            for (const RenderTextureDescriptor& d : other.descriptors)
+                descriptors.Push(d);
         }
 
         void CommandList::Clear()
@@ -133,12 +147,15 @@ namespace helix::engine
             texts.Clear();
             sheets.Clear();
             draws.Clear();
+            targets.Clear();
+            descriptors.Clear();
         }
 
         usize CommandList::Bytes() const
         {
             usize n = commands.Size() * sizeof(Command) + matrices.Size() * sizeof(Matrix4x4) + sheets.Size() * sizeof(PropertySheet) +
-                      draws.Size() * sizeof(DrawRequest);
+                      draws.Size() * sizeof(DrawRequest) + targets.Size() * sizeof(RenderTargetIdentifier) +
+                      descriptors.Size() * sizeof(RenderTextureDescriptor);
             for (const String& t : texts)
                 n += sizeof(String) + t.Size();
             return n;
@@ -290,6 +307,158 @@ namespace helix::engine
         list_.texts.Push(String(name));
     }
 
+    // ---------------------------------------------------------------------------------------------- targets
+
+    RenderTargetIdentifier::RenderTargetIdentifier(Texture* t)
+    {
+        if (!t)
+            return;
+        type = t->Is<RenderTexture>() ? BuiltinRenderTextureType::RenderTexture : BuiltinRenderTextureType::BindableTexture;
+        texture = t->GetEntityId();
+    }
+
+    void CommandBuffer::SetRenderTarget(const RenderTargetIdentifier& target, RenderBufferLoadAction load, RenderBufferStoreAction store)
+    {
+        SetRenderTarget(&target, 1, target, false, load, store);
+    }
+
+    void CommandBuffer::SetRenderTarget(const RenderTargetIdentifier* colors, u32 count, const RenderTargetIdentifier& depth, bool separateDepth,
+                                        RenderBufferLoadAction load, RenderBufferStoreAction store)
+    {
+        if (count > rhi::kMaxColorTargets)
+        {
+            HX_LOG_ERROR(ContextLog, "CommandBuffer.SetRenderTarget: {} color targets (at most {}).", count, rhi::kMaxColorTargets);
+            return;
+        }
+        Command& c = list_.Add(Op::SetTarget);
+        c.index = u32(list_.targets.Size());
+        c.a = i32(count);
+        c.b = i32(load), c.c = i32(store);
+        c.flag = separateDepth;
+        for (u32 i = 0; i < count; i++)
+            list_.targets.Push(colors[i]);
+        list_.targets.Push(depth);
+    }
+
+    void CommandBuffer::GetTemporaryRT(i32 nameID, i32 width, i32 height, i32 depthBuffer, FilterMode filter, RenderTextureFormat format,
+                                       RenderTextureReadWrite readWrite, i32 antiAliasing, bool enableRandomWrite)
+    {
+        RenderTextureDescriptor d;
+        d.width = width, d.height = height;
+        d.sRGB = readWrite == RenderTextureReadWrite::sRGB;
+        d.SetColorFormat(format);
+        d.SetDepthBufferBits(depthBuffer);
+        d.msaaSamples = antiAliasing < 1 ? 1 : antiAliasing;
+        d.enableRandomWrite = enableRandomWrite;
+        GetTemporaryRT(nameID, d, filter);
+    }
+
+    void CommandBuffer::GetTemporaryRT(i32 nameID, i32 width, i32 height, i32 depthBuffer, FilterMode filter, GraphicsFormat format, i32 antiAliasing,
+                                       bool enableRandomWrite)
+    {
+        RenderTextureDescriptor d(width, height, format, depthBuffer);
+        d.msaaSamples = antiAliasing < 1 ? 1 : antiAliasing;
+        d.enableRandomWrite = enableRandomWrite;
+        GetTemporaryRT(nameID, d, filter);
+    }
+
+    void CommandBuffer::GetTemporaryRT(i32 nameID, const RenderTextureDescriptor& descriptor, FilterMode filter)
+    {
+        Command& c = list_.Add(Op::GetTemporary);
+        c.a = nameID, c.b = i32(filter);
+        c.index = u32(list_.descriptors.Size());
+        list_.descriptors.Push(descriptor);
+    }
+
+    void CommandBuffer::GetTemporaryRTArray(i32 nameID, i32 width, i32 height, i32 slices, i32 depthBuffer, FilterMode filter,
+                                            RenderTextureFormat format, RenderTextureReadWrite readWrite, i32 antiAliasing, bool enableRandomWrite)
+    {
+        RenderTextureDescriptor d;
+        d.width = width, d.height = height;
+        d.dimension = TextureDimension::Tex2DArray;
+        d.volumeDepth = slices < 1 ? 1 : slices;
+        d.sRGB = readWrite == RenderTextureReadWrite::sRGB;
+        d.SetColorFormat(format);
+        d.SetDepthBufferBits(depthBuffer);
+        d.msaaSamples = antiAliasing < 1 ? 1 : antiAliasing;
+        d.enableRandomWrite = enableRandomWrite;
+        GetTemporaryRT(nameID, d, filter);
+    }
+
+    void CommandBuffer::GetTemporaryRTArray(i32 nameID, i32 width, i32 height, i32 slices, i32 depthBuffer, FilterMode filter, GraphicsFormat format,
+                                            i32 antiAliasing, bool enableRandomWrite, bool useDynamicScale)
+    {
+        RenderTextureDescriptor d(width, height, format, depthBuffer);
+        d.dimension = TextureDimension::Tex2DArray;
+        d.volumeDepth = slices < 1 ? 1 : slices;
+        d.msaaSamples = antiAliasing < 1 ? 1 : antiAliasing;
+        d.enableRandomWrite = enableRandomWrite;
+        d.useDynamicScale = useDynamicScale;
+        GetTemporaryRT(nameID, d, filter);
+    }
+
+    void CommandBuffer::ReleaseTemporaryRT(i32 nameID) { list_.Add(Op::ReleaseTemporary).a = nameID; }
+
+    void CommandBuffer::Blit(const RenderTargetIdentifier& source, const RenderTargetIdentifier& dest, Material* material, i32 pass)
+    {
+        Command& c = list_.Add(Op::Blit);
+        c.index = u32(list_.targets.Size());
+        list_.targets.Push(source);
+        list_.targets.Push(dest);
+        c.object = material ? material->GetEntityId() : EntityId();
+        c.a = pass;
+        c.v[0] = 1, c.v[1] = 1, c.v[2] = 0, c.v[3] = 0;
+    }
+
+    void CommandBuffer::Blit(const RenderTargetIdentifier& source, const RenderTargetIdentifier& dest, Vector2 scale, Vector2 offset)
+    {
+        Blit(source, dest);
+        Command& c = list_.commands.Back();
+        c.v[0] = scale.x, c.v[1] = scale.y, c.v[2] = offset.x, c.v[3] = offset.y;
+    }
+
+    void CommandBuffer::CopyTexture(const RenderTargetIdentifier& source, i32 sourceElement, i32 sourceMip, const RenderTargetIdentifier& dest,
+                                    i32 destElement, i32 destMip)
+    {
+        Command& c = list_.Add(Op::CopyTexture);
+        c.index = u32(list_.targets.Size());
+        list_.targets.Push(source);
+        list_.targets.Push(dest);
+        c.a = sourceElement, c.b = sourceMip, c.c = destElement, c.d = destMip;
+    }
+
+    void CommandBuffer::ResolveAntiAliasedSurface(RenderTexture* rt, RenderTexture* target)
+    {
+        if (!rt)
+        {
+            HX_LOG_ERROR(ContextLog, "CommandBuffer.ResolveAntiAliasedSurface: the render texture is null.");
+            return;
+        }
+        Command& c = list_.Add(Op::ResolveTarget);
+        c.object = rt->GetEntityId();
+        c.object2 = target ? target->GetEntityId() : EntityId();
+    }
+
+    void CommandBuffer::GenerateMips(const RenderTargetIdentifier& rt)
+    {
+        Command& c = list_.Add(Op::GenerateMips);
+        c.index = u32(list_.targets.Size());
+        list_.targets.Push(rt);
+    }
+
+    void CommandBuffer::SetGlobalTexture(i32 nameID, const RenderTargetIdentifier& value)
+    {
+        Command& c = list_.Add(Op::GlobalTextureTarget);
+        c.a = nameID;
+        c.index = u32(list_.targets.Size());
+        list_.targets.Push(value);
+    }
+
+    void CommandBuffer::ClearRenderTarget(RTClearFlags clearFlags, Color backgroundColor, f32 depth, u32)
+    {
+        ClearRenderTarget((i32(clearFlags) & i32(RTClearFlags::Depth)) != 0, (i32(clearFlags) & i32(RTClearFlags::Color)) != 0, backgroundColor, depth);
+    }
+
     // ---------------------------------------------------------------------------------------------- execution
 
     namespace render
@@ -304,24 +473,63 @@ namespace helix::engine
             f32 ambient[4];
         };
 
+        // The textures draws go into: colors (each with its mip and layer) and a depth, their size and formats, and the
+        // render textures among them (resolved and given their mips when they stop being the target).
+        struct BoundTarget
+        {
+            rhi::TextureHandle colors[rhi::kMaxColorTargets];
+            u32 mips[rhi::kMaxColorTargets] = {}, layers[rhi::kMaxColorTargets] = {};
+            rhi::TextureHandle depth;
+            u32 depthMip = 0, depthLayer = 0;
+            u32 width = 0, height = 0;
+            TargetFormats formats;
+            EntityId textures[rhi::kMaxColorTargets + 1];
+        };
+
+        BoundTarget ScreenTarget()
+        {
+            const RenderTarget& t = Target();
+            BoundTarget b;
+            b.colors[0] = t.color;
+            b.depth = t.depth;
+            b.width = t.width, b.height = t.height;
+            b.formats = ScreenFormats();
+            return b;
+        }
+
         // What commands set that stays for the context's next Submit.
         struct ContextState
         {
             rhi::Viewport viewport;
             bool scissorOn = false;
             rhi::ScissorRect scissor;
+            // The camera block with the device's projection for the screen (flipped when uploaded for a texture target).
             PerCamera camera{};
             Array<String> samples = Array<String>();
+            BoundTarget bound;
+            // The camera's target (none: the screen) and its pixel size (negative temporary sizes divide it).
+            EntityId cameraTexture;
+            i32 cameraWidth = 0, cameraHeight = 0;
+            // The temporary render textures by property id.
+            HashMap<i32, EntityId> temporaries = HashMap<i32, EntityId>();
         };
 
         ContextState WholeTarget()
         {
             ContextState s;
-            const RenderTarget& t = Target();
-            s.viewport.width = f32(t.width);
-            s.viewport.height = f32(t.height);
+            s.bound = ScreenTarget();
+            s.viewport.width = f32(s.bound.width);
+            s.viewport.height = f32(s.bound.height);
+            s.cameraWidth = i32(s.bound.width), s.cameraHeight = i32(s.bound.height);
             s.camera.v = s.camera.p = s.camera.vp = Matrix4x4::identity;
             return s;
+        }
+
+        void ReleaseTemporaries(ContextState& s)
+        {
+            for (auto t : s.temporaries)
+                RenderTexture::ReleaseTemporary(EntityIdToObject<RenderTexture>(t.value));
+            s.temporaries = HashMap<i32, EntityId>();
         }
     }
 
@@ -330,7 +538,6 @@ namespace helix::engine
         struct Executor
         {
             rhi::Device& device;
-            const RenderTarget& target;
             ContextState& state;
             const CommandList& list;
             shadercompiler::ShaderTarget shaderTarget;
@@ -356,13 +563,22 @@ namespace helix::engine
 
         void BeginPass(Executor& e, rhi::LoadOp color, rhi::LoadOp depth, const f32* clearColor, f32 clearDepth)
         {
+            const BoundTarget& b = e.state.bound;
             rhi::RenderPassDesc pass;
-            pass.colors[0].texture = e.target.color;
-            pass.depth.texture = e.target.depth;
-            pass.colors[0].load = color;
-            if (clearColor)
-                for (u32 i = 0; i < 4; i++)
-                    pass.colors[0].clearColor[i] = clearColor[i];
+            pass.colorCount = b.formats.colorCount;
+            for (u32 i = 0; i < b.formats.colorCount; i++)
+            {
+                pass.colors[i].texture = b.colors[i];
+                pass.colors[i].mipLevel = b.mips[i];
+                pass.colors[i].layer = b.layers[i];
+                pass.colors[i].load = color;
+                if (clearColor)
+                    for (u32 k = 0; k < 4; k++)
+                        pass.colors[i].clearColor[k] = clearColor[k];
+            }
+            pass.depth.texture = b.depth;
+            pass.depth.mipLevel = b.depthMip;
+            pass.depth.layer = b.depthLayer;
             pass.depth.load = depth;
             pass.depth.clearDepth = clearDepth;
             e.cl.BeginRenderPass(pass);
@@ -383,16 +599,142 @@ namespace helix::engine
             e.open = false;
         }
 
-        // A device rect from a rect of the target in pixels from its bottom left.
+        // A device rect from a rect of the target in pixels from its bottom left (a texture target keeps rows bottom
+        // first: its rows count from the bottom on the device too).
         rhi::Viewport DeviceRect(const Executor& e, const f32* r)
         {
             rhi::Viewport vp;
             vp.x = r[0];
-            vp.y = f32(e.target.height) - (r[1] + r[3]);
+            vp.y = e.state.bound.formats.flipped ? r[1] : f32(e.state.bound.height) - (r[1] + r[3]);
             vp.width = r[2];
             vp.height = r[3];
             return vp;
         }
+
+        // The camera block for the bound target: the projection flipped for a texture.
+        void UploadCamera(Executor& e)
+        {
+            if (!e.cameraDirty)
+                return;
+            PerCamera cam = e.state.camera;
+            if (e.state.bound.formats.flipped)
+            {
+                cam.p.m10 = -cam.p.m10, cam.p.m11 = -cam.p.m11, cam.p.m12 = -cam.p.m12, cam.p.m13 = -cam.p.m13;
+                cam.vp = cam.p * cam.v;
+            }
+            Upload(&cam, sizeof(PerCamera), e.cameraBlock);
+            e.cameraDirty = false;
+        }
+
+        // The render textures of the bound target resolved (multisampled ones) and given their mips (autoGenerateMips).
+        void FinishTarget(Executor& e)
+        {
+            for (EntityId id : e.state.bound.textures)
+            {
+                auto* rt = EntityIdToObject<RenderTexture>(id);
+                const GpuRenderTarget* g = rt ? RenderTargetOf(*rt) : nullptr;
+                if (!g || !g->color.IsValid())
+                    continue;
+                if (g->msaa.IsValid())
+                    e.cl.ResolveTexture(g->msaa, g->color);
+                if (rt->useMipMap() && rt->autoGenerateMips() && g->mips > 1)
+                    e.cl.GenerateMips(g->color);
+            }
+        }
+
+        // A new target: what was drawn is finished, the viewport is the whole target, the scissor goes.
+        void Bind(Executor& e, const BoundTarget& target)
+        {
+            EndPass(e);
+            FinishTarget(e);
+            bool flipChanged = e.state.bound.formats.flipped != target.formats.flipped;
+            e.state.bound = target;
+            e.state.viewport = rhi::Viewport();
+            e.state.viewport.width = f32(target.width);
+            e.state.viewport.height = f32(target.height);
+            e.state.scissorOn = false;
+            if (flipChanged)
+                e.cameraDirty = true;
+        }
+
+        // A render texture as a target: its color (the multisampled one when it has one) and depth.
+        BoundTarget TextureTarget(RenderTexture& rt, u32 mip, u32 layer, bool color, bool depth)
+        {
+            BoundTarget b;
+            const GpuRenderTarget* g = RenderTargetOf(rt);
+            if (!g)
+                return b;
+            b.width = Max(1u, g->width >> mip), b.height = Max(1u, g->height >> mip);
+            b.formats.flipped = true;
+            b.formats.colorCount = 0;
+            // A mip other than the first is drawn into the sampled texture (the multisampled one has no mips).
+            bool multisampled = g->msaa.IsValid() && mip == 0 && layer == 0;
+            if (color && g->color.IsValid())
+            {
+                b.colors[0] = multisampled ? g->msaa : g->color;
+                b.mips[0] = multisampled ? 0 : mip;
+                b.layers[0] = multisampled ? 0 : layer;
+                b.formats.colors[0] = g->colorFormat;
+                b.formats.colorCount = 1;
+                b.textures[0] = rt.GetEntityId();
+            }
+            if (depth && g->depth.IsValid())
+            {
+                b.depth = g->depth;
+                b.depthLayer = g->layers > 1 && layer < g->layers ? layer : 0;
+                b.formats.depth = g->depthFormat;
+            }
+            b.formats.samples = multisampled ? g->samples : 1;
+            return b;
+        }
+
+        // The render texture an identifier names (temporaries by id, the camera's target texture, a texture).
+        RenderTexture* TextureOfIdentifier(Executor& e, const RenderTargetIdentifier& id)
+        {
+            switch (id.type)
+            {
+            case BuiltinRenderTextureType::PropertyName:
+            {
+                EntityId* t = e.state.temporaries.Find(id.nameID);
+                return t ? EntityIdToObject<RenderTexture>(*t) : nullptr;
+            }
+            case BuiltinRenderTextureType::CameraTarget:
+                return EntityIdToObject<RenderTexture>(e.state.cameraTexture);
+            case BuiltinRenderTextureType::CurrentActive:
+                return EntityIdToObject<RenderTexture>(e.state.bound.textures[0]);
+            default:
+                return EntityIdToObject<RenderTexture>(id.texture);
+            }
+        }
+
+        // An identifier as a target (the screen for the camera target of a camera without a target texture).
+        bool TargetOf(Executor& e, const RenderTargetIdentifier& id, bool color, bool depth, BoundTarget& out)
+        {
+            if (id.type == BuiltinRenderTextureType::None)
+                return false;
+            if (id.type == BuiltinRenderTextureType::CurrentActive)
+            {
+                out = e.state.bound;
+                return true;
+            }
+            RenderTexture* rt = TextureOfIdentifier(e, id);
+            if (!rt && id.type == BuiltinRenderTextureType::CameraTarget)
+            {
+                out = ScreenTarget();
+                if (!color)
+                    out.formats.colorCount = 0;
+                return true;
+            }
+            if (!rt)
+            {
+                HX_LOG_ERROR(ContextLog, "No render target for identifier (type {}, id {}).", i32(id.type), id.nameID);
+                return false;
+            }
+            out = TextureTarget(*rt, u32(id.mipLevel > 0 ? id.mipLevel : 0), id.Layer(), color, depth);
+            return out.width > 0;
+        }
+
+        void BindMaterial(Executor& e, const MaterialPassData& data, const PropertySheet* block);
 
         // One submesh with one pass's data: the camera block, its matrices, the material's blocks (once per pass data
         // in a Submit; a property block makes its own), textures and dynamic keywords.
@@ -404,13 +746,9 @@ namespace helix::engine
             if (!gm->vertices.IsValid() || !gm->indices.IsValid() || submesh >= gm->subs.Size() || gm->subs[submesh].count == 0)
                 return;
             EnsurePass(e);
-            if (e.cameraDirty)
-            {
-                Upload(&e.state.camera, sizeof(PerCamera), e.cameraBlock);
-                e.cameraDirty = false;
-            }
+            UploadCamera(e);
             const GpuMesh::Sub& sub = gm->subs[submesh];
-            e.cl.SetPipeline(PipelineOf(v, *gm, sub.topology, state));
+            e.cl.SetPipeline(PipelineOf(v, *gm, sub.topology, state, &e.state.bound.formats));
             u32 k = 0;
             for (const shadercompiler::ReflectedValue& in : v.reflection.vertexInputs)
             {
@@ -432,6 +770,16 @@ namespace helix::engine
                 e.lastWorld = worldKey;
             }
             e.cl.SetUniformBuffer(10, e.drawBlock);
+            BindMaterial(e, data, block);
+            e.cl.DrawIndexed(sub.count, 1, sub.start, sub.baseVertex);
+            Stats().drawCalls++;
+        }
+
+        // A pass's material blocks (once per pass data in a Submit; a property block makes its own), textures and the
+        // variant's dynamic keywords.
+        void BindMaterial(Executor& e, const MaterialPassData& data, const PropertySheet* block)
+        {
+            const ShaderVariant& v = *data.variant;
             const Array<Array<u8>>* bytes = &data.blocks;
             const Array<MaterialPassData::TextureSlot>* slots = &data.textures;
             usize firstUpload;
@@ -483,8 +831,6 @@ namespace helix::engine
                     Upload(values.Data(), u32(values.Size()), keywordBlock);
                     e.cl.SetUniformBuffer(rb.slot, keywordBlock);
                 }
-            e.cl.DrawIndexed(sub.count, 1, sub.start, sub.baseVertex);
-            Stats().drawCalls++;
         }
 
         // Draws a material's passes (pass < 0: every pass, else the shader pass of that index).
@@ -723,7 +1069,9 @@ namespace helix::engine
         void RunClear(Executor& e, const Command& c)
         {
             const rhi::Viewport& vp = e.state.viewport;
-            bool whole = !e.state.scissorOn && vp.x <= 0 && vp.y <= 0 && vp.width >= f32(e.target.width) && vp.height >= f32(e.target.height);
+            const BoundTarget& b = e.state.bound;
+            bool whole = !e.state.scissorOn && vp.x <= 0 && vp.y <= 0 && vp.width >= f32(b.width) && vp.height >= f32(b.height);
+            bool hasColor = b.formats.colorCount > 0;
             if (!c.flag && !c.flag2)
                 return;
             if (whole)
@@ -735,12 +1083,12 @@ namespace helix::engine
             }
             // A smaller viewport: a triangle over it writing the color and the far depth (or only the depth).
             Shader* clear = Shader::Find("Hidden/InternalClear");
-            const ShaderVariant* cv = clear ? clear->GetVariant(c.flag2 ? 0u : 1u, {}, e.shaderTarget) : nullptr;
+            const ShaderVariant* cv = clear ? clear->GetVariant(c.flag2 && hasColor ? 0u : 1u, {}, e.shaderTarget) : nullptr;
             if (!cv || !cv->ok)
                 return;
             EnsurePass(e);
             static const GpuMesh kNoVertices{};
-            e.cl.SetPipeline(PipelineOf(*cv, kNoVertices, rhi::PrimitiveTopology::TriangleList));
+            e.cl.SetPipeline(PipelineOf(*cv, kNoVertices, rhi::PrimitiveTopology::TriangleList, nullptr, &e.state.bound.formats));
             if (c.flag2)
             {
                 rhi::TransientAllocation clearBlock;
@@ -851,6 +1199,12 @@ namespace helix::engine
             if (!camera)
                 return;
             Camera::SetCurrent(camera);
+            // The camera's target: its target texture, else the screen.
+            RenderTexture* rt = camera->targetTexture();
+            BoundTarget target = rt ? TextureTarget(*rt, 0, 0, true, true) : ScreenTarget();
+            if (target.width > 0)
+                Bind(e, target);
+            e.state.cameraTexture = rt ? rt->GetEntityId() : EntityId();
             PerCamera& cam = e.state.camera;
             Matrix4x4 view = camera->worldToCameraMatrix();
             cam.v = view;
@@ -878,6 +1232,7 @@ namespace helix::engine
             cam.ambient[0] = ambient.r, cam.ambient[1] = ambient.g, cam.ambient[2] = ambient.b, cam.ambient[3] = 1;
             e.cameraDirty = true;
             Rect pr = camera->pixelRect();
+            e.state.cameraWidth = i32(pr.width), e.state.cameraHeight = i32(pr.height);
             const f32 r[4] = {pr.x, pr.y, pr.width, pr.height};
             e.state.viewport = DeviceRect(e, r);
             e.state.scissorOn = false;
@@ -898,10 +1253,252 @@ namespace helix::engine
                 detail::gRenderStage(nullptr, detail::RenderStage::RenderObject);
         }
 
+        void RunSetTarget(Executor& e, const Command& c)
+        {
+            const RenderTargetIdentifier* ids = &e.list.targets[c.index];
+            u32 count = u32(c.a);
+            BoundTarget b;
+            b.formats.colorCount = 0;
+            for (u32 i = 0; i < count; i++)
+            {
+                BoundTarget one;
+                // The depth of a single target comes with it unless a depth target is given.
+                if (!TargetOf(e, ids[i], true, !c.flag && i == 0, one))
+                    continue;
+                if (i == 0)
+                    b = one, b.formats.colorCount = 0;
+                if (one.formats.colorCount > 0)
+                {
+                    u32 k = b.formats.colorCount++;
+                    b.colors[k] = one.colors[0], b.mips[k] = one.mips[0], b.layers[k] = one.layers[0];
+                    b.formats.colors[k] = one.formats.colors[0];
+                    b.textures[k] = one.textures[0];
+                }
+            }
+            if (c.flag)
+            {
+                BoundTarget d;
+                if (TargetOf(e, ids[count], false, true, d))
+                {
+                    b.depth = d.depth, b.depthMip = d.depthMip, b.depthLayer = d.depthLayer;
+                    b.formats.depth = d.formats.depth;
+                    if (b.width == 0)
+                        b.width = d.width, b.height = d.height, b.formats.flipped = d.formats.flipped, b.formats.samples = d.formats.samples;
+                }
+                else
+                {
+                    b.depth = rhi::TextureHandle();
+                    b.formats.depth = rhi::Format::Unknown;
+                }
+            }
+            if (b.width > 0)
+                Bind(e, b);
+        }
+
+        // A fullscreen triangle with a material's pass and a property block (Blit).
+        void DrawFullscreen(Executor& e, Material& material, i32 pass, const PropertySheet& block)
+        {
+            Shader* shader = material.shader();
+            const MaterialPassData* data = shader && pass < shader->passCount() ? material.GetPassData(u32(shader->PassIndex(pass)), e.shaderTarget) : nullptr;
+            if (!data)
+                return;
+            EnsurePass(e);
+            UploadCamera(e);
+            static const GpuMesh kNoVertices{};
+            e.cl.SetPipeline(PipelineOf(*data->variant, kNoVertices, rhi::PrimitiveTopology::TriangleList, nullptr, &e.state.bound.formats));
+            e.cl.SetUniformBuffer(9, e.cameraBlock);
+            BindMaterial(e, *data, &block);
+            e.cl.Draw(3);
+        }
+
+        // A texture object for an identifier as a source: render textures, textures, the screen (copied into a temporary).
+        Texture* SourceOf(Executor& e, const RenderTargetIdentifier& id, bool* fromScreen = nullptr)
+        {
+            if (fromScreen)
+                *fromScreen = false;
+            if (id.type == BuiltinRenderTextureType::BindableTexture)
+                return EntityIdToObject<Texture>(id.texture);
+            if (RenderTexture* rt = TextureOfIdentifier(e, id))
+                return rt;
+            if (id.type != BuiltinRenderTextureType::CameraTarget && !(id.type == BuiltinRenderTextureType::CurrentActive))
+                return nullptr;
+            // The screen: copied into a temporary of its size and format.
+            const RenderTarget& screen = Target();
+            if (!screen.color.IsValid())
+            {
+                HX_LOG_ERROR(ContextLog, "Blit: the screen of this device cannot be read.");
+                return nullptr;
+            }
+            RenderTexture* copy = RenderTexture::GetTemporary(i32(screen.width), i32(screen.height), 0, RenderTextureFormat::ARGB32);
+            const GpuRenderTarget* g = copy ? RenderTargetOf(*copy) : nullptr;
+            if (!g || !g->color.IsValid())
+                return nullptr;
+            EndPass(e);
+            e.cl.CopyTexture(screen.color, 0, 0, g->color, 0, 0);
+            e.state.temporaries.Set(-1 - i32(e.state.temporaries.Size()), copy->GetEntityId());
+            // Its rows are the screen's (top first), not a texture's.
+            if (fromScreen)
+                *fromScreen = true;
+            return copy;
+        }
+
+        void RunBlit(Executor& e, const Command& c)
+        {
+            const RenderTargetIdentifier& from = e.list.targets[c.index];
+            const RenderTargetIdentifier& to = e.list.targets[c.index + 1];
+            EndPass(e);
+            FinishTarget(e);
+            bool fromScreen = false;
+            Texture* source = SourceOf(e, from, &fromScreen);
+            BoundTarget target;
+            if (!TargetOf(e, to, true, false, target))
+                return;
+            Bind(e, target);
+            Material* material = EntityIdToObject<Material>(c.object);
+            static EntityId blitMaterial;
+            if (!material)
+            {
+                material = EntityIdToObject<Material>(blitMaterial);
+                if (!material)
+                    if (Shader* s = Shader::Find("Hidden/BlitCopy"))
+                    {
+                        material = Material::Create(s);
+                        material->SetName("BlitCopy");
+                        material->SetPersistent(true);
+                        material->hideFlags = HideFlags::HideAndDontSave;
+                        blitMaterial = material->GetEntityId();
+                    }
+            }
+            if (!material || !material->shader())
+                return;
+            PropertySheet block;
+            static const i32 mainTex = PropertyToID("_MainTex");
+            block.SetTexture(mainTex, source ? source->GetEntityId() : EntityId());
+            // A copy of the screen is read upside down (its rows are the screen's).
+            block.SetTextureScale(mainTex, Vector2(c.v[0], fromScreen ? -c.v[1] : c.v[1]));
+            block.SetTextureOffset(mainTex, Vector2(c.v[2], fromScreen ? 1.0f - c.v[3] : c.v[3]));
+            // A fullscreen triangle in clip space (the blit shader takes the camera block's projection: flipped for a texture).
+            PerCamera saved = e.state.camera;
+            e.state.camera.v = e.state.camera.p = e.state.camera.vp = Matrix4x4::identity;
+            e.cameraDirty = true;
+            i32 passes = material->shader()->passCount();
+            for (i32 p = c.a < 0 ? 0 : c.a; p < (c.a < 0 ? passes : c.a + 1); p++)
+                DrawFullscreen(e, *material, p, block);
+            e.state.camera = saved;
+            e.cameraDirty = true;
+        }
+
+        // A texture object's sampled texture and mip count for copies.
+        bool CopyTextureOf(Executor& e, const RenderTargetIdentifier& id, rhi::TextureHandle& out, u32& layers)
+        {
+            Texture* t = SourceOf(e, id);
+            if (!t)
+                return false;
+            if (t->Is<RenderTexture>())
+            {
+                const GpuRenderTarget* g = RenderTargetOf(static_cast<RenderTexture&>(*t));
+                if (!g)
+                    return false;
+                out = g->color;
+                layers = g->layers;
+                return out.IsValid();
+            }
+            const GpuTexture* g = TextureOf(*t);
+            out = g ? g->texture : rhi::TextureHandle();
+            layers = 1;
+            return out.IsValid();
+        }
+
+        void RunCopyTexture(Executor& e, const Command& c)
+        {
+            EndPass(e);
+            FinishTarget(e);
+            rhi::TextureHandle from, to;
+            u32 fromLayers = 1, toLayers = 1;
+            if (!CopyTextureOf(e, e.list.targets[c.index], from, fromLayers) || !CopyTextureOf(e, e.list.targets[c.index + 1], to, toLayers))
+            {
+                HX_LOG_ERROR(ContextLog, "CopyTexture: the source or the destination is no texture.");
+                return;
+            }
+            // A whole texture: each of its layers (mip 0).
+            if (c.a < 0)
+            {
+                for (u32 l = 0; l < fromLayers && l < toLayers; l++)
+                    e.cl.CopyTexture(from, 0, l, to, 0, l);
+                return;
+            }
+            e.cl.CopyTexture(from, u32(c.b > 0 ? c.b : 0), u32(c.a), to, u32(c.d > 0 ? c.d : 0), u32(c.c > 0 ? c.c : 0));
+        }
+
+        void RunResolveTarget(Executor& e, const Command& c)
+        {
+            auto* rt = EntityIdToObject<RenderTexture>(c.object);
+            auto* target = EntityIdToObject<RenderTexture>(c.object2);
+            const GpuRenderTarget* g = rt ? RenderTargetOf(*rt) : nullptr;
+            const GpuRenderTarget* t = target ? RenderTargetOf(*target) : g;
+            if (!g || !t || !g->msaa.IsValid())
+                return;
+            EndPass(e);
+            e.cl.ResolveTexture(g->msaa, t->color);
+        }
+
+        void RunGenerateMips(Executor& e, const Command& c)
+        {
+            RenderTexture* rt = TextureOfIdentifier(e, e.list.targets[c.index]);
+            const GpuRenderTarget* g = rt ? RenderTargetOf(*rt) : nullptr;
+            if (!g || g->mips < 2)
+            {
+                HX_LOG_ERROR(ContextLog, "CommandBuffer.GenerateMips: the texture has no mips.");
+                return;
+            }
+            EndPass(e);
+            e.cl.GenerateMips(g->color);
+        }
+
+        void RunGetTemporary(Executor& e, const Command& c)
+        {
+            RenderTextureDescriptor d = e.list.descriptors[c.index];
+            // Negative sizes divide the camera's pixel size.
+            if (d.width < 0)
+                d.width = Max(1, e.state.cameraWidth / -d.width);
+            if (d.height < 0)
+                d.height = Max(1, e.state.cameraHeight / -d.height);
+            if (EntityId* old = e.state.temporaries.Find(c.a))
+                RenderTexture::ReleaseTemporary(EntityIdToObject<RenderTexture>(*old));
+            RenderTexture* rt = RenderTexture::GetTemporary(d);
+            if (!rt)
+                return;
+            rt->SetFilterMode(FilterMode(c.b));
+            e.state.temporaries.Set(c.a, rt->GetEntityId());
+        }
+
+        void RunReleaseTemporary(Executor& e, const Command& c)
+        {
+            EntityId* t = e.state.temporaries.Find(c.a);
+            if (!t)
+                return;
+            // Finished first when it is the target.
+            for (EntityId id : e.state.bound.textures)
+                if (id == *t)
+                {
+                    EndPass(e);
+                    FinishTarget(e);
+                }
+            RenderTexture::ReleaseTemporary(EntityIdToObject<RenderTexture>(*t));
+            e.state.temporaries.Remove(c.a);
+        }
+
+        void RunGlobalTextureTarget(Executor& e, const Command& c)
+        {
+            Texture* t = SourceOf(e, e.list.targets[c.index]);
+            Shader::SetGlobalTexture(c.a, t);
+        }
+
         constexpr Run kRun[] = {
             RunClear,         RunViewport,     RunScissor,     RunNoScissor,    RunViewProjection, RunGlobalFloat,          RunGlobalInteger,
             RunGlobalVector,  RunGlobalMatrix, RunGlobalTexture, RunKeyword,    RunDrawMesh,       RunDrawRenderer,         RunBeginSample,
-            RunEndSample,     RunDrawRenderersCommand, RunSetupCamera, RunRenderObjects,
+            RunEndSample,     RunSetTarget,    RunBlit,        RunCopyTexture,  RunResolveTarget,  RunGenerateMips,         RunGetTemporary,
+            RunReleaseTemporary, RunGlobalTextureTarget, RunDrawRenderersCommand, RunSetupCamera, RunRenderObjects,
         };
         static_assert(sizeof(kRun) / sizeof(kRun[0]) == usize(Op::Count), "a table entry per command kind");
 
@@ -910,10 +1507,11 @@ namespace helix::engine
             rhi::Device* device = Device();
             if (!device || list.commands.Empty())
                 return;
-            Executor e{*device, Target(), state, list, Graphics::ShaderTarget()};
+            Executor e{*device, state, list, Graphics::ShaderTarget()};
             for (const Command& c : list.commands)
                 kRun[u32(c.op)](e, c);
             EndPass(e);
+            FinishTarget(e);
             device->Submit(e.cl);
         }
     }
@@ -936,6 +1534,8 @@ namespace helix::engine
             L().culling.Remove(u64(reinterpret_cast<uintptr_t>(c)));
             delete c;
         }
+        if (state_)
+            ReleaseTemporaries(*state_);
         delete state_;
     }
 
@@ -1163,10 +1763,25 @@ namespace helix::engine
 
     namespace render
     {
-        void ExecuteNow(const CommandList& list)
+        void ExecuteNow(const CommandList& list, bool intoActive)
         {
             ContextState state = WholeTarget();
+            // The active render texture is the target of commands run at once.
+            RenderTexture* active = intoActive ? RenderTexture::active() : nullptr;
+            if (active)
+            {
+                BoundTarget b = TextureTarget(*active, 0, 0, true, true);
+                if (b.width > 0)
+                {
+                    state.bound = b;
+                    state.viewport = rhi::Viewport();
+                    state.viewport.width = f32(b.width), state.viewport.height = f32(b.height);
+                    state.cameraTexture = active->GetEntityId();
+                    state.cameraWidth = i32(b.width), state.cameraHeight = i32(b.height);
+                }
+            }
             Execute(list, state);
+            ReleaseTemporaries(state);
         }
 
         void ReleaseSwappedMaterials()

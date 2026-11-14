@@ -12,6 +12,7 @@ namespace helix::engine
         Span<Camera* const> PipelineEventCameras();
         Camera* PipelineEventCamera();
         ScriptableObject* PipelineEventAsset(bool to);
+        const StandardRequest& PipelineEventRequest();
     }
 
     // DrawingSettings, FilteringSettings and RenderStateBlock of C# as plain values (the first target's blend state).
@@ -93,6 +94,21 @@ namespace helix::engine
         }
         HX_FUNCTION() static Camera* EventCamera() { return detail::PipelineEventCamera(); }
         HX_FUNCTION() static ScriptableObject* EventAsset(bool to) { return detail::PipelineEventAsset(to); }
+        // The standard request of the request the C# side hears of.
+        HX_FUNCTION() static RenderTexture* EventRequestDestination() { return detail::PipelineEventRequest().destination; }
+        HX_FUNCTION() static i32 EventRequestMip() { return detail::PipelineEventRequest().mipLevel; }
+        HX_FUNCTION() static i32 EventRequestFace() { return i32(detail::PipelineEventRequest().face); }
+        HX_FUNCTION() static i32 EventRequestSlice() { return detail::PipelineEventRequest().slice; }
+        // A request through the active pipeline: a C# request object (its GC handle; 0 for a standard request) or the
+        // standard request's values; `process` false only asks whether the pipeline takes it.
+        HX_FUNCTION() static bool RenderRequest(Camera* camera, u64 managed, RenderTexture* destination, i32 mipLevel, i32 face, i32 slice, bool process)
+        {
+            engine::RenderRequest r;
+            r.standard = managed == 0;
+            r.managed = managed;
+            r.request = {destination, mipLevel, CubemapFace(face), slice};
+            return render::RenderRequestThroughPipeline(camera, r, process);
+        }
         HX_FUNCTION() static void BeginContextRendering(u64 context, const Array<Camera*>& cameras)
         {
             if (ScriptableRenderContext* c = ScriptableRenderContext::Find(context))
@@ -128,8 +144,9 @@ namespace helix::engine
         // The culling results' address (0 when invalid).
         HX_FUNCTION() static u64 Cull(u64 context, Camera* camera, i32 cullingMask, Matrix4x4 cullingMatrix, Span<const Plane> planes, i32 options,
                                       Vector3 origin, bool orthographic);
+        // `blends`: seven values per target after the first (write mask, the four factors, the two operations).
         HX_FUNCTION() static void DrawRenderers(u64 context, u64 culling, const DrawRendererData& data, Span<const ShaderTagId> passNames,
-                                                Material* overrideMaterial, Shader* overrideShader, Material* fallbackMaterial);
+                                                Material* overrideMaterial, Shader* overrideShader, Material* fallbackMaterial, Span<const i32> blends);
         HX_FUNCTION() static void SetupCameraProperties(u64 context, Camera* camera, bool stereoSetup)
         {
             if (ScriptableRenderContext* c = ScriptableRenderContext::Find(context))
@@ -205,6 +222,70 @@ namespace helix::engine
         HX_FUNCTION() static void BeginSample(u64 buffer, StringView name) { With(buffer, [&](CommandBuffer& b) { b.BeginSample(name); }); }
         HX_FUNCTION() static void EndSample(u64 buffer, StringView name) { With(buffer, [&](CommandBuffer& b) { b.EndSample(name); }); }
         HX_FUNCTION() static void ExecuteNow(u64 buffer) { With(buffer, [](CommandBuffer& b) { Graphics::ExecuteCommandBuffer(b); }); }
+
+        // `depth` is used when `separateDepth`; the colors with their mips, faces and slices.
+        HX_FUNCTION() static void SetRenderTarget(u64 buffer, Span<const RenderTargetData> colors, RenderTargetData depth, bool separateDepth, i32 loadAction,
+                                                  i32 storeAction)
+        {
+            With(buffer, [&](CommandBuffer& b) {
+                RenderTargetIdentifier ids[rhi::kMaxColorTargets];
+                u32 count = u32(colors.Size() < rhi::kMaxColorTargets ? colors.Size() : rhi::kMaxColorTargets);
+                for (u32 i = 0; i < count; i++)
+                    ids[i] = colors[i].ToIdentifier();
+                RenderTargetIdentifier d = separateDepth ? depth.ToIdentifier() : (count ? ids[0] : RenderTargetIdentifier());
+                if (separateDepth)
+                    b.SetRenderTarget(Span<const RenderTargetIdentifier>(ids, count), d);
+                else if (count)
+                    b.SetRenderTarget(ids[0], RenderBufferLoadAction(loadAction), RenderBufferStoreAction(storeAction));
+            });
+        }
+        HX_FUNCTION() static void GetTemporaryRT(u64 buffer, i32 nameID, RenderTextureDescriptorData descriptor, FilterMode filter)
+        {
+            With(buffer, [&](CommandBuffer& b) { b.GetTemporaryRT(nameID, descriptor.ToDescriptor(), filter); });
+        }
+        HX_FUNCTION() static void ReleaseTemporaryRT(u64 buffer, i32 nameID) { With(buffer, [&](CommandBuffer& b) { b.ReleaseTemporaryRT(nameID); }); }
+        HX_FUNCTION() static void Blit(u64 buffer, RenderTargetData source, RenderTargetData dest, Material* material, i32 pass, Vector4 scaleOffset)
+        {
+            With(buffer, [&](CommandBuffer& b) {
+                b.Blit(source.ToIdentifier(), dest.ToIdentifier(), material, pass);
+                render::Command& c = b.MutableList().commands.Back();
+                c.v[0] = scaleOffset.x, c.v[1] = scaleOffset.y, c.v[2] = scaleOffset.z, c.v[3] = scaleOffset.w;
+            });
+        }
+        HX_FUNCTION() static void CopyTexture(u64 buffer, RenderTargetData source, i32 sourceElement, i32 sourceMip, RenderTargetData dest, i32 destElement,
+                                              i32 destMip)
+        {
+            With(buffer, [&](CommandBuffer& b) { b.CopyTexture(source.ToIdentifier(), sourceElement, sourceMip, dest.ToIdentifier(), destElement, destMip); });
+        }
+        HX_FUNCTION() static void ResolveAntiAliasedSurface(u64 buffer, RenderTexture* rt, RenderTexture* target)
+        {
+            With(buffer, [&](CommandBuffer& b) { b.ResolveAntiAliasedSurface(rt, target); });
+        }
+        HX_FUNCTION() static void GenerateMips(u64 buffer, RenderTargetData rt) { With(buffer, [&](CommandBuffer& b) { b.GenerateMips(rt.ToIdentifier()); }); }
+        HX_FUNCTION() static void SetGlobalTextureTarget(u64 buffer, i32 nameID, RenderTargetData value)
+        {
+            With(buffer, [&](CommandBuffer& b) { b.SetGlobalTexture(nameID, value.ToIdentifier()); });
+        }
+
+        // ---------------------------------------------------------------------------------------------- Graphics
+        HX_FUNCTION() static void GraphicsBlit(Texture* source, RenderTexture* dest, Material* material, i32 pass, Vector4 scaleOffset)
+        {
+            if (scaleOffset.x == 1 && scaleOffset.y == 1 && scaleOffset.z == 0 && scaleOffset.w == 0)
+                Graphics::Blit(source, dest, material, pass);
+            else
+                Graphics::Blit(source, dest, Vector2(scaleOffset.x, scaleOffset.y), Vector2(scaleOffset.z, scaleOffset.w));
+        }
+        HX_FUNCTION() static bool GraphicsConvertTexture(Texture* source, i32 sourceElement, Texture* dest, i32 destElement)
+        {
+            return Graphics::ConvertTexture(source, sourceElement, dest, destElement);
+        }
+        HX_FUNCTION() static void GraphicsCopyTexture(Texture* source, i32 sourceElement, i32 sourceMip, Texture* dest, i32 destElement, i32 destMip)
+        {
+            if (sourceElement < 0)
+                Graphics::CopyTexture(source, dest);
+            else
+                Graphics::CopyTexture(source, sourceElement, sourceMip, dest, destElement, destMip);
+        }
 
     private:
         template <class F>

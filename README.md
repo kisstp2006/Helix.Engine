@@ -44,19 +44,21 @@ of C++ and C# scripts, a fallback pipeline without an asset), and the screen as 
 | `Source/Helix/Engine/Mesh/MeshData.h` | `MeshDataNative`: the meshes of C#'s `Mesh.MeshData` for jobs (hidden copies and new meshes, applied with `SetMeshData`) |
 | `Source/Helix/Engine/Jobs/ManagedJobs.h` | `JobsNative`, `TransformAccessNative`: C# jobs on Helix.Jobs (one entry point per job type, dependencies, parallel batches, the frame's `Temp` memory, `TempJob` and `Persistent` allocations), transform arrays and the transform job's reads and writes on the workers |
 | `Source/Helix/Engine/Texture/Texture.h` | `Texture`, `Texture2D`, `TextureFormat`, `FilterMode`, `TextureWrapMode` |
+| `Source/Helix/Engine/Texture/RenderTexture.h` | `RenderTexture` (class 84), `RenderTextureDescriptor`, `RenderTextureFormat`, `GraphicsFormat` and `GraphicsFormatUtility`, temporary render textures, `RenderTexture::active` |
 | `Source/Helix/Engine/Shader/Shader.h` | `Shader`, `ShaderVariant`, `ShaderPropertyType`, `ShaderPropertyFlags`: shaders of C# assemblies, variants on demand, global keywords and properties |
 | `Source/Helix/Engine/Material/Material.h` | `Material`, `MaterialPropertyBlock`, `MaterialPassData` (block bytes and textures per pass and variant) |
 | `Source/Helix/Engine/Material/PropertySheet.h` | `PropertyToID`, `PropertySheet`: property values by id |
 | `Source/Helix/Engine/Rendering/Renderer.h` | `MeshFilter`, `Renderer`, `MeshRenderer`, `ShadowCastingMode` |
 | `Source/Helix/Engine/Rendering/Camera.h` | `Camera`, `CameraClearFlags`, `CameraType`, `DepthTextureMode`, `GeometryUtility` |
 | `Source/Helix/Engine/Rendering/Light.h` | `Light`, `LightType`, `LightShadows`, `LightRenderMode` |
-| `Source/Helix/Engine/Rendering/Graphics.h` | `Graphics` (device, target, `RenderFrame`, `RenderMesh`, `ExecuteCommandBuffer`), `RenderParams`, `RenderTarget`, `RenderStats` |
+| `Source/Helix/Engine/Rendering/Graphics.h` | `Graphics` (device, target, `RenderFrame`, `RenderMesh`, `ExecuteCommandBuffer`, `Blit`, `CopyTexture`, `ConvertTexture`, `SetRenderTarget`), `RenderParams`, `RenderTarget`, `RenderStats` |
 | `Source/Helix/Engine/Rendering/Pipeline/RenderPipeline.h` | `RenderPipeline`, `RenderPipelineManager` (events, the current pipeline), `GraphicsSettings` and `QualitySettings` pipeline assets, the factories of pipelines by script language |
 | `Source/Helix/Engine/Rendering/Pipeline/ScriptableRenderContext.h` | `ScriptableRenderContext`: `Cull`, `DrawRenderers`, `SetupCameraProperties`, `ExecuteCommandBuffer`, `InvokeOnRenderObjectCallback`, `Submit` |
-| `Source/Helix/Engine/Rendering/Pipeline/CommandBuffer.h` | `CommandBuffer`: clears, viewport and scissor, view and projection, globals and keywords, `DrawMesh`, `DrawRenderer`, samples |
+| `Source/Helix/Engine/Rendering/Pipeline/CommandBuffer.h` | `CommandBuffer`: clears, viewport and scissor, view and projection, globals and keywords, `DrawMesh`, `DrawRenderer`, samples, render targets, temporary render textures, `Blit`, `CopyTexture`, resolves and mips |
+| `Source/Helix/Engine/Rendering/Pipeline/RenderTargets.h` | `RenderTargetIdentifier`, `BuiltinRenderTextureType`, `RenderBufferLoadAction` / `StoreAction`, `RTClearFlags`, `CubemapFace` |
 | `Source/Helix/Engine/Rendering/Pipeline/RenderStates.h` | `SortingSettings`, `DrawingSettings`, `FilteringSettings`, `RenderQueueRange`, `RenderStateBlock` and its states, `ScriptableCullingParameters`, `CullingResults`, `VisibleLight`, the rendering enums |
 | `Source/Helix/Engine/Rendering/Pipeline/RenderPipelineNative.h` | `RenderPipelineNative`, `DrawRendererData`: what C#'s pipeline API calls |
-| `Source/Helix/Engine/Rendering/ScreenCapture.h` | `ScreenCapture::CaptureScreenshot`: the frame drawn again into a texture and written as PNG |
+| `Source/Helix/Engine/Rendering/ScreenCapture.h` | `ScreenCapture::CaptureScreenshot`: the frame drawn again into a texture and written as PNG; `CaptureScreenshotIntoRenderTexture` |
 | `Source/Helix/Engine/Script/GameBehaviour.h` | `GameBehaviour` (class 114): the base of scripts in C++ and C# |
 | `Source/Helix/Engine/Script/ScriptableObject.h` | `ScriptableObject`: script objects of both languages that are no components (`CreateInstance`; class 114 documents) |
 | `Source/Helix/Engine/Shader/ShaderKeywords.h` | `LocalKeyword`, `GlobalKeyword`, `LocalKeywordSpace`, `ShaderTagId`, `ShaderKeywordType`, the global keyword list |
@@ -65,7 +67,7 @@ of C++ and C# scripts, a fallback pipeline without an asset), and the screen as 
 | `Source/Helix/Engine/Debug/Debug.h` | `Debug`: the log of scripts (`Log`, `LogWarning`, `LogError`, `LogAssertion`, `Assert`), `isDebugBuild`, `Break`, `DrawLine` / `DrawRay` (accepted until the gizmo renderer) |
 | `Source/Helix/Engine/Math/MathNative.h`, `Scene/SceneNative.h` | The calls the C# value types and operation classes make into Helix.Math and the engine (internal in C#) |
 | `Source/Helix/Engine/Script/ScriptRuntime.h` | The scheduler of scripts (`RunScriptPhase`, `CallScriptMessage`, `BroadcastScriptMessage`), `AddScript`, `SendScriptMessage` (`SendMessage`, `BroadcastMessage`, `SendMessageUpwards`), C++ game modules (`LoadGameModule`, which also publishes the module's exports by name for its C# bindings, `RegisterLinkedGameModule`, `UnloadGameModule`) |
-| `Shaders/` | The built in shaders in C# (`Hidden/InternalErrorShader`, `Hidden/InternalClear`, the engine's shader variables and vertex input locations), built with the .NET SDK and embedded |
+| `Shaders/` | The built in shaders in C# (`Hidden/InternalErrorShader`, `Hidden/InternalClear`, `Hidden/BlitCopy`, the engine's shader variables and vertex input locations), built with the .NET SDK and embedded |
 | `Tests/Shaders/` | C# test shaders, embedded into the tests |
 | `Tests/`, `Benchmarks/` | Ids, the class tree, components, hierarchies, enable and destroy order, clones, world math, change dispatch, scenes and scene files, assets, meshes and textures; throughput |
 
@@ -196,6 +198,15 @@ of C++ and C# scripts, a fallback pipeline without an asset), and the screen as 
   OnPostRender, OnRenderObject). GPU meshes (formats the GPU lacks widened to float, missing attributes read zero),
   textures, samplers, shaders and pipelines are cached by the versions of their sources; meshes and textures that are
   not readable drop their CPU copy once uploaded.
+- Render textures are objects whose GPU textures the renderer makes when they are created (a color texture with its
+  mips, a multisampled one to draw into, a depth buffer); their rows are kept bottom first, as a texture's, so a draw
+  into one flips the projection and the winding. Draws sample the textures of a source registry by class, so a render
+  texture is sampled as any texture. A context's render target is state of its commands (the camera's target, a
+  render texture, a temporary by name, a mip, face or slice, several colors with a depth) and pipelines are cached by
+  the target's formats and samples; a multisampled texture is resolved and its mips made when it stops being the
+  target. Temporaries are pooled by descriptor and freed after some frames unused. A camera with a targetTexture
+  renders into it; pipelines take render requests (a StandardRequest renders a camera into a render texture), the
+  fallback included. Blit draws with Hidden/BlitCopy or a material's passes.
 - Screen keeps what the host reports (render size, dpi, mode, displays, window position) and queues what scripts ask
   (resolution and mode, window moves as AsyncOperations, orientation, sleep timeout, brightness); the host takes the
   queue at the end of the frame and applies it.

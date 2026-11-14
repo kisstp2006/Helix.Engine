@@ -10,6 +10,7 @@
 #include <Helix/Engine/Script/ScriptableObject.h>
 #include <Helix/Engine/Settings/Settings.h>
 #include <Helix/Engine/Shader/Shader.h>
+#include <Helix/Engine/Texture/RenderTexture.h>
 #include <Helix/Engine/Texture/Texture.h>
 #include <Helix/Engine/Transform/Transform.h>
 
@@ -25,7 +26,7 @@ namespace helix::engine
             &MeshFilter::StaticClass,   &MeshRenderer::StaticClass, &Mesh::StaticClass,          &Material::StaticClass,
             &Shader::StaticClass,       &Texture::StaticClass,     &Texture2D::StaticClass,      &TimeManager::StaticClass,
             &TagManager::StaticClass,   &PlayerSettings::StaticClass, &BuildSettings::StaticClass, &GameBehaviour::StaticClass,
-            &MonoScript::StaticClass,   &ScriptableObject::StaticClass,
+            &MonoScript::StaticClass,   &ScriptableObject::StaticClass, &RenderTexture::StaticClass,
         };
     }
 

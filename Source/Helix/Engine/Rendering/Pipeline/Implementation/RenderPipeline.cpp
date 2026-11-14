@@ -45,11 +45,24 @@ namespace helix::engine
         // first pass that is no shadow, depth, meta or motion pass; the camera's scripts hear of each stage.
         class FallbackPipeline final : public RenderPipeline
         {
+        protected:
+            // A standard request: the camera rendered into the destination as its target texture.
+            bool IsRenderRequestSupported(Camera* camera, const StandardRequest& request) override { return camera && request.destination; }
+            void ProcessRenderRequest(ScriptableRenderContext& context, Camera* camera, const StandardRequest& request) override
+            {
+                RenderTexture* saved = camera->targetTexture();
+                camera->SetTargetTexture(request.destination);
+                Camera* one = camera;
+                Render(context, Span<Camera* const>(&one, 1));
+                camera->SetTargetTexture(saved);
+            }
+
         public:
             void Render(ScriptableRenderContext& context, Span<Camera* const> cameras) override
             {
-                bool first = render::ClearFirstCamera();
-                const RenderTarget& target = render::Target();
+                // Targets (the screen as 0) a camera of this frame drew into: the first one clears it whole.
+                HashMap<u64, u8> drawn;
+                const RenderTarget& screen = render::Target();
                 for (Camera* camera : cameras)
                 {
                     Camera::SetCurrent(camera);
@@ -71,15 +84,22 @@ namespace helix::engine
                     // Skyboxes come with the pipelines: until then Skybox clears with the background color.
                     bool clearColor = flags == CameraClearFlags::SolidColor || flags == CameraClearFlags::Skybox;
                     bool clearDepth = flags != CameraClearFlags::Nothing;
-                    bool whole = pr.x <= 0 && pr.y <= 0 && pr.width >= f32(target.width) && pr.height >= f32(target.height);
+                    RenderTexture* rt = camera->targetTexture();
+                    u64 key = rt ? EntityId::ToULong(rt->GetEntityId()) : 0;
+                    bool first = render::ClearFirstCamera() && !drawn.Find(key);
+                    drawn.Set(key, 1);
+                    f32 targetWidth = rt ? f32(rt->width()) : f32(screen.width), targetHeight = rt ? f32(rt->height()) : f32(screen.height);
+                    bool whole = pr.x <= 0 && pr.y <= 0 && pr.width >= targetWidth && pr.height >= targetHeight;
+                    // The camera's target first (SetupCameraProperties binds it), then the clears.
+                    context.SetupCameraProperties(camera);
                     CommandBuffer clears;
                     if (first || (whole && (clearColor || clearDepth)))
                     {
-                        clears.SetViewport(Rect{0, 0, f32(target.width), f32(target.height)});
+                        clears.SetViewport(Rect{0, 0, targetWidth, targetHeight});
                         clears.ClearRenderTarget(first || clearDepth, first || clearColor, bg);
+                        clears.SetViewport(pr);
                     }
                     context.ExecuteCommandBuffer(clears);
-                    context.SetupCameraProperties(camera);
                     if (!whole && (clearColor || clearDepth))
                     {
                         CommandBuffer partial;
@@ -108,7 +128,6 @@ namespace helix::engine
                         detail::gRenderStage(nullptr, detail::RenderStage::RenderObject);
                     }
                     Camera::SetCurrent(nullptr);
-                    first = false;
                 }
             }
         };
@@ -142,6 +161,10 @@ namespace helix::engine
             void (*dispose)(u64 pipeline) = nullptr;
             // An event of the manager: its kind; the context's id (0 for the asset and type events).
             void (*raise)(u32 kind, u64 context) = nullptr;
+            // Render requests (the request's GC handle, 0: the standard request of the event's arguments; the camera
+            // there too): whether the pipeline takes it, and the request processed in a context.
+            u8 (*supports)(u64 pipeline, u64 request) = nullptr;
+            void (*process)(u64 pipeline, u64 context, u64 request) = nullptr;
         };
 
         Managed& M()
@@ -159,6 +182,8 @@ namespace helix::engine
                 if (handle_ && M().render)
                     M().render(handle_, context.Id());
             }
+            bool IsRequestSupported(Camera* camera, const RenderRequest& request) override;
+            void ProcessRequest(ScriptableRenderContext& context, Camera* camera, const RenderRequest& request) override;
 
         protected:
             void Dispose(bool) override
@@ -252,6 +277,7 @@ namespace helix::engine
             Span<Camera* const> cameras;
             Camera* camera = nullptr;
             ScriptableObject *from = nullptr, *to = nullptr;
+            StandardRequest request;
         };
 
         EventArgs& Args()
@@ -287,10 +313,27 @@ namespace helix::engine
         void RaiseType(void*) { M().raise(u32(EventKind::TypeChanged), 0); }
 
         // The C# side's functions: create (asset handle to a pipeline handle), render, dispose, raise.
+        // The request's arguments for the C# side while it hears of it.
+        struct RequestScope
+        {
+            EventArgs saved;
+            RequestScope(Camera* camera, const RenderRequest& r) : saved(Args())
+            {
+                Args().camera = camera;
+                Args().request = r.request;
+            }
+            ~RequestScope() { Args() = saved; }
+        };
+
         u8 SetManaged(void** table, u32 count)
         {
             if (count < 4)
                 return 0;
+            if (count >= 6)
+            {
+                M().supports = std::bit_cast<u8 (*)(u64, u64)>(table[4]);
+                M().process = std::bit_cast<void (*)(u64, u64, u64)>(table[5]);
+            }
             Managed& m = M();
             bool first = m.create == nullptr;
             m.create = std::bit_cast<u64 (*)(u64)>(table[0]);
@@ -319,6 +362,22 @@ namespace helix::engine
             s.started = true;
             s.factories[u32(ScriptLanguage::Cpp)] = &CreateNative;
         }
+    }
+
+    bool ManagedPipeline::IsRequestSupported(Camera* camera, const RenderRequest& request)
+    {
+        if (!handle_ || !M().supports)
+            return false;
+        RequestScope scope(camera, request);
+        return M().supports(handle_, request.managed) != 0;
+    }
+
+    void ManagedPipeline::ProcessRequest(ScriptableRenderContext& context, Camera* camera, const RenderRequest& request)
+    {
+        if (!handle_ || !M().process)
+            return;
+        RequestScope scope(camera, request);
+        M().process(handle_, context.Id(), request.managed);
     }
 
     // ---------------------------------------------------------------------------------------------- RenderPipeline
@@ -386,8 +445,42 @@ namespace helix::engine
 
     // ---------------------------------------------------------------------------------------------- rendering
 
+    bool RenderPipeline::SupportsRenderRequest(Camera* camera, const StandardRequest& request)
+    {
+        RenderRequest r;
+        r.request = request;
+        return render::RenderRequestThroughPipeline(camera, r, false);
+    }
+
+    void RenderPipeline::SubmitRenderRequest(Camera* camera, const StandardRequest& request)
+    {
+        RenderRequest r;
+        r.request = request;
+        if (!render::RenderRequestThroughPipeline(camera, r, true))
+            HX_LOG_ERROR(PipelineLog, "RenderPipeline.SubmitRenderRequest: the active render pipeline does not support the request.");
+    }
+
     namespace render
     {
+        bool RenderRequestThroughPipeline(Camera* camera, const RenderRequest& request, bool process)
+        {
+            if (!camera || !Device())
+                return false;
+            Start();
+            RenderPipeline* pipeline = EnsurePipeline();
+            if (!pipeline->IsRequestSupported(camera, request))
+                return false;
+            if (!process)
+                return true;
+            ScriptableRenderContext context;
+            Camera* one = camera;
+            context.SetCameras(Span<Camera* const>(&one, 1));
+            pipeline->ProcessRequest(context, camera, request);
+            Stats().cameras++;
+            Camera::SetCurrent(nullptr);
+            return true;
+        }
+
         void RenderWithPipeline(Span<Camera* const> cameras, bool)
         {
             Start();
@@ -415,6 +508,7 @@ namespace helix::engine
         Span<Camera* const> PipelineEventCameras() { return Args().cameras; }
         Camera* PipelineEventCamera() { return Args().camera; }
         ScriptableObject* PipelineEventAsset(bool to) { return to ? Args().to : Args().from; }
+        const StandardRequest& PipelineEventRequest() { return Args().request; }
 
         void RegisterRenderPipelineExports()
         {

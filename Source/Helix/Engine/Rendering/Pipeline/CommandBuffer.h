@@ -2,6 +2,7 @@
 
 #include <Helix/Engine/Material/Material.h>
 #include <Helix/Engine/Rendering/Pipeline/RenderStates.h>
+#include <Helix/Engine/Rendering/Pipeline/RenderTargets.h>
 
 // CommandBuffer: rendering commands recorded now and run where the buffer is executed (a context's
 // ExecuteCommandBuffer, in the order of the context's own commands, or Graphics.ExecuteCommandBuffer at once). It
@@ -32,6 +33,14 @@ namespace helix::engine
             DrawRenderer,
             BeginSample,
             EndSample,
+            SetTarget,
+            Blit,
+            CopyTexture,
+            ResolveTarget,
+            GenerateMips,
+            GetTemporary,
+            ReleaseTemporary,
+            GlobalTextureTarget,
             DrawRenderers,
             SetupCamera,
             RenderObjects,
@@ -42,7 +51,7 @@ namespace helix::engine
         {
             Op op = Op::Count;
             bool flag = false, flag2 = false;
-            i32 a = 0, b = 0;
+            i32 a = 0, b = 0, c = 0, d = 0;
             f32 v[4] = {};
             f32 f = 0;
             // The first of its matrices, its text or its draw request, and its property sheet (indices into the list's arrays).
@@ -70,6 +79,8 @@ namespace helix::engine
             Array<String> texts = Array<String>();
             Array<PropertySheet> sheets = Array<PropertySheet>();
             Array<DrawRequest> draws = Array<DrawRequest>();
+            Array<RenderTargetIdentifier> targets = Array<RenderTargetIdentifier>();
+            Array<RenderTextureDescriptor> descriptors = Array<RenderTextureDescriptor>();
 
             Command& Add(Op op);
             // The commands of another list after these (their indices moved).
@@ -130,6 +141,61 @@ namespace helix::engine
         void BeginSample(StringView name);
         void EndSample(StringView name);
 
+        // ---------------------------------------------------------------------------------------------- targets
+        // Where the next draws go (the viewport becomes the whole target, the scissor goes): one target (its mip, face
+        // and slice), a color and a depth, or several colors and a depth.
+        void SetRenderTarget(const RenderTargetIdentifier& target) { SetRenderTarget(&target, 1, target, false); }
+        void SetRenderTarget(const RenderTargetIdentifier& target, RenderBufferLoadAction load, RenderBufferStoreAction store);
+        void SetRenderTarget(const RenderTargetIdentifier& target, i32 mipLevel, CubemapFace face = CubemapFace::Unknown, i32 depthSlice = 0)
+        {
+            RenderTargetIdentifier t(target, mipLevel, face, depthSlice);
+            SetRenderTarget(&t, 1, t, false);
+        }
+        void SetRenderTarget(const RenderTargetIdentifier& color, const RenderTargetIdentifier& depth) { SetRenderTarget(&color, 1, depth, true); }
+        void SetRenderTarget(const RenderTargetIdentifier& color, const RenderTargetIdentifier& depth, i32 mipLevel, CubemapFace face = CubemapFace::Unknown,
+                             i32 depthSlice = 0)
+        {
+            RenderTargetIdentifier c(color, mipLevel, face, depthSlice), d(depth, mipLevel, face, depthSlice);
+            SetRenderTarget(&c, 1, d, true);
+        }
+        void SetRenderTarget(Span<const RenderTargetIdentifier> colors, const RenderTargetIdentifier& depth)
+        {
+            SetRenderTarget(colors.Data(), u32(colors.Size()), depth, true);
+        }
+        // A temporary render texture by a property id (its width and height negative: the camera's pixel size divided
+        // by them), released by ReleaseTemporaryRT or when the context ends.
+        void GetTemporaryRT(i32 nameID, i32 width, i32 height, i32 depthBuffer = 0, FilterMode filter = FilterMode::Point,
+                            RenderTextureFormat format = RenderTextureFormat::Default, RenderTextureReadWrite readWrite = RenderTextureReadWrite::Default,
+                            i32 antiAliasing = 1, bool enableRandomWrite = false);
+        void GetTemporaryRT(i32 nameID, i32 width, i32 height, i32 depthBuffer, FilterMode filter, GraphicsFormat format, i32 antiAliasing = 1,
+                            bool enableRandomWrite = false);
+        void GetTemporaryRT(i32 nameID, const RenderTextureDescriptor& descriptor, FilterMode filter = FilterMode::Point);
+        // A temporary 2D array render texture of the given slices.
+        void GetTemporaryRTArray(i32 nameID, i32 width, i32 height, i32 slices, i32 depthBuffer = 0, FilterMode filter = FilterMode::Point,
+                                 RenderTextureFormat format = RenderTextureFormat::Default,
+                                 RenderTextureReadWrite readWrite = RenderTextureReadWrite::Default, i32 antiAliasing = 1,
+                                 bool enableRandomWrite = false);
+        void GetTemporaryRTArray(i32 nameID, i32 width, i32 height, i32 slices, i32 depthBuffer, FilterMode filter, GraphicsFormat format,
+                                 i32 antiAliasing = 1, bool enableRandomWrite = false, bool useDynamicScale = false);
+        void ReleaseTemporaryRT(i32 nameID);
+        // The source drawn over the whole destination (which becomes the target) with a material's pass (-1: every pass;
+        // Hidden/BlitCopy without one); the source is the material's _MainTex, scaled and offset by _MainTex_ST.
+        void Blit(const RenderTargetIdentifier& source, const RenderTargetIdentifier& dest, Material* material = nullptr, i32 pass = -1);
+        void Blit(const RenderTargetIdentifier& source, const RenderTargetIdentifier& dest, Vector2 scale, Vector2 offset);
+        // A whole texture, or one element and mip of it, into another of the same size and format.
+        void CopyTexture(const RenderTargetIdentifier& source, const RenderTargetIdentifier& dest) { CopyTexture(source, -1, -1, dest, -1, -1); }
+        void CopyTexture(const RenderTargetIdentifier& source, i32 sourceElement, const RenderTargetIdentifier& dest, i32 destElement)
+        {
+            CopyTexture(source, sourceElement, 0, dest, destElement, 0);
+        }
+        void CopyTexture(const RenderTargetIdentifier& source, i32 sourceElement, i32 sourceMip, const RenderTargetIdentifier& dest, i32 destElement,
+                         i32 destMip);
+        void ResolveAntiAliasedSurface(RenderTexture* rt, RenderTexture* target = nullptr);
+        void GenerateMips(const RenderTargetIdentifier& rt);
+        void SetGlobalTexture(i32 nameID, const RenderTargetIdentifier& value);
+        void SetGlobalTexture(StringView name, const RenderTargetIdentifier& value) { SetGlobalTexture(PropertyToID(name), value); }
+        void ClearRenderTarget(RTClearFlags clearFlags, Color backgroundColor, f32 depth = 1.0f, u32 stencil = 0);
+
         // ---------------------------------------------------------------------------------------------- native
         const render::CommandList& List() const { return list_; }
         render::CommandList& MutableList() { return list_; }
@@ -138,6 +204,9 @@ namespace helix::engine
         static CommandBuffer* Find(u64 id);
 
     private:
+        void SetRenderTarget(const RenderTargetIdentifier* colors, u32 count, const RenderTargetIdentifier& depth, bool separateDepth,
+                             RenderBufferLoadAction load = RenderBufferLoadAction::Load, RenderBufferStoreAction store = RenderBufferStoreAction::Store);
+
         String name_;
         render::CommandList list_;
         u64 id_ = 0;

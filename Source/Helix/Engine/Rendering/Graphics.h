@@ -79,6 +79,21 @@ namespace helix::engine
         static u32 QueuedMeshCount();
         // Runs a command buffer's commands now, into the target with the whole target as the viewport.
         static void ExecuteCommandBuffer(const CommandBuffer& buffer);
+        // The source over the whole destination (null: the screen) with Hidden/BlitCopy or a material's pass (-1: every
+        // pass); the source is the material's _MainTex.
+        static void Blit(Texture* source, RenderTexture* dest, Material* material = nullptr, i32 pass = -1);
+        static void Blit(Texture* source, RenderTexture* dest, Vector2 scale, Vector2 offset);
+        // Into the active render texture (the screen without one).
+        static void Blit(Texture* source, Material* material, i32 pass = -1);
+        // A whole texture, or one element and mip, into another of the same size and format (on the GPU).
+        static void CopyTexture(Texture* source, Texture* dest);
+        static void CopyTexture(Texture* source, i32 sourceElement, i32 sourceMip, Texture* dest, i32 destElement, i32 destMip);
+        // A texture (or an element of an array or cube) into a render texture (or its element) of another size or
+        // format, drawn with Hidden/BlitCopy; false when the destination is not a render texture.
+        static bool ConvertTexture(Texture* source, Texture* dest) { return ConvertTexture(source, 0, dest, 0); }
+        static bool ConvertTexture(Texture* source, i32 sourceElement, Texture* dest, i32 destElement);
+        // RenderTexture.active.
+        static void SetRenderTarget(RenderTexture* rt);
     };
 
     // RenderMesh for the script API: RenderParams holds objects, which bound structs cannot (C# has the struct).

@@ -3,6 +3,7 @@
 
 #include <Helix/Core/Logging/Log.h>
 #include <Helix/Engine/Rendering/Graphics.h>
+#include <Helix/Engine/Rendering/Implementation/RenderCore.h>
 #include <Helix/Engine/Rendering/Pipeline/RenderPipeline.h>
 #include <Scripts/TestScripts.h>
 #include <Helix/Engine/Script/ScriptRuntime.h>
@@ -593,4 +594,168 @@ HX_TEST(Rendering, CullingAndCommandBuffersCheckTheirArguments)
     HX_CHECK(RenderQueueRange::opaque().upperBound == 2500 && RenderQueueRange::transparent().lowerBound == 2501);
     RenderStateBlock state(RenderStateMask::Depth);
     HX_CHECK(state.depthState.writeEnabled && state.depthState.compareFunction == CompareFunction::Less && state.rasterState.cullingMode == CullMode::Back);
+}
+
+namespace
+{
+    // A render texture's sampled color as stored (rows bottom first): one texel.
+    u32 RenderTextureTexel(rhi::Device& device, RenderTexture* rt, u32 mip, u32 x, u32 y)
+    {
+        const render::GpuRenderTarget* g = render::RenderTargetOf(*rt);
+        if (!g)
+            return 0xDEADBEEFu;
+        u32 w = Max(1u, g->width >> mip), h = Max(1u, g->height >> mip);
+        Array<u32> texels;
+        texels.Resize(usize(w) * h);
+        if (!device.ReadTexture(g->color, mip, texels.Data(), texels.Size() * 4))
+            return 0xDEADBEEFu;
+        return texels[usize(y) * w + x];
+    }
+}
+
+HX_TEST(Rendering, RenderTexturesAsTargetsAndTextures)
+{
+    constexpr u32 size = 32;
+    ForEachDevice([&](rhi::Device& device) {
+        TestShaderFolder shaders;
+        rhi::TextureHandle color =
+            device.CreateTexture({.format = rhi::Format::RGBA8Unorm, .width = size, .height = size, .usage = rhi::TextureRenderTarget | rhi::TextureSampled});
+        rhi::TextureHandle depth = device.CreateTexture({.format = rhi::Format::D32Float, .width = size, .height = size, .usage = rhi::TextureDepthStencil});
+        Graphics::SetDevice(&device);
+        Graphics::SetTarget({color, depth, size, size, rhi::Format::RGBA8Unorm, rhi::Format::D32Float});
+        // A camera into a 16 x 16 render texture (four pixels a unit): green with a red quad in its top half's middle.
+        Mesh* quad = Quad();
+        Material* red = Material::Create(Shader::Find("Tests/Unlit"));
+        red->SetColor("color", Color(1, 0, 0, 1));
+        GameObject* top = Thing("Top", quad, red, Vector3(0, 1, 0), 2);
+        top->SetLayer(8);
+        Camera* into = MakeCamera(Vector3(0, 0, -10), 2);
+        into->SetDepth(-1);
+        into->SetCullingMask(1u << 8);
+        into->SetBackgroundColor(Color(0, 1, 0, 1));
+        RenderTexture* rt = RenderTexture::New(16, 16, 24);
+        rt->SetFilterMode(FilterMode::Point);
+        into->SetTargetTexture(rt);
+        // The main camera draws a quad of side 4 textured with it at the screen's middle.
+        Camera* main = MakeCamera(Vector3(0, 0, -10), 4);
+        main->SetCullingMask(~(1u << 8));
+        Material* textured = Material::Create(Shader::Find("Tests/Textured"));
+        textured->SetMainTexture(rt);
+        Thing("Screen", quad, textured, Vector3(0, 0, 0), 4);
+        HX_CHECK(into->pixelWidth() == 16 && into->pixelHeight() == 16);
+
+        auto check = [&](const char* what) {
+            Graphics::RenderFrame();
+            Array<u32> pixels;
+            pixels.Resize(size * size);
+            HX_REQUIRE(device.ReadTexture(color, 0, pixels.Data(), pixels.Size() * 4));
+            // Rows top first: the texture's top half (red in the middle) is the quad's top half.
+            bool ok = NearColor(Pixel(pixels, size, 16, 10), Rgba(255, 0, 0)) && NearColor(Pixel(pixels, size, 16, 20), Rgba(0, 255, 0)) &&
+                      NearColor(Pixel(pixels, size, 9, 10), Rgba(0, 255, 0)) && NearColor(Pixel(pixels, size, 2, 2), Rgba(0, 0, 0));
+            if (!ok)
+                std::printf("    %s: %08x %08x %08x %08x\n", what, Pixel(pixels, size, 16, 10), Pixel(pixels, size, 16, 20), Pixel(pixels, size, 9, 10),
+                            Pixel(pixels, size, 2, 2));
+            HX_CHECK(ok);
+        };
+        check("render texture");
+        // Its rows are kept bottom first, as a texture's: the red quad in the top rows.
+        HX_CHECK(NearColor(RenderTextureTexel(device, rt, 0, 8, 12), Rgba(255, 0, 0)) && NearColor(RenderTextureTexel(device, rt, 0, 8, 3), Rgba(0, 255, 0)));
+
+        // Multisampled: resolved into the sampled texture once drawn.
+        RenderTexture* msaa = RenderTexture::New(16, 16, 24);
+        msaa->SetAntiAliasing(4);
+        msaa->SetFilterMode(FilterMode::Point);
+        into->SetTargetTexture(msaa);
+        textured->SetMainTexture(msaa);
+        check("multisampled");
+
+        // With mips made after drawing.
+        RenderTexture* mipped = RenderTexture::New(16, 16, 24);
+        mipped->SetUseMipMap(true);
+        mipped->SetFilterMode(FilterMode::Point);
+        into->SetTargetTexture(mipped);
+        textured->SetMainTexture(mipped);
+        check("mipped");
+        HX_CHECK(mipped->mipmapCount() == 5);
+        HX_CHECK(NearColor(RenderTextureTexel(device, mipped, 1, 4, 6), Rgba(255, 0, 0)) && NearColor(RenderTextureTexel(device, mipped, 1, 4, 1), Rgba(0, 255, 0)));
+
+        // Blit and CopyTexture: the same texels.
+        RenderTexture* blitted = RenderTexture::New(16, 16, 0);
+        RenderTexture* copied = RenderTexture::New(16, 16, 0);
+        Graphics::Blit(rt, blitted);
+        Graphics::CopyTexture(rt, copied);
+        for (u32 y : {3u, 12u})
+            for (u32 x : {1u, 8u})
+            {
+                u32 want = RenderTextureTexel(device, rt, 0, x, y);
+                u32 gotBlit = RenderTextureTexel(device, blitted, 0, x, y), gotCopy = RenderTextureTexel(device, copied, 0, x, y);
+                if (!NearColor(gotBlit, want) || gotCopy != want)
+                    std::printf("    %u,%u: want %08x blit %08x copy %08x\n", x, y, want, gotBlit, gotCopy);
+                HX_CHECK(NearColor(gotBlit, want) && gotCopy == want);
+            }
+
+        // ConvertTexture: into half the size; into a slice of an array and back.
+        RenderTexture* half = RenderTexture::New(8, 8, 0);
+        HX_CHECK(Graphics::ConvertTexture(rt, half));
+        HX_CHECK(NearColor(RenderTextureTexel(device, half, 0, 4, 6), Rgba(255, 0, 0)) && NearColor(RenderTextureTexel(device, half, 0, 4, 1), Rgba(0, 255, 0)));
+        RenderTexture* slices = RenderTexture::New(16, 16, 0);
+        slices->SetDimension(TextureDimension::Tex2DArray);
+        slices->SetVolumeDepth(2);
+        RenderTexture* back = RenderTexture::New(16, 16, 0);
+        HX_CHECK(Graphics::ConvertTexture(rt, 0, slices, 1) && Graphics::ConvertTexture(slices, 1, back, 0));
+        HX_CHECK(NearColor(RenderTextureTexel(device, back, 0, 8, 12), Rgba(255, 0, 0)) && NearColor(RenderTextureTexel(device, back, 0, 8, 3), Rgba(0, 255, 0)));
+        HX_CHECK(!Graphics::ConvertTexture(rt, Texture2D::Create(4, 4, TextureFormat::RGBA32, false)));
+
+        // A temporary array: its third slice cleared and copied out.
+        {
+            RenderTexture* slice = RenderTexture::New(8, 8, 0);
+            const i32 id = Shader::PropertyToID("_Slices");
+            CommandBuffer b;
+            b.GetTemporaryRTArray(id, 8, 8, 3);
+            b.SetRenderTarget(RenderTargetIdentifier(id), 0, CubemapFace::Unknown, 2);
+            b.ClearRenderTarget(false, true, Color(0, 0, 1, 1));
+            b.CopyTexture(RenderTargetIdentifier(id), 2, 0, RenderTargetIdentifier(slice), 0, 0);
+            b.ReleaseTemporaryRT(id);
+            Graphics::ExecuteCommandBuffer(b);
+            HX_CHECK(NearColor(RenderTextureTexel(device, slice, 0, 3, 3), Rgba(0, 0, 255)));
+        }
+
+        // A standard request: the camera rendered into another texture by the fallback pipeline.
+        RenderTexture* requested = RenderTexture::New(16, 16, 24);
+        StandardRequest request{requested};
+        HX_CHECK(RenderPipeline::SupportsRenderRequest(into, request));
+        RenderPipeline::SubmitRenderRequest(into, request);
+        HX_CHECK(NearColor(RenderTextureTexel(device, requested, 0, 8, 12), Rgba(255, 0, 0)) && NearColor(RenderTextureTexel(device, requested, 0, 8, 3), Rgba(0, 255, 0)));
+        HX_CHECK(into->targetTexture() == mipped);
+
+        // Temporaries: a released one is taken again; unused ones go after some frames.
+        u32 before = RenderTexture::TemporaryCount();
+        RenderTexture* a = RenderTexture::GetTemporary(8, 8);
+        RenderTexture::ReleaseTemporary(a);
+        RenderTexture* b = RenderTexture::GetTemporary(8, 8);
+        HX_CHECK(a == b && RenderTexture::TemporaryCount() == before + 1);
+        RenderTexture::ReleaseTemporary(b);
+        for (u32 f = 0; f < 20; f++)
+            Graphics::RenderFrame();
+        HX_CHECK(RenderTexture::TemporaryCount() == 0);
+
+        // A created texture keeps its size; released it takes a new one.
+        u32 errors = 0;
+        LogSink count = [](const LogMessage& m, void* user) {
+            if (m.level >= LogLevel::Error)
+                ++*static_cast<u32*>(user);
+        };
+        AddLogSink(count, &errors);
+        rt->SetWidth(32);
+        RemoveLogSink(count, &errors);
+        HX_CHECK(errors == 1 && rt->width() == 16 && rt->IsCreated());
+        rt->Release();
+        rt->SetWidth(32);
+        HX_CHECK(!rt->IsCreated() && rt->width() == 32);
+
+        into->SetTargetTexture(nullptr);
+        Graphics::ReleaseResources();
+        device.Destroy(color);
+        device.Destroy(depth);
+    });
 }

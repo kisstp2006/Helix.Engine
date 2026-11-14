@@ -79,6 +79,18 @@ namespace helix::engine
             };
             HashMap<u64, Age> tempJob;
             i32 live[8] = {};
+
+            // The heap is made first, so it outlives the arena at exit.
+            Memory() { (void)HeapAllocator(); }
+
+            // The arena's blocks go with it (at exit), so nothing it took is left unreachable.
+            ~Memory()
+            {
+                for (u8* b : blocks)
+                    HeapFree(b);
+                for (void* p : large)
+                    HeapFree(p);
+            }
         };
 
         Memory& Mem()

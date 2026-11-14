@@ -9,6 +9,7 @@
 #include <Helix/Engine/Script/ScriptRuntime.h>
 #include <Helix/Scripting/Bindings/Interop.h>
 #include <Helix/Engine/Rendering/CullingGroup.h>
+#include <Helix/Engine/Rendering/AsyncGPUReadback.h>
 #include <Helix/Engine/Rendering/LODGroup.h>
 #include <Helix/Engine/Rendering/SystemInfo.h>
 #include <Helix/Engine/Rendering/Light.h>
@@ -1226,6 +1227,224 @@ HX_TEST(Rendering, InvertedCullingAndGlobalArraysFromCommandBuffers)
         Shader::Globals().GetVectorArray(PropertyToID("_TestVectors"), v);
         HX_CHECK(f.Size() == 3 && f[2] == 3 && v.Size() == 2 && v[1].w == 8);
         DestroyImmediate(camera->gameObject());
+        Graphics::ReleaseResources();
+        device.Destroy(color);
+        device.Destroy(depth);
+    });
+}
+
+HX_TEST(Rendering, RendererListsRenderPassesProceduralDrawsAndReadbacks)
+{
+    constexpr u32 size = 32;
+    ForEachDevice([&](rhi::Device& device) {
+        TestShaderFolder shaders;
+        rhi::TextureHandle color =
+            device.CreateTexture({.format = rhi::Format::RGBA8Unorm, .width = size, .height = size, .usage = rhi::TextureRenderTarget | rhi::TextureSampled});
+        rhi::TextureHandle depth = device.CreateTexture({.format = rhi::Format::D32Float, .width = size, .height = size, .usage = rhi::TextureDepthStencil});
+        Graphics::SetDevice(&device);
+        Graphics::SetTarget({color, depth, size, size, rhi::Format::RGBA8Unorm, rhi::Format::D32Float});
+        Mesh* quad = Quad();
+        Material* red = Material::Create(Shader::Find("Tests/Unlit"));
+        red->SetColor("color", Color(1, 0, 0, 1));
+        GameObject* left = Thing("Left", quad, red, Vector3(-1, 0, 0), 1.5f);
+        Camera* camera = MakeCamera(Vector3(0, 0, -10), 2);
+        UpdateWorldMatrices();
+        Graphics::RenderFrame();
+        auto read = [&] {
+            Array<u32> pixels;
+            pixels.Resize(size * size);
+            HX_CHECK(device.ReadTexture(color, 0, pixels.Data(), pixels.Size() * 4));
+            return pixels;
+        };
+        // A renderer list draws what DrawRenderers draws; a state for the pass tag's value turns its color writes off.
+        for (u32 round = 0; round < 2; round++)
+        {
+            ScriptableRenderContext context;
+            context.SetupCameraProperties(camera);
+            CommandBuffer clear;
+            clear.ClearRenderTarget(true, true, Color(0, 0, 0, 1));
+            context.ExecuteCommandBuffer(clear);
+            ScriptableCullingParameters p;
+            HX_REQUIRE(camera->TryGetCullingParameters(p));
+            CullingResults culling = context.Cull(p);
+            RendererUtils::RendererListDesc desc(ShaderTagId("SRPDefaultUnlit"), culling, camera);
+            desc.sortingCriteria = SortingCriteria::CommonOpaque;
+            RendererListParams params = desc.ConvertToParameters();
+            if (round == 1)
+            {
+                RenderStateBlock noColor(RenderStateMask::Blend);
+                noColor.blendState.targets[0].writeMask = ColorWriteMask(0);
+                params.isPassTagName = true;
+                params.taggedStates.Push({ShaderTagId("SRPDefaultUnlit"), noColor});
+            }
+            RendererUtils::RendererList list = context.CreateRendererList(params);
+            HX_CHECK(list.isValid());
+            CommandBuffer draw;
+            draw.DrawRendererList(list);
+            context.ExecuteCommandBuffer(draw);
+            context.Submit();
+            Array<u32> pixels = read();
+            HX_CHECK(NearColor(Pixel(pixels, size, 8, 16), round == 0 ? Rgba(255, 0, 0) : Rgba(0, 0, 0)) && NearColor(Pixel(pixels, size, 24, 16), Rgba(0, 0, 0)));
+        }
+        // A native render pass: one subpass into the camera target, cleared green by its load action.
+        {
+            ScriptableRenderContext context;
+            context.SetupCameraProperties(camera);
+            AttachmentDescriptor target(GraphicsFormat::R8G8B8A8_UNorm);
+            target.ConfigureTarget(RenderTargetIdentifier(BuiltinRenderTextureType::CameraTarget), false, true);
+            target.ConfigureClear(Color(0, 1, 0, 1));
+            AttachmentDescriptor scratch(GraphicsFormat::R8G8B8A8_UNorm);
+            AttachmentDescriptor attachments[2] = {target, scratch};
+            context.BeginRenderPass(i32(size), i32(size), 1, Span<const AttachmentDescriptor>(attachments, 2));
+            const i32 first[] = {1};
+            context.BeginSubPass(Span<const i32>(first, 1));
+            context.EndSubPass();
+            const i32 second[] = {0};
+            context.BeginSubPass(Span<const i32>(second, 1));
+            context.EndSubPass();
+            context.EndRenderPass();
+            context.Submit();
+            HX_CHECK(NearColor(Pixel(read(), size, 16, 16), Rgba(0, 255, 0)));
+        }
+        // DrawProcedural: three vertices of Hidden/BlitCopy (a full screen triangle from the vertex id) with white.
+        {
+            Material* blit = Material::Create(Shader::Find("Hidden/BlitCopy"));
+            CommandBuffer b;
+            b.ClearRenderTarget(true, true, Color(0, 0, 0, 1));
+            b.DrawProcedural(Matrix4x4::identity, blit, 0, MeshTopology::Triangles, 3);
+            Graphics::ExecuteCommandBuffer(b);
+            HX_CHECK(NearColor(Pixel(read(), size, 16, 16), Rgba(255, 255, 255)));
+            DestroyImmediate(blit);
+        }
+        // BlitMultiTap's offsets as globals.
+        {
+            RenderTexture* a = RenderTexture::New(8, 8, 0);
+            RenderTexture* b = RenderTexture::New(8, 8, 0);
+            const Vector2 taps[] = {Vector2(1, 0), Vector2(0, 1), Vector2(-1, 0)};
+            Graphics::BlitMultiTap(a, b, nullptr, Span<const Vector2>(taps, 3));
+            Array<Vector4> offsets;
+            Shader::Globals().GetVectorArray(PropertyToID("_BlitMultiTapOffsets"), offsets);
+            HX_CHECK(offsets.Size() == 3 && offsets[1].y == 1);
+            DestroyImmediate(a);
+            DestroyImmediate(b);
+        }
+        // Readbacks: read when the frame's commands are submitted, delivered at the next frame's start.
+        {
+            RenderTexture* rt = RenderTexture::New(16, 16, 24);
+            camera->SetTargetTexture(rt);
+            struct Got
+            {
+                u32 calls = 0;
+                u32 texel = 0;
+            } got;
+            AsyncGPUReadbackRequest r = AsyncGPUReadback::Request(rt, 0, [](void* user, const AsyncGPUReadbackRequest& q) {
+                auto* g = static_cast<Got*>(user);
+                g->calls++;
+                Span<const u8> data = q.GetData();
+                if (data.Size() >= 4)
+                    std::memcpy(&g->texel, data.Data() + (8 * 16 + 4) * 4, 4);
+            }, &got);
+            HX_CHECK(!r.done());
+            Graphics::RenderFrame();
+            HX_CHECK(r.done() && !r.hasError() && r.width() == 16 && got.calls == 0);
+            Graphics::RenderFrame();
+            HX_CHECK(got.calls == 1 && NearColor(got.texel, Rgba(255, 0, 0)));
+            // A command buffer's request waits for its command.
+            CommandBuffer b;
+            AsyncGPUReadbackRequest r2 = b.RequestAsyncReadback(rt);
+            HX_CHECK(!r2.done());
+            Graphics::ExecuteCommandBuffer(b);
+            HX_CHECK(r2.done() && r2.GetData().Size() == 16 * 16 * 4);
+            HX_CHECK(AsyncGPUReadback::Request(Texture2D::whiteTexture()).hasError());
+            camera->SetTargetTexture(nullptr);
+            DestroyImmediate(rt);
+        }
+        DestroyImmediate(left);
+        DestroyImmediate(camera->gameObject());
+        Graphics::ReleaseResources();
+        device.Destroy(color);
+        device.Destroy(depth);
+    });
+}
+
+HX_TEST(Rendering, TheCameraBlockSaysWhenTheTargetIsDrawnFlipped)
+{
+    constexpr u32 size = 16;
+    ForEachDevice([&](rhi::Device& device) {
+        TestShaderFolder shaders;
+        rhi::TextureHandle color =
+            device.CreateTexture({.format = rhi::Format::RGBA8Unorm, .width = size, .height = size, .usage = rhi::TextureRenderTarget | rhi::TextureSampled});
+        rhi::TextureHandle depth = device.CreateTexture({.format = rhi::Format::D32Float, .width = size, .height = size, .usage = rhi::TextureDepthStencil});
+        Graphics::SetDevice(&device);
+        Graphics::SetTarget({color, depth, size, size, rhi::Format::RGBA8Unorm, rhi::Format::D32Float});
+        Material* params = Material::Create(Shader::Find("Tests/ProjectionParams"));
+        GameObject* quad = Thing("Params", Quad(), params, Vector3(0, 0, 0), 3);
+        Camera* camera = MakeCamera(Vector3(0, 0, -10), 2);
+        camera->SetNearClipPlane(0.5f);
+        UpdateWorldMatrices();
+        Array<u32> pixels;
+        pixels.Resize(size * size);
+        // The screen: not flipped.
+        Graphics::RenderFrame();
+        HX_REQUIRE(device.ReadTexture(color, 0, pixels.Data(), pixels.Size() * 4));
+        HX_CHECK(NearColor(Pixel(pixels, size, 8, 8), Rgba(0, 255, 128)));
+        // A render texture: flipped.
+        RenderTexture* rt = RenderTexture::New(i32(size), i32(size), 24);
+        camera->SetTargetTexture(rt);
+        Graphics::RenderFrame();
+        const render::GpuRenderTarget* g = render::RenderTargetOf(*rt);
+        HX_REQUIRE(g != nullptr);
+        HX_REQUIRE(device.ReadTexture(g->color, 0, pixels.Data(), pixels.Size() * 4));
+        HX_CHECK(NearColor(Pixel(pixels, size, 8, 8), Rgba(255, 0, 128)));
+        camera->SetTargetTexture(nullptr);
+        DestroyImmediate(rt);
+        DestroyImmediate(quad);
+        DestroyImmediate(camera->gameObject());
+        DestroyImmediate(params);
+        Graphics::ReleaseResources();
+        device.Destroy(color);
+        device.Destroy(depth);
+    });
+}
+
+HX_TEST(Rendering, ValuesWithoutPropertiesComeByName)
+{
+    constexpr u32 size = 16;
+    ForEachDevice([&](rhi::Device& device) {
+        TestShaderFolder shaders;
+        rhi::TextureHandle color =
+            device.CreateTexture({.format = rhi::Format::RGBA8Unorm, .width = size, .height = size, .usage = rhi::TextureRenderTarget | rhi::TextureSampled});
+        rhi::TextureHandle depth = device.CreateTexture({.format = rhi::Format::D32Float, .width = size, .height = size, .usage = rhi::TextureDepthStencil});
+        Graphics::SetDevice(&device);
+        Graphics::SetTarget({color, depth, size, size, rhi::Format::RGBA8Unorm, rhi::Format::D32Float});
+        Material* named = Material::Create(Shader::Find("Tests/NamedValues"));
+        GameObject* quad = Thing("Named", Quad(), named, Vector3(0, 0, 0), 3);
+        Camera* camera = MakeCamera(Vector3(0, 0, -10), 2);
+        UpdateWorldMatrices();
+        Array<u32> pixels;
+        pixels.Resize(size * size);
+        auto center = [&]() -> u32 {
+            Graphics::RenderFrame();
+            HX_CHECK(device.ReadTexture(color, 0, pixels.Data(), pixels.Size() * 4));
+            return Pixel(pixels, size, 8, 8);
+        };
+        // The global color; the texture is white while nothing sets it.
+        i32 namedColor = PropertyToID("namedColor"), namedTexture = PropertyToID("namedTexture");
+        Shader::SetGlobalVector(namedColor, Vector4(0, 1, 0, 1));
+        HX_CHECK(NearColor(center(), Rgba(0, 255, 0)));
+        // A renderer's property block wins over the globals.
+        MaterialPropertyBlock block;
+        block.SetVector(namedColor, Vector4(1, 0, 0, 1));
+        quad->GetComponent<MeshRenderer>()->SetPropertyBlock(&block);
+        HX_CHECK(NearColor(center(), Rgba(255, 0, 0)));
+        // A global texture (black is transparent).
+        Shader::SetGlobalTexture(namedTexture, Texture2D::blackTexture());
+        HX_CHECK(NearColor(center(), Rgba(0, 0, 0, 0)));
+        quad->GetComponent<MeshRenderer>()->SetPropertyBlock(nullptr);
+        Shader::Globals().Clear();
+        DestroyImmediate(quad);
+        DestroyImmediate(camera->gameObject());
+        DestroyImmediate(named);
         Graphics::ReleaseResources();
         device.Destroy(color);
         device.Destroy(depth);

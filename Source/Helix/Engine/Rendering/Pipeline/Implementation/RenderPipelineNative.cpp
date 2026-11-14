@@ -29,13 +29,12 @@ namespace helix::engine
         return u64(reinterpret_cast<uintptr_t>(r.data));
     }
 
-    void RenderPipelineNative::DrawRenderers(u64 context, u64 culling, const DrawRendererData& d, Span<const ShaderTagId> passNames, Material* overrideMaterial,
-                                             Shader* overrideShader, Material* fallbackMaterial, Span<const i32> blends)
+    namespace
     {
-        ScriptableRenderContext* c = ScriptableRenderContext::Find(context);
-        if (!c)
-            return;
-        DrawingSettings drawing;
+        // C#'s settings as plain values back into the settings.
+        void Unpack(const DrawRendererData& d, Span<const ShaderTagId> passNames, Material* overrideMaterial, Shader* overrideShader, Material* fallbackMaterial,
+                    Span<const i32> blends, DrawingSettings& drawing, FilteringSettings& filtering, RenderStateBlock& state)
+        {
         drawing.sortingSettings.worldToCameraMatrix = d.worldToCameraMatrix;
         drawing.sortingSettings.cameraPosition = d.cameraPosition;
         drawing.sortingSettings.customAxis = d.customAxis;
@@ -52,13 +51,12 @@ namespace helix::engine
         drawing.mainLightIndex = d.mainLightIndex;
         for (usize i = 0; i < passNames.Size() && i < usize(DrawingSettings::maxShaderPasses); i++)
             drawing.passNames[i] = passNames[i];
-        FilteringSettings filtering;
         filtering.renderQueueRange = {d.queueLower, d.queueUpper};
         filtering.layerMask = d.layerMask;
         filtering.renderingLayerMask = d.renderingLayerMask;
         filtering.batchLayerMask = d.batchLayerMask;
         filtering.excludeMotionVectorObjects = d.excludeMotionVectorObjects != 0;
-        RenderStateBlock state(RenderStateMask(d.stateMask));
+        state = RenderStateBlock(RenderStateMask(d.stateMask));
         state.blendState.separateMRTBlendStates = (d.blendFlags & 1) != 0;
         state.blendState.alphaToMask = (d.blendFlags & 2) != 0;
         RenderTargetBlendState& t = state.blendState.targets[0];
@@ -100,8 +98,73 @@ namespace helix::engine
         s.failOperationBack = StencilOp(d.stencilFailBack);
         s.zFailOperationBack = StencilOp(d.stencilZFailBack);
         state.stencilReference = d.stencilReference;
+        }
+    }
+
+    void RenderPipelineNative::DrawRenderers(u64 context, u64 culling, const DrawRendererData& d, Span<const ShaderTagId> passNames, Material* overrideMaterial,
+                                             Shader* overrideShader, Material* fallbackMaterial, Span<const i32> blends)
+    {
+        ScriptableRenderContext* c = ScriptableRenderContext::Find(context);
+        if (!c)
+            return;
+        DrawingSettings drawing;
+        FilteringSettings filtering;
+        RenderStateBlock state;
+        Unpack(d, passNames, overrideMaterial, overrideShader, fallbackMaterial, blends, drawing, filtering, state);
         c->DrawRenderers(CullingResults{reinterpret_cast<render::CullingData*>(uintptr_t(culling))}, drawing, filtering, state);
     }
+
+    u64 RenderPipelineNative::CreateRendererList(u64 context, u64 culling, const DrawRendererData& d, Span<const ShaderTagId> passNames,
+                                                 Material* overrideMaterial, Shader* overrideShader, Material* fallbackMaterial, Span<const i32> blends,
+                                                 ShaderTagId tagName, bool isPassTagName)
+    {
+        ScriptableRenderContext* c = ScriptableRenderContext::Find(context);
+        if (!c)
+            return 0;
+        RendererListParams p;
+        p.cullingResults = CullingResults{reinterpret_cast<render::CullingData*>(uintptr_t(culling))};
+        RenderStateBlock state;
+        Unpack(d, passNames, overrideMaterial, overrideShader, fallbackMaterial, blends, p.drawSettings, p.filteringSettings, state);
+        if (state.mask != RenderStateMask::Nothing)
+            p.taggedStates.Push({ShaderTagId(), state});
+        p.tagName = tagName;
+        p.isPassTagName = isPassTagName;
+        return c->CreateRendererList(p).id;
+    }
+
+    void RenderPipelineNative::AddRendererListState(u64 context, u64 list, ShaderTagId tagValue, const DrawRendererData& d, Span<const i32> blends)
+    {
+        ScriptableRenderContext* c = ScriptableRenderContext::Find(context);
+        if (!c)
+            return;
+        DrawingSettings drawing;
+        FilteringSettings filtering;
+        RenderStateBlock state;
+        Unpack(d, {}, nullptr, nullptr, nullptr, blends, drawing, filtering, state);
+        c->AddRendererListState(RendererUtils::RendererList{list}, TaggedState{tagValue, state});
+    }
+
+    void RenderPipelineNative::BeginRenderPass(u64 context, i32 width, i32 height, i32 samples, Span<const AttachmentData> attachments, i32 depthIndex)
+    {
+        ScriptableRenderContext* c = ScriptableRenderContext::Find(context);
+        if (!c)
+            return;
+        Array<AttachmentDescriptor> list;
+        for (const AttachmentData& a : attachments)
+        {
+            AttachmentDescriptor& o = list.Emplace();
+            o.graphicsFormat = GraphicsFormat(a.graphicsFormat);
+            o.loadAction = RenderBufferLoadAction(a.loadAction);
+            o.storeAction = RenderBufferStoreAction(a.storeAction);
+            o.loadStoreTarget = a.loadStoreTarget.ToIdentifier();
+            o.resolveTarget = a.resolveTarget.ToIdentifier();
+            o.clearColor = a.clearColor;
+            o.clearDepth = a.clearDepth;
+            o.clearStencil = a.clearStencil;
+        }
+        c->BeginRenderPass(width, height, samples, list, depthIndex);
+    }
+
 
     u64 RenderPipelineNative::VisibleLights(u64 culling, i32& count)
     {

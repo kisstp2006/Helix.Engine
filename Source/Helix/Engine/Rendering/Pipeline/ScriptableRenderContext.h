@@ -28,6 +28,18 @@ namespace helix::engine
         void DrawRenderers(CullingResults cullingResults, const DrawingSettings& drawingSettings, const FilteringSettings& filteringSettings);
         void DrawRenderers(CullingResults cullingResults, const DrawingSettings& drawingSettings, const FilteringSettings& filteringSettings,
                            const RenderStateBlock& stateBlock);
+        // What DrawRenderers would draw, as a list command buffers draw (valid while the context renders).
+        RendererUtils::RendererList CreateRendererList(const RendererListParams& parameters);
+        RendererUtils::RendererList CreateRendererList(const RendererUtils::RendererListDesc& desc);
+        // One more state of a tag value for a list of this context.
+        void AddRendererListState(RendererUtils::RendererList list, const TaggedState& state);
+        // Native render passes: the attachments of the pass, each subpass's colors (and the depth) as the target. The
+        // devices of this milestone draw each subpass as a render pass of its own; attachments without a target are
+        // temporary textures of the pass; inputs are the textures of earlier subpasses (as globals _HelixInput0..n).
+        void BeginRenderPass(i32 width, i32 height, i32 samples, Span<const AttachmentDescriptor> attachments, i32 depthAttachmentIndex = -1);
+        void BeginSubPass(Span<const i32> colors, Span<const i32> inputs = {}, bool isDepthReadOnly = false);
+        void EndSubPass();
+        void EndRenderPass();
         // The camera's matrices, position, main light and ambient into the camera block, its viewport.
         void SetupCameraProperties(Camera* camera, bool stereoSetup = false);
         // A copy of the buffer's commands after the context's.
@@ -56,6 +68,12 @@ namespace helix::engine
         render::CommandList list_;
         Array<render::CullingData*> culling_ = Array<render::CullingData*>();
         Array<Camera*> cameras_ = Array<Camera*>();
+        Array<u64> lists_ = Array<u64>();
+        // The native render pass being recorded.
+        Array<AttachmentDescriptor> passAttachments_ = Array<AttachmentDescriptor>();
+        Array<u8> passStarted_ = Array<u8>();
+        i32 passWidth_ = 0, passHeight_ = 0, passSamples_ = 1, passDepth_ = -1;
+        bool inRenderPass_ = false, inSubPass_ = false;
         u64 id_ = 0;
     };
 }

@@ -62,6 +62,12 @@ HX_TEST(GameObject, TagsAndLayers)
     HX_CHECK_EQ(g->layer(), 0u);
     g->SetLayer(5);
     HX_CHECK_EQ(g->layer(), 5u);
+    // Layer masks: bits of the named layers.
+    const StringView names[] = {"UI", "Water", "NoSuchLayer"};
+    HX_CHECK_EQ(LayerMask::GetMask(Span<const StringView>(names, 3)), i32((1 << 5) | (1 << 4)));
+    LayerMask mask = LayerMask::GetMask(Span<const StringView>(names, 1));
+    HX_CHECK(i32(mask) == 32 && mask.value() == 32 && LayerMask::LayerToName(5) == StringView("UI") && LayerMask::LayerToName(40).Empty() &&
+             LayerMask::NameToLayer("Water") == 4);
     Cleanup();
 }
 

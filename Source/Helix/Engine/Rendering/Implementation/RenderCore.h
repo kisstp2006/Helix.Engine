@@ -50,6 +50,8 @@ namespace helix::engine::render
         Bounds bounds;
         bool hasBlock = false;
         PropertySheet block;
+        // DrawProcedural's instances (one draw with this instance count).
+        u32 instances = 1;
     };
 
     // The GPU textures of a render texture: the sampled color (with its mips), the multisampled target it is resolved
@@ -131,6 +133,9 @@ namespace helix::engine::render
     // The persistent object block (object to world and back) of a renderer by its render data index.
     UniformPart ObjectBlockPart(rhi::CommandList& cl, u32 renderIndex);
     void ReleasePersistentBlocks();
+    // A mesh of `vertexCount` vertices without attributes, indexed in order, of a topology: what DrawProcedural draws
+    // (its shaders take their vertices from the vertex id).
+    Mesh* ProceduralMesh(MeshTopology topology, u32 vertexCount);
     // The magenta material of objects without a usable shader.
     Material* ErrorMaterial();
     // A projection of the reference (clip depth -1..1) as the device takes it (0..1); flipped upside down for a texture
@@ -139,6 +144,8 @@ namespace helix::engine::render
 
     // The light mode of a shader pass by the scriptable pipeline's rule: "SRPDefaultUnlit" without a LightMode tag.
     ShaderTagId PassTag(const shadercompiler::ShaderDescription& description, u32 descriptionPass);
+    // The value of a pass tag ("LightMode" by the rule of PassTag; none when the pass has no such tag).
+    ShaderTagId PassTagValue(const shadercompiler::ShaderDescription& description, u32 descriptionPass, ShaderTagId tagName);
 
     struct CullingData
     {

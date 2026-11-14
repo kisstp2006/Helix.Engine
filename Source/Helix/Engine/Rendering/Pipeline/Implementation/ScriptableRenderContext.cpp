@@ -35,6 +35,8 @@ namespace helix::engine
             HashMap<u64, u8> culling;
             // Culling data of ended contexts, reused (its arrays keep their memory).
             Array<CullingData*> spareCulling = Array<CullingData*>();
+            // The renderer lists of live contexts by id.
+            HashMap<u64, DrawRequest*> lists;
             u64 next = 0;
 
             ~Live()
@@ -120,6 +122,9 @@ namespace helix::engine
                 Refers::Matrices, // DrawMeshInstanced
                 Refers::Nothing,  // InvertCulling
                 Refers::Numbers,  // GlobalArray
+                Refers::Nothing,  // DrawRendererList
+                Refers::Matrices, // DrawProcedural
+                Refers::Nothing,  // Readback
             };
             static_assert(sizeof(kRefers) / sizeof(kRefers[0]) == usize(Op::Count), "a table entry per command kind");
         }
@@ -287,6 +292,40 @@ namespace helix::engine
     }
 
     void CommandBuffer::SetInvertCulling(bool invertCulling) { list_.Add(Op::InvertCulling).flag = invertCulling; }
+
+    void CommandBuffer::DrawProcedural(const Matrix4x4& matrix, Material* material, i32 shaderPass, MeshTopology topology, i32 vertexCount, i32 instanceCount,
+                                       const MaterialPropertyBlock* properties)
+    {
+        if (vertexCount <= 0 || instanceCount <= 0)
+            return;
+        Command& c = list_.Add(Op::DrawProcedural);
+        c.object = render::ProceduralMesh(topology, u32(vertexCount))->GetEntityId();
+        c.object2 = material ? material->GetEntityId() : EntityId();
+        c.b = shaderPass, c.c = instanceCount;
+        c.index = u32(list_.matrices.Size());
+        list_.matrices.Push(matrix);
+        if (properties && !properties->isEmpty())
+        {
+            c.sheet = u32(list_.sheets.Size());
+            list_.sheets.Push(properties->Sheet());
+        }
+    }
+
+    AsyncGPUReadbackRequest CommandBuffer::RequestAsyncReadback(Texture* source, i32 mipIndex, AsyncGPUReadback::Callback callback, void* user)
+    {
+        AsyncGPUReadbackRequest r = render::RequestReadbackAfterSubmit(source, mipIndex, callback, user);
+        Command& c = list_.Add(Op::Readback);
+        c.a = i32(u32(r.Id()));
+        c.b = i32(u32(r.Id() >> 32));
+        return r;
+    }
+
+    void CommandBuffer::DrawRendererList(RendererUtils::RendererList rendererList)
+    {
+        Command& c = list_.Add(Op::DrawRendererList);
+        c.a = i32(u32(rendererList.id));
+        c.b = i32(u32(rendererList.id >> 32));
+    }
 
     void CommandBuffer::DrawMeshInstanced(Mesh* mesh, i32 submeshIndex, Material* material, i32 shaderPass, Span<const Matrix4x4> matrices,
                                           const MaterialPropertyBlock* properties)
@@ -527,6 +566,8 @@ namespace helix::engine
             f32 lightDirection[4];
             f32 lightColor[4];
             f32 ambient[4];
+            // x: -1 when the bound target is drawn flipped (a texture), else 1; y near, z far, w 1 / far.
+            f32 projectionParams[4];
         };
 
         // The textures draws go into: colors (each with its mip and layer) and a depth, their size and formats, and the
@@ -793,6 +834,7 @@ namespace helix::engine
                 cam.p.m10 = -cam.p.m10, cam.p.m11 = -cam.p.m11, cam.p.m12 = -cam.p.m12, cam.p.m13 = -cam.p.m13;
                 cam.vp = cam.p * cam.v;
             }
+            cam.projectionParams[0] = e.state.bound.formats.flipped ? -1.0f : 1.0f;
             Upload(&cam, sizeof(PerCamera), e.cameraBlock);
             e.cameraDirty = false;
         }
@@ -910,7 +952,7 @@ namespace helix::engine
         // One submesh with one pass's data: the camera block, its matrices, the material's blocks (once per pass data
         // in a Submit; a property block makes its own), textures and dynamic keywords.
         void DrawOne(Executor& e, Mesh& mesh, u32 submesh, const MaterialPassData& data, const Matrix4x4& world, u64 worldKey,
-                     const PropertySheet* block, const StateOverride* state, i32 renderIndex = -1)
+                     const PropertySheet* block, const StateOverride* state, i32 renderIndex = -1, u32 instances = 1)
         {
             const ShaderVariant& v = *data.variant;
             const GpuMesh* gm = MeshOf(mesh);
@@ -949,10 +991,10 @@ namespace helix::engine
                 BindUniform(e, 10, e.drawBlock);
             }
             BindMaterial(e, data, block);
-            e.cl.DrawIndexed(sub.count, 1, sub.start, sub.baseVertex);
+            e.cl.DrawIndexed(sub.count, instances, sub.start, sub.baseVertex);
             RenderStats& stats = Stats();
             stats.drawCalls++;
-            stats.triangles += sub.count / 3;
+            stats.triangles += u64(sub.count / 3) * instances;
             if (persistent && renderIndex >= 0 && !block)
                 stats.persistentDraws++;
         }
@@ -1621,6 +1663,22 @@ namespace helix::engine
             bool overridden = request.state.mask != RenderStateMask::Nothing;
             if (overridden)
                 state = MakeOverride(request.state);
+            static Array<StateOverride> taggedStates;
+            taggedStates.Clear();
+            for (const TaggedState& t : request.tagged)
+                taggedStates.Push(MakeOverride(t.state));
+            // The override of an item: the state of its pass's tag value, else the request's.
+            auto stateOf = [&](const Item& item) -> const StateOverride* {
+                if (!request.tagged.Empty() && item.material && item.material->shader())
+                    if (const shadercompiler::ShaderDescription* desc = item.material->shader()->Description())
+                    {
+                        ShaderTagId value = PassTagValue(*desc, item.data->pass, request.tagName);
+                        for (u32 k = 0; k < request.tagged.Size(); k++)
+                            if (request.tagged[k].tagValue == value)
+                                return &taggedStates[k];
+                    }
+                return overridden ? &state : nullptr;
+            };
             // An item's object: its mesh, world matrix, property block and whether it may join an instanced draw.
             struct Source
             {
@@ -1670,15 +1728,15 @@ namespace helix::engine
                         run++;
                     }
                 }
-                if (run > 1 && DrawInstanced(e, *mesh, item.submesh, *item.material, *item.data, worlds, overridden ? &state : nullptr))
+                if (run > 1 && DrawInstanced(e, *mesh, item.submesh, *item.material, *item.data, worlds, stateOf(item)))
                 {
                     at += run;
                     continue;
                 }
                 bool isQueued = (item.source & kQueuedBit) != 0;
                 u32 index = item.source & ~kQueuedBit;
-                DrawOne(e, *mesh, item.submesh, *item.data, *src.world, u64(item.source), src.block, overridden ? &state : nullptr,
-                        isQueued ? -1 : i32(index));
+                DrawOne(e, *mesh, item.submesh, *item.data, *src.world, u64(item.source), src.block, stateOf(item), isQueued ? -1 : i32(index),
+                        isQueued ? queued[index].instances : 1u);
                 at++;
             }
         }
@@ -1810,6 +1868,49 @@ namespace helix::engine
 
         void RunInvertCulling(Executor& e, const Command& c) { e.state.invertCulling = c.flag; }
 
+        void RunDrawProcedural(Executor& e, const Command& c)
+        {
+            Mesh* mesh = EntityIdToObject<Mesh>(c.object);
+            Material* material = EntityIdToObject<Material>(c.object2);
+            if (!mesh)
+                return;
+            if (!material || !material->shader())
+                material = ErrorMaterial();
+            if (!material)
+                return;
+            Shader* shader = material->shader();
+            const PropertySheet* block = c.sheet != kNone ? &e.list.sheets[c.sheet] : nullptr;
+            i32 first = c.b < 0 ? 0 : c.b, last = c.b < 0 ? shader->passCount() - 1 : Min(c.b, shader->passCount() - 1);
+            for (i32 p = first; p <= last; p++)
+                if (const MaterialPassData* data = material->GetPassData(u32(shader->PassIndex(p)), e.shaderTarget))
+                    DrawOne(e, *mesh, 0, *data, e.list.matrices[c.index], (1ull << 63) | ++e.drawSerial, block, nullptr, -1, u32(c.c));
+        }
+
+        void RunReadback(Executor& e, const Command& c)
+        {
+            // What is recorded so far must run before the texture is read.
+            EndPass(e);
+            FinishTarget(e);
+            render::ArmReadback(u64(u32(c.a)) | u64(u32(c.b)) << 32);
+        }
+
+        void RunDrawRendererList(Executor& e, const Command& c)
+        {
+            u64 id = u64(u32(c.a)) | u64(u32(c.b)) << 32;
+            DrawRequest* request = nullptr;
+            {
+                std::lock_guard<std::mutex> lock(L().mutex);
+                if (DrawRequest** r = L().lists.Find(id))
+                    request = *r;
+            }
+            if (!request)
+            {
+                HX_LOG_ERROR(ContextLog, "DrawRendererList: the renderer list is not valid (its context ended, or it was never made).");
+                return;
+            }
+            RunDrawRenderers(e, *request);
+        }
+
         void RunGlobalArray(Executor& e, const Command& c)
         {
             const f32* v = e.list.numbers.Data() + c.index;
@@ -1878,6 +1979,8 @@ namespace helix::engine
             cam.vp = cam.p * view;
             Vector3 eye = camera->transform() ? camera->transform()->position() : Vector3();
             cam.cameraPos[0] = eye.x, cam.cameraPos[1] = eye.y, cam.cameraPos[2] = eye.z, cam.cameraPos[3] = 1;
+            cam.projectionParams[1] = camera->nearClipPlane(), cam.projectionParams[2] = camera->farClipPlane();
+            cam.projectionParams[3] = camera->farClipPlane() > 0 ? 1.0f / camera->farClipPlane() : 0.0f;
             // The brightest directional light the camera sees, and the ambient light.
             const Light* sun = nullptr;
             f32 brightest = -1;
@@ -2170,7 +2273,7 @@ namespace helix::engine
             RunGlobalVector,  RunGlobalMatrix, RunGlobalTexture, RunKeyword,    RunDrawMesh,       RunDrawRenderer,         RunBeginSample,
             RunEndSample,     RunSetTarget,    RunBlit,        RunCopyTexture,  RunResolveTarget,  RunGenerateMips,         RunGetTemporary,
             RunReleaseTemporary, RunGlobalTextureTarget, RunDrawRenderersCommand, RunSetupCamera, RunRenderObjects, RunDrawMeshInstanced,
-            RunInvertCulling, RunGlobalArray,
+            RunInvertCulling, RunGlobalArray, RunDrawRendererList, RunDrawProcedural, RunReadback,
         };
         static_assert(sizeof(kRun) / sizeof(kRun[0]) == usize(Op::Count), "a table entry per command kind");
 
@@ -2189,6 +2292,7 @@ namespace helix::engine
                 device->Submit(e.cl);
                 Stats().submitTime += submit.ElapsedMilliseconds();
             }
+            render::ReadPendingReadbacks(true);
         }
     }
 
@@ -2210,6 +2314,12 @@ namespace helix::engine
             L().culling.Remove(u64(reinterpret_cast<uintptr_t>(c)));
             L().spareCulling.Push(c);
         }
+        for (u64 id : lists_)
+            if (DrawRequest** r = L().lists.Find(id))
+            {
+                delete *r;
+                L().lists.Remove(id);
+            }
         if (state_)
             ReleaseTemporaries(*state_);
         delete state_;
@@ -2565,6 +2675,25 @@ namespace helix::engine
         return CullingResults{data};
     }
 
+    namespace
+    {
+        // A draw request from the settings (the ids of override materials and shaders, not their pointers).
+        void FillRequest(DrawRequest& r, CullingData* culling, const DrawingSettings& drawingSettings, const FilteringSettings& filteringSettings,
+                         const RenderStateBlock& stateBlock)
+        {
+            r.culling = culling;
+            r.drawing = drawingSettings;
+            r.overrideMaterial = drawingSettings.overrideMaterial ? drawingSettings.overrideMaterial->GetEntityId() : EntityId();
+            r.overrideShader = drawingSettings.overrideShader ? drawingSettings.overrideShader->GetEntityId() : EntityId();
+            r.fallbackMaterial = drawingSettings.fallbackMaterial ? drawingSettings.fallbackMaterial->GetEntityId() : EntityId();
+            r.drawing.overrideMaterial = nullptr;
+            r.drawing.overrideShader = nullptr;
+            r.drawing.fallbackMaterial = nullptr;
+            r.filtering = filteringSettings;
+            r.state = stateBlock;
+        }
+    }
+
     void ScriptableRenderContext::DrawRenderers(CullingResults cullingResults, const DrawingSettings& drawingSettings, const FilteringSettings& filteringSettings)
     {
         DrawRenderers(cullingResults, drawingSettings, filteringSettings, RenderStateBlock());
@@ -2580,18 +2709,216 @@ namespace helix::engine
         }
         Command& c = list_.Add(Op::DrawRenderers);
         c.index = u32(list_.draws.Size());
-        DrawRequest& r = list_.draws.Emplace();
-        r.culling = cullingResults.data;
-        r.drawing = drawingSettings;
-        r.overrideMaterial = drawingSettings.overrideMaterial ? drawingSettings.overrideMaterial->GetEntityId() : EntityId();
-        r.overrideShader = drawingSettings.overrideShader ? drawingSettings.overrideShader->GetEntityId() : EntityId();
-        r.fallbackMaterial = drawingSettings.fallbackMaterial ? drawingSettings.fallbackMaterial->GetEntityId() : EntityId();
-        // Pointers do not stay: the ids do.
-        r.drawing.overrideMaterial = nullptr;
-        r.drawing.overrideShader = nullptr;
-        r.drawing.fallbackMaterial = nullptr;
-        r.filtering = filteringSettings;
-        r.state = stateBlock;
+        FillRequest(list_.draws.Emplace(), cullingResults.data, drawingSettings, filteringSettings, stateBlock);
+    }
+
+    namespace
+    {
+        // The target of a render pass attachment: its texture, else the pass's temporary of that index.
+        RenderTargetIdentifier AttachmentTarget(const AttachmentDescriptor& a, u32 index)
+        {
+            if (a.loadStoreTarget.type != BuiltinRenderTextureType::None)
+                return a.loadStoreTarget;
+            return RenderTargetIdentifier(PropertyToID(Format("_HelixPassAttachment{}", index)));
+        }
+    }
+
+    void ScriptableRenderContext::BeginRenderPass(i32 width, i32 height, i32 samples, Span<const AttachmentDescriptor> attachments, i32 depthAttachmentIndex)
+    {
+        if (inRenderPass_)
+        {
+            HX_LOG_ERROR(ContextLog, "ScriptableRenderContext.BeginRenderPass: a render pass is already open.");
+            return;
+        }
+        if (attachments.Size() > 8 || depthAttachmentIndex >= i32(attachments.Size()))
+        {
+            HX_LOG_ERROR(ContextLog, "ScriptableRenderContext.BeginRenderPass: {} attachments and the depth at {} (at most 8, the depth among them).",
+                         attachments.Size(), depthAttachmentIndex);
+            return;
+        }
+        inRenderPass_ = true;
+        passAttachments_.Clear();
+        passAttachments_.Append(attachments.Data(), attachments.Size());
+        passStarted_.Clear();
+        passStarted_.Resize(attachments.Size());
+        for (u8& b : passStarted_)
+            b = 0;
+        passWidth_ = width, passHeight_ = height, passSamples_ = Max(samples, 1), passDepth_ = depthAttachmentIndex;
+        // Attachments without a texture of their own: temporaries of the pass.
+        CommandBuffer b;
+        for (u32 i = 0; i < attachments.Size(); i++)
+            if (attachments[i].loadStoreTarget.type == BuiltinRenderTextureType::None)
+            {
+                RenderTextureDescriptor d(width, height, attachments[i].graphicsFormat, i32(i) == depthAttachmentIndex ? 24 : 0);
+                if (i32(i) == depthAttachmentIndex)
+                    d.graphicsFormat = GraphicsFormat::None;
+                d.msaaSamples = passSamples_;
+                b.GetTemporaryRT(AttachmentTarget(attachments[i], i).nameID, d);
+            }
+        ExecuteCommandBuffer(b);
+    }
+
+    void ScriptableRenderContext::BeginSubPass(Span<const i32> colors, Span<const i32> inputs, bool)
+    {
+        if (!inRenderPass_ || inSubPass_)
+        {
+            HX_LOG_ERROR(ContextLog, "ScriptableRenderContext.BeginSubPass: {}.", inSubPass_ ? "a subpass is already open" : "no render pass is open");
+            return;
+        }
+        inSubPass_ = true;
+        CommandBuffer b;
+        // Inputs: the textures of earlier subpasses.
+        for (u32 k = 0; k < inputs.Size(); k++)
+            if (inputs[k] >= 0 && u32(inputs[k]) < passAttachments_.Size())
+                b.SetGlobalTexture(PropertyToID(Format("_HelixInput{}", k)), AttachmentTarget(passAttachments_[u32(inputs[k])], u32(inputs[k])));
+        RenderTargetIdentifier targets[8];
+        u32 count = 0;
+        for (i32 c : colors)
+            if (c >= 0 && u32(c) < passAttachments_.Size() && count < 8)
+                targets[count++] = AttachmentTarget(passAttachments_[u32(c)], u32(c));
+        RenderTargetIdentifier depth = passDepth_ >= 0 ? AttachmentTarget(passAttachments_[u32(passDepth_)], u32(passDepth_))
+                                                       : RenderTargetIdentifier(BuiltinRenderTextureType::None);
+        if (count)
+            b.SetRenderTarget(Span<const RenderTargetIdentifier>(targets, count), depth);
+        // The first use of an attachment that clears.
+        bool clearColor = false, clearDepth = false;
+        Color color;
+        f32 depthValue = 1;
+        for (i32 c : colors)
+            if (c >= 0 && u32(c) < passAttachments_.Size() && !passStarted_[u32(c)])
+            {
+                passStarted_[u32(c)] = 1;
+                if (passAttachments_[u32(c)].loadAction == RenderBufferLoadAction::Clear)
+                {
+                    clearColor = true;
+                    color = passAttachments_[u32(c)].clearColor;
+                }
+            }
+        if (passDepth_ >= 0 && !passStarted_[u32(passDepth_)])
+        {
+            passStarted_[u32(passDepth_)] = 1;
+            if (passAttachments_[u32(passDepth_)].loadAction == RenderBufferLoadAction::Clear)
+            {
+                clearDepth = true;
+                depthValue = passAttachments_[u32(passDepth_)].clearDepth;
+            }
+        }
+        if (clearColor || clearDepth)
+            b.ClearRenderTarget(clearDepth, clearColor, color, depthValue);
+        ExecuteCommandBuffer(b);
+    }
+
+    void ScriptableRenderContext::EndSubPass()
+    {
+        if (!inSubPass_)
+            HX_LOG_ERROR(ContextLog, "ScriptableRenderContext.EndSubPass: no subpass is open.");
+        inSubPass_ = false;
+    }
+
+    void ScriptableRenderContext::EndRenderPass()
+    {
+        if (!inRenderPass_)
+        {
+            HX_LOG_ERROR(ContextLog, "ScriptableRenderContext.EndRenderPass: no render pass is open.");
+            return;
+        }
+        if (inSubPass_)
+            EndSubPass();
+        CommandBuffer b;
+        for (u32 i = 0; i < passAttachments_.Size(); i++)
+        {
+            const AttachmentDescriptor& a = passAttachments_[i];
+            // Resolves into their resolve target.
+            if (a.resolveTarget.type != BuiltinRenderTextureType::None &&
+                (a.storeAction == RenderBufferStoreAction::Resolve || a.storeAction == RenderBufferStoreAction::StoreAndResolve))
+                b.Blit(AttachmentTarget(a, i), a.resolveTarget);
+            if (a.loadStoreTarget.type == BuiltinRenderTextureType::None)
+                b.ReleaseTemporaryRT(AttachmentTarget(a, i).nameID);
+        }
+        ExecuteCommandBuffer(b);
+        inRenderPass_ = false;
+        passAttachments_.Clear();
+    }
+
+    RendererUtils::RendererList ScriptableRenderContext::CreateRendererList(const RendererListParams& p)
+    {
+        if (!p.cullingResults.IsValid())
+        {
+            HX_LOG_ERROR(ContextLog, "ScriptableRenderContext.CreateRendererList: the culling results are not valid.");
+            return {};
+        }
+        auto* r = new DrawRequest();
+        RenderStateBlock everyPass;
+        for (const TaggedState& t : p.taggedStates)
+            if (t.tagValue.id == 0)
+                everyPass = t.state;
+        FillRequest(*r, p.cullingResults.data, p.drawSettings, p.filteringSettings, everyPass);
+        r->tagName = p.isPassTagName ? ShaderTagId("LightMode") : p.tagName;
+        for (const TaggedState& t : p.taggedStates)
+            if (t.tagValue.id != 0)
+                r->tagged.Push(t);
+        std::lock_guard<std::mutex> lock(L().mutex);
+        u64 id = NextId();
+        L().lists.Set(id, r);
+        lists_.Push(id);
+        return {id};
+    }
+
+    RendererUtils::RendererList ScriptableRenderContext::CreateRendererList(const RendererUtils::RendererListDesc& desc)
+    {
+        if (!desc.IsValid())
+        {
+            HX_LOG_ERROR(ContextLog, "ScriptableRenderContext.CreateRendererList: the descriptor needs culling results, a camera and pass names.");
+            return {};
+        }
+        return CreateRendererList(desc.ConvertToParameters());
+    }
+
+    void ScriptableRenderContext::AddRendererListState(RendererUtils::RendererList list, const TaggedState& state)
+    {
+        std::lock_guard<std::mutex> lock(L().mutex);
+        DrawRequest** r = L().lists.Find(list.id);
+        if (!r)
+            return;
+        if (state.tagValue.id == 0)
+            (*r)->state = state.state;
+        else
+            (*r)->tagged.Push(state);
+    }
+
+    bool RendererUtils::RendererList::isValid() const
+    {
+        std::lock_guard<std::mutex> lock(L().mutex);
+        return id != 0 && L().lists.Find(id) != nullptr;
+    }
+
+    RendererUtils::RendererListDesc::RendererListDesc(ShaderTagId passName, CullingResults culling, Camera* c) : cullingResults(culling), camera(c)
+    {
+        passNames.Push(passName);
+    }
+
+    RendererUtils::RendererListDesc::RendererListDesc(Span<const ShaderTagId> names, CullingResults culling, Camera* c) : cullingResults(culling), camera(c)
+    {
+        passNames.Append(names.Data(), names.Size());
+    }
+
+    RendererListParams RendererUtils::RendererListDesc::ConvertToParameters() const
+    {
+        SortingSettings sorting(camera);
+        sorting.criteria = sortingCriteria;
+        DrawingSettings drawing(passNames.Empty() ? ShaderTagId() : passNames[0], sorting);
+        for (u32 i = 1; i < passNames.Size() && i < u32(DrawingSettings::maxShaderPasses); i++)
+            drawing.SetShaderPassName(i32(i), passNames[i]);
+        drawing.perObjectData = rendererConfiguration;
+        drawing.overrideMaterial = overrideMaterial;
+        drawing.overrideMaterialPassIndex = overrideMaterialPassIndex;
+        drawing.overrideShader = overrideShader;
+        drawing.overrideShaderPassIndex = overrideShaderPassIndex;
+        FilteringSettings filtering(renderQueueRange, layerMask, renderingLayerMask, excludeObjectMotionVectors);
+        RendererListParams p(cullingResults, drawing, filtering);
+        if (hasStateBlock)
+            p.taggedStates.Push({ShaderTagId(), stateBlock});
+        return p;
     }
 
     void ScriptableRenderContext::SetupCameraProperties(Camera* camera, bool stereoSetup)

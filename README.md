@@ -15,7 +15,7 @@ of C++ and C# scripts, a fallback pipeline without an asset), and the screen as 
 | `Source/Helix/Engine/Object/Object.h` | `Object`, `HideFlags`, `HX_ENGINE_CLASS`, `EntityIdToObject`, `FindObjectsByType`, `FindAnyObjectByType`, `PPtr<T>`, `ReferenceRemap` |
 | `Source/Helix/Engine/Object/SmallArray.h` | `SmallArray<T, N>`: inline storage for small lists |
 | `Source/Helix/Engine/GameObject/GameObject.h` | `GameObject`, `Component`, `Behaviour` |
-| `Source/Helix/Engine/GameObject/Tags.h` | `TagHandle`, tags and the 32 layers |
+| `Source/Helix/Engine/GameObject/Tags.h` | `TagHandle`, tags and the 32 layers, `LayerMask` |
 | `Source/Helix/Engine/GameObject/Lifecycle.h` | `Instantiate`, `InstantiateParameters`, `InstantiateGameObjects`, `Destroy`, `DestroyImmediate`, `DontDestroyOnLoad` |
 | `Source/Helix/Engine/Script/Coroutines.h` | The coroutine scheduler of both languages: wait lists per point of the frame, the stop rules, `AddDelayedTaskRunner` |
 | `Source/Helix/Engine/Script/Coroutine.h` | C++20 coroutines of C++ scripts (`Coroutine`, `NextFrame`, `WaitForSeconds`, `WaitForSecondsRealtime`, `WaitForFixedUpdate`, `WaitForEndOfFrame`, `WaitUntil`, `WaitWhile`) |
@@ -57,9 +57,11 @@ of C++ and C# scripts, a fallback pipeline without an asset), and the screen as 
 | `Source/Helix/Engine/Rendering/SystemInfo.h` | `SystemInfo` (`renderingThreadingMode`), `RenderingThreadingMode` |
 | `Source/Helix/Engine/Rendering/CullingNative.h` | `CullingNative`: what C#'s culling groups, LOD levels, LOD and sorting settings call |
 | `Source/Helix/Engine/Rendering/Pipeline/RenderPipeline.h` | `RenderPipeline`, `RenderPipelineManager` (events, the current pipeline), `GraphicsSettings` and `QualitySettings` pipeline assets, the factories of pipelines by script language |
-| `Source/Helix/Engine/Rendering/Pipeline/ScriptableRenderContext.h` | `ScriptableRenderContext`: `Cull`, `DrawRenderers`, `SetupCameraProperties`, `ExecuteCommandBuffer`, `InvokeOnRenderObjectCallback`, `Submit` |
-| `Source/Helix/Engine/Rendering/Pipeline/CommandBuffer.h` | `CommandBuffer`: clears, viewport and scissor, view and projection, globals and keywords, `DrawMesh`, `DrawRenderer`, samples, render targets, temporary render textures, `Blit`, `CopyTexture`, resolves and mips, `DrawMeshInstanced`, `SetInvertCulling`, global arrays |
-| `Source/Helix/Engine/Rendering/Pipeline/RenderTargets.h` | `RenderTargetIdentifier`, `BuiltinRenderTextureType`, `RenderBufferLoadAction` / `StoreAction`, `RTClearFlags`, `CubemapFace` |
+| `Source/Helix/Engine/Rendering/Pipeline/ScriptableRenderContext.h` | `ScriptableRenderContext`: `Cull`, `DrawRenderers`, `CreateRendererList`, `BeginRenderPass` / `BeginSubPass` / `EndSubPass` / `EndRenderPass`, `SetupCameraProperties`, `ExecuteCommandBuffer`, `InvokeOnRenderObjectCallback`, `Submit` |
+| `Source/Helix/Engine/Rendering/Pipeline/RendererList.h` | `RendererUtils::RendererList`, `RendererListDesc`, `RendererListParams` (states by tag value) |
+| `Source/Helix/Engine/Rendering/AsyncGPUReadback.h` | `AsyncGPUReadback`, `AsyncGPUReadbackRequest`: render textures read back without waiting |
+| `Source/Helix/Engine/Rendering/Pipeline/CommandBuffer.h` | `CommandBuffer`: clears, viewport and scissor, view and projection, globals and keywords, `DrawMesh`, `DrawRenderer`, samples, render targets, temporary render textures, `Blit`, `CopyTexture`, resolves and mips, `DrawMeshInstanced`, `SetInvertCulling`, global arrays, `DrawRendererList`, `DrawProcedural`, `RequestAsyncReadback` |
+| `Source/Helix/Engine/Rendering/Pipeline/RenderTargets.h` | `RenderTargetIdentifier`, `BuiltinRenderTextureType`, `RenderBufferLoadAction` / `StoreAction`, `RTClearFlags`, `CubemapFace`, `AttachmentDescriptor` |
 | `Source/Helix/Engine/Rendering/Pipeline/RenderStates.h` | `SortingSettings`, `DrawingSettings`, `FilteringSettings`, `RenderQueueRange`, `RenderStateBlock` and its states, `ScriptableCullingParameters`, `CullingResults`, `VisibleLight`, the rendering enums |
 | `Source/Helix/Engine/Rendering/Pipeline/RenderPipelineNative.h` | `RenderPipelineNative`, `DrawRendererData`: what C#'s pipeline API calls |
 | `Source/Helix/Engine/Rendering/ScreenCapture.h` | `ScreenCapture::CaptureScreenshot`: the frame drawn again into a texture and written as PNG; `CaptureScreenshotIntoRenderTexture` |
@@ -196,7 +198,10 @@ of C++ and C# scripts, a fallback pipeline without an asset), and the screen as 
   and cull state over the pass's; the other calls and command buffers are recorded and run on the device at
   `Submit`, in order. Clears take the whole target as a render pass clear, a smaller viewport by drawing
   (Hidden/InternalClear). The camera block (slot 9) holds the camera's matrices and position, the brightest
-  directional light it sees and the ambient color. Without an asset the fallback pipeline draws each camera, cleared
+  directional light it sees, the ambient color and helix_ProjectionParams (x -1 when the bound target is a texture,
+  drawn flipped; near, far, 1 / far), so full screen draws need no camera matrices. Shader values without a material
+  property take values by name: uniform members and textures of a pass outside the engine's blocks come from the
+  property block, else the globals (textures white while none is set). Without an asset the fallback pipeline draws each camera, cleared
   by its flags, with each material's first pass that is no shadow, depth, meta or motion pass, opaque queues by
   variant and front to back, transparent ones back to front, with the camera messages (OnPreCull, OnPreRender,
   OnPostRender, OnRenderObject). GPU meshes (formats the GPU lacks widened to float, missing attributes read zero),
@@ -212,6 +217,12 @@ of C++ and C# scripts, a fallback pipeline without an asset), and the screen as 
   variant, the distance, the pass name) sorted by a stable LSD radix sort. Consecutive draws of the same mesh, submesh
   and pass without property blocks become one instanced draw where the material enables instancing and its shader
   declares INSTANCING_ON (ShaderVariables reads the instance's matrices by ShaderMath.InstanceId; at most 128 per draw).
+- Renderer lists are DrawRenderers' draws made by a context and drawn where a command buffer's DrawRendererList runs,
+  with states by the value of a pass or shader tag. A native render pass is its attachments (those without a target
+  are temporaries of the pass) and subpasses, each drawn as a render pass of the device into its colors, with its
+  inputs as globals; clears at the first use, resolves at the end. DrawProcedural draws vertices without a mesh (the
+  shader makes them from the vertex id). AsyncGPUReadback reads render textures when the frame's commands (or a
+  command buffer's) are submitted and calls back at the next frame's start, in request order.
 - GraphicsSettings.useScriptableRenderPipelineBatching keeps material blocks and per object blocks in persistent uniform
   buffers, written into fresh parts when they change and bound by offset (where the device can bind by offset and write
   parts); the command lists skip bindings that repeat. RenderStateBlock's blend, depth, raster (depth bias, depth clip,

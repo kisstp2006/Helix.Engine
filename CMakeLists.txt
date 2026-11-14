@@ -41,7 +41,7 @@ helix_bindgen(helix_engine MODULE HelixEngine NAMESPACE HelixEngine KIND Engine 
                       "${engine_source}/Helix/Engine/Shader/ShaderKeywords.h" "${engine_source}/Helix/Engine/Shader/Shader.h"
                       "${engine_source}/Helix/Engine/Material/Material.h" "${engine_source}/Helix/Engine/Mesh/Mesh.h" "${engine_source}/Helix/Engine/Mesh/MeshData.h"
                       "${engine_source}/Helix/Engine/Rendering/Renderer.h" "${engine_source}/Helix/Engine/Rendering/Camera.h"
-                      "${engine_source}/Helix/Engine/Rendering/Light.h" "${engine_source}/Helix/Engine/Rendering/LODGroup.h" "${engine_source}/Helix/Engine/Rendering/CullingNative.h" "${engine_source}/Helix/Engine/Rendering/SystemInfo.h" "${engine_source}/Helix/Engine/Rendering/Graphics.h"
+                      "${engine_source}/Helix/Engine/Rendering/Light.h" "${engine_source}/Helix/Engine/Rendering/LODGroup.h" "${engine_source}/Helix/Engine/Rendering/CullingNative.h" "${engine_source}/Helix/Engine/Rendering/SystemInfo.h" "${engine_source}/Helix/Engine/Rendering/AsyncGPUReadback.h" "${engine_source}/Helix/Engine/GameObject/Tags.h" "${engine_source}/Helix/Engine/Rendering/Graphics.h"
                       "${engine_source}/Helix/Engine/Rendering/ScreenCapture.h" "${engine_source}/Helix/Engine/Script/ScriptableObject.h"
                       "${engine_source}/Helix/Engine/Jobs/ManagedJobs.h" "${engine_source}/Helix/Engine/Rendering/Pipeline/RenderStates.h" "${engine_source}/Helix/Engine/Rendering/Pipeline/RenderTargets.h"
                       "${engine_source}/Helix/Engine/Rendering/Pipeline/RenderPipelineNative.h"

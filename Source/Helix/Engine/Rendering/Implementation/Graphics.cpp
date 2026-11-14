@@ -1,6 +1,7 @@
 #include <Helix/Engine/Material/Material.h>
 #include <Helix/Engine/Rendering/Graphics.h>
 #include <Helix/Engine/Rendering/Implementation/RenderCore.h>
+#include <Helix/Engine/Rendering/AsyncGPUReadback.h>
 #include <Helix/Engine/Rendering/Implementation/RendererManager.h>
 #include <Helix/Engine/Rendering/Pipeline/RenderPipeline.h>
 #include <Helix/Engine/Rendering/Pipeline/CommandBuffer.h>
@@ -215,6 +216,16 @@ namespace helix::engine
         {
             StringView mode = description.passes[descriptionPass].lightMode;
             return ShaderTagId(mode.Empty() ? StringView("SRPDefaultUnlit") : mode);
+        }
+
+        ShaderTagId PassTagValue(const ShaderDescription& description, u32 descriptionPass, ShaderTagId tagName)
+        {
+            if (tagName == ShaderTagId("LightMode"))
+                return PassTag(description, descriptionPass);
+            for (const shadercompiler::ShaderTag& t : description.passes[descriptionPass].tags)
+                if (ShaderTagId(t.name) == tagName)
+                    return ShaderTagId(t.value);
+            return ShaderTagId();
         }
 
         // ------------------------------------------------------------------------------------------------ meshes
@@ -777,6 +788,28 @@ namespace helix::engine
             return o;
         }
 
+        Mesh* ProceduralMesh(MeshTopology topology, u32 vertexCount)
+        {
+            static HashMap<u64, EntityId> meshes;
+            u64 key = u64(u32(topology)) << 32 | vertexCount;
+            if (EntityId* id = meshes.Find(key))
+                if (Mesh* m = EntityIdToObject<Mesh>(*id))
+                    return m;
+            Mesh* m = NewObject<Mesh>();
+            m->SetName("Procedural");
+            m->hideFlags = HideFlags::HideAndDontSave;
+            m->SetPersistent(true);
+            Array<Vector3> vertices;
+            vertices.Resize(vertexCount);
+            Array<i32> indices;
+            for (u32 i = 0; i < vertexCount; i++)
+                indices.Push(i32(i));
+            m->SetVertices(vertices);
+            m->SetIndices(indices, topology, 0, false);
+            meshes.Set(key, m->GetEntityId());
+            return m;
+        }
+
         void Upload(const void* data, u32 size, rhi::TransientAllocation& out)
         {
             out = R().device->AllocateTransient(size);
@@ -984,7 +1017,10 @@ namespace helix::engine
         if ((++s.frame & 63) == 0)
             ForgetDead();
         render::BeginPersistentBlocks(s.device, s.frame);
+        render::DeliverReadbacks(s.frame);
         RenderCameras();
+        // Readbacks asked for during the frame, now that its commands are submitted.
+        render::ReadPendingReadbacks(false);
         // Renderers that became visible or invisible by any camera this frame.
         if (detail::gVisibilityChanged)
             for (u32 i = 0; i < d.visible.Size(); i++)
@@ -1015,6 +1051,28 @@ namespace helix::engine
                 WriteCapture(c);
         }
         s.queued.Clear();
+    }
+
+    void Graphics::DrawProcedural(Material* material, const Bounds& bounds, MeshTopology topology, i32 vertexCount, i32 instanceCount, Camera* camera,
+                                  const MaterialPropertyBlock* properties, i32 layer)
+    {
+        if (vertexCount <= 0 || instanceCount <= 0)
+            return;
+        RenderParams p;
+        p.material = material, p.camera = camera, p.matProps = properties, p.layer = layer, p.worldBounds = bounds;
+        RenderMesh(p, render::ProceduralMesh(topology, u32(vertexCount)), 0, Matrix4x4::identity);
+        if (!R().queued.Empty())
+            R().queued.Back().instances = u32(instanceCount);
+    }
+
+    void Graphics::BlitMultiTap(Texture* source, RenderTexture* dest, Material* material, Span<const Vector2> offsets)
+    {
+        Array<Vector4> taps;
+        for (Vector2 o : offsets)
+            taps.Push(Vector4(o.x, o.y, 0, 0));
+        Shader::SetGlobalVectorArray(PropertyToID("_BlitMultiTapOffsets"), taps);
+        Shader::SetGlobalFloat(PropertyToID("_BlitMultiTapCount"), f32(offsets.Size()));
+        Blit(source, dest, material, -1);
     }
 
     void Graphics::RenderMeshInstanced(const RenderParams& params, Mesh* mesh, i32 submeshIndex, Span<const Matrix4x4> instances)

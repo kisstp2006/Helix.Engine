@@ -89,6 +89,11 @@ namespace helix::engine
 
         // A submesh drawn by the cameras of this frame (or by the one of the params), dropped once the frame is drawn.
         static void RenderMesh(const RenderParams& params, Mesh* mesh, i32 submeshIndex, const Matrix4x4& objectToWorld);
+        // Vertices without a mesh, drawn by this frame's cameras inside the bounds (the shader takes them from the vertex id).
+        static void DrawProcedural(Material* material, const Bounds& bounds, MeshTopology topology, i32 vertexCount, i32 instanceCount = 1,
+                                   Camera* camera = nullptr, const MaterialPropertyBlock* properties = nullptr, i32 layer = 0);
+        // Blit with several taps: their offsets in _BlitMultiTapOffsets (xy each) and their count in _BlitMultiTapCount.
+        static void BlitMultiTap(Texture* source, RenderTexture* dest, Material* material, Span<const Vector2> offsets);
         // Instances of a submesh, drawn instanced where the material takes part (enableInstancing, a shader with INSTANCING_ON).
         static void RenderMeshInstanced(const RenderParams& params, Mesh* mesh, i32 submeshIndex, Span<const Matrix4x4> instances);
         // At most 1023 instances, as the reference allows.
@@ -143,6 +148,16 @@ namespace helix::engine
             p.renderingLayerMask = renderingLayerMask, p.rendererPriority = rendererPriority, p.worldBounds = worldBounds;
             p.shadowCastingMode = shadowCastingMode, p.receiveShadows = receiveShadows;
             Graphics::RenderMeshInstanced(p, mesh, submeshIndex, instances);
+        }
+        HX_FUNCTION()
+        static void DrawProcedural(Material* material, Bounds bounds, i32 topology, i32 vertexCount, i32 instanceCount, Camera* camera, PropertyBlockId properties,
+                                   i32 layer)
+        {
+            Graphics::DrawProcedural(material, bounds, MeshTopology(topology), vertexCount, instanceCount, camera, MaterialPropertyBlock::Find(properties), layer);
+        }
+        HX_FUNCTION() static void BlitMultiTap(Texture* source, RenderTexture* dest, Material* material, Span<const Vector2> offsets)
+        {
+            Graphics::BlitMultiTap(source, dest, material, offsets);
         }
     };
 }

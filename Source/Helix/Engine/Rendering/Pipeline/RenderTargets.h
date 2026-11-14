@@ -130,4 +130,39 @@ namespace helix::engine
             return r;
         }
     };
+
+    // An attachment of a native render pass: its format, what happens to it at the pass's start and end, the texture
+    // it loads from and stores to (none: a transient texture of the pass) and its clear values.
+    struct AttachmentDescriptor
+    {
+        GraphicsFormat graphicsFormat = GraphicsFormat::None;
+        RenderBufferLoadAction loadAction = RenderBufferLoadAction::DontCare;
+        RenderBufferStoreAction storeAction = RenderBufferStoreAction::DontCare;
+        RenderTargetIdentifier loadStoreTarget = RenderTargetIdentifier(BuiltinRenderTextureType::None);
+        RenderTargetIdentifier resolveTarget = RenderTargetIdentifier(BuiltinRenderTextureType::None);
+        Color clearColor = Color(0, 0, 0, 0);
+        f32 clearDepth = 1;
+        u32 clearStencil = 0;
+
+        AttachmentDescriptor() = default;
+        explicit AttachmentDescriptor(GraphicsFormat format) : graphicsFormat(format) {}
+        void ConfigureTarget(RenderTargetIdentifier target, bool loadExistingContents, bool storeResults)
+        {
+            loadStoreTarget = target;
+            if (loadExistingContents && loadAction != RenderBufferLoadAction::Clear)
+                loadAction = RenderBufferLoadAction::Load;
+            if (storeResults)
+                storeAction = storeAction == RenderBufferStoreAction::Resolve ? RenderBufferStoreAction::StoreAndResolve : RenderBufferStoreAction::Store;
+        }
+        void ConfigureResolveTarget(RenderTargetIdentifier target)
+        {
+            resolveTarget = target;
+            storeAction = storeAction == RenderBufferStoreAction::Store ? RenderBufferStoreAction::StoreAndResolve : RenderBufferStoreAction::Resolve;
+        }
+        void ConfigureClear(Color color, f32 depth = 1, u32 stencil = 0)
+        {
+            clearColor = color, clearDepth = depth, clearStencil = stencil;
+            loadAction = RenderBufferLoadAction::Clear;
+        }
+    };
 }

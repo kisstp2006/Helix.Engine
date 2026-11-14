@@ -556,6 +556,27 @@ namespace helix::engine
             }
             }
         }
+        // Textures without a property by name: the sheet's, else the globals, else white.
+        for (u32 k = 0; k < layout.namedTextures.Size() && k < v.namedTextureIds.Size(); k++)
+        {
+            i32 id = v.namedTextureIds[k];
+            const PropertyValue* value = values.Find(id);
+            if (!value && globals && !overlay)
+                value = globals->Find(id);
+            if (!value || value->kind != PropertyKind::Texture || !EntityIdToObject(value->texture))
+            {
+                if (overlay)
+                    continue;
+            }
+            EntityId texture = value && value->kind == PropertyKind::Texture && EntityIdToObject(value->texture) ? value->texture : Texture2D::whiteTexture()->GetEntityId();
+            u32 slot = layout.namedTextures[k].slot;
+            bool replaced = false;
+            for (MaterialPassData::TextureSlot& t : textures)
+                if (t.slot == slot)
+                    t.texture = texture, replaced = true;
+            if (!replaced)
+                textures.Push({slot, texture});
+        }
         // Members of the same blocks that are no properties take values by name: the sheet's, else the globals.
         for (const ShaderVariant::NamedMember& m : v.namedMembers)
         {

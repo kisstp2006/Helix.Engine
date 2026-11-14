@@ -77,4 +77,13 @@ namespace helix::engine
                 return i32(i);
         return -1;
     }
+
+    i32 LayerMask::GetMask(Span<const StringView> layerNames)
+    {
+        i32 mask = 0;
+        for (StringView name : layerNames)
+            if (i32 layer = NameToLayer(name); layer >= 0)
+                mask |= i32(1u << u32(layer));
+        return mask;
+    }
 }

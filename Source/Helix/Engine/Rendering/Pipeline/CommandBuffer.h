@@ -2,6 +2,9 @@
 
 #include <Helix/Engine/Material/Material.h>
 #include <Helix/Engine/Rendering/Pipeline/RenderStates.h>
+#include <Helix/Engine/Rendering/Pipeline/RendererList.h>
+#include <Helix/Engine/Mesh/Mesh.h>
+#include <Helix/Engine/Rendering/AsyncGPUReadback.h>
 #include <Helix/Engine/Rendering/Pipeline/RenderTargets.h>
 
 // CommandBuffer: rendering commands recorded now and run where the buffer is executed (a context's
@@ -47,6 +50,9 @@ namespace helix::engine
             DrawMeshInstanced,
             InvertCulling,
             GlobalArray,
+            DrawRendererList,
+            DrawProcedural,
+            Readback,
             Count,
         };
 
@@ -72,6 +78,9 @@ namespace helix::engine
             RenderStateBlock state;
             // The fallback pipeline's draw: each material's first pass that is no shadow, depth, meta or motion pass.
             bool forward = false;
+            // Renderer lists: states by the value of a pass tag (a tag value of none: every pass).
+            ShaderTagId tagName;
+            Array<TaggedState> tagged = Array<TaggedState>();
         };
 
         // Commands with what they refer to.
@@ -134,6 +143,13 @@ namespace helix::engine
         void SetGlobalFloatArray(i32 nameID, Span<const f32> values) { GlobalArray(nameID, 0, values.Data(), u32(values.Size()), 1); }
         void SetGlobalVectorArray(i32 nameID, Span<const Vector4> values) { GlobalArray(nameID, 1, &values.Data()->x, u32(values.Size()), 4); }
         void SetGlobalMatrixArray(i32 nameID, Span<const Matrix4x4> values) { GlobalArray(nameID, 2, &values.Data()->m00, u32(values.Size()), 16); }
+        // Vertices without a mesh (the shader takes them from the vertex id), with a pass of the material (-1: all).
+        void DrawProcedural(const Matrix4x4& matrix, Material* material, i32 shaderPass, MeshTopology topology, i32 vertexCount, i32 instanceCount = 1,
+                            const MaterialPropertyBlock* properties = nullptr);
+        // A render texture read back once the commands before it ran (AsyncGPUReadback).
+        AsyncGPUReadbackRequest RequestAsyncReadback(Texture* source, i32 mipIndex = 0, AsyncGPUReadback::Callback callback = nullptr, void* user = nullptr);
+        // The renderers of a list the context made (ScriptableRenderContext::CreateRendererList).
+        void DrawRendererList(RendererUtils::RendererList list);
         // Front faces turn around for the draws after it (mirrored views).
         void SetInvertCulling(bool invertCulling);
         void SetGlobalTexture(StringView name, Texture* value) { SetGlobalTexture(PropertyToID(name), value); }

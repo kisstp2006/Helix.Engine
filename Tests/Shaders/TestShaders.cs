@@ -340,3 +340,58 @@ public sealed class Lambert : ShaderDefinition
         public static float4 Fragment(Varyings input) => new float4(0.0f, 1.0f, 0.0f, 1.0f);
     }
 }
+
+/// <summary>The camera block's projection params as a color: red when the target is drawn flipped, green when not, blue the near plane.</summary>
+[Shader("Tests/ProjectionParams")]
+public sealed class ProjectionParams : ShaderDefinition
+{
+    public struct Varyings
+    {
+        [Position] public float4 position;
+    }
+
+    [Pass("Forward")]
+    public static class Forward
+    {
+        [VertexShader]
+        public static Varyings Vertex([Location(VertexInputs.Position)] float3 position) => new Varyings { position = ShaderVariables.ObjectToClip(position) };
+
+        [FragmentShader]
+        [return: Target(0)]
+        public static float4 Fragment(Varyings input)
+        {
+            float4 p = ShaderVariables.camera.helix_ProjectionParams;
+            return new float4(p.x < 0.0f ? 1.0f : 0.0f, p.x > 0.0f ? 1.0f : 0.0f, p.y, 1.0f);
+        }
+    }
+}
+
+/// <summary>A block and a texture without properties: their values come by name from property blocks and globals.</summary>
+[Shader("Tests/NamedValues")]
+public sealed class NamedValues : ShaderDefinition
+{
+    public struct Named
+    {
+        public float4 namedColor;
+    }
+
+    public struct Varyings
+    {
+        [Position] public float4 position;
+    }
+
+    [Pass("Forward")]
+    public static class Forward
+    {
+        [Uniform(0)] public static Named named;
+        [Texture(0)] public static Texture2D<float4> namedTexture;
+        [Sampler(0)] public static SamplerState namedSampler;
+
+        [VertexShader]
+        public static Varyings Vertex([Location(VertexInputs.Position)] float3 position) => new Varyings { position = ShaderVariables.ObjectToClip(position) };
+
+        [FragmentShader]
+        [return: Target(0)]
+        public static float4 Fragment(Varyings input) => named.namedColor * namedTexture.Sample(namedSampler, new float2(0.5f, 0.5f));
+    }
+}

@@ -16,6 +16,8 @@ public struct PerCamera
     public float4 helix_MainLightColor;
     /// <summary>rgb: the ambient light.</summary>
     public float4 helix_AmbientColor;
+    /// <summary>x: -1 when the target is drawn flipped (a render texture), else 1; y: near plane, z: far plane, w: 1 / far.</summary>
+    public float4 helix_ProjectionParams;
 }
 
 /// <summary>What the renderer sets once per drawn object.</summary>

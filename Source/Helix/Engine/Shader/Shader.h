@@ -75,6 +75,8 @@ namespace helix::engine
             u32 element;
         };
         Array<NamedMember> namedMembers = Array<NamedMember>();
+        // The property ids of the layout's named textures (textures without a property), in its order.
+        Array<i32> namedTextureIds = Array<i32>();
     };
 
     HX_CLASS(Namespace = "HelixEngine", Sealed)

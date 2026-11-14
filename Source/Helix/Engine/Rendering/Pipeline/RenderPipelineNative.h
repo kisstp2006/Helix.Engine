@@ -67,6 +67,20 @@ namespace helix::engine
         HX_FIELD() i32 stencilReference = 0;
     };
 
+    // A render pass attachment as plain values for C# (internal).
+    HX_STRUCT(Namespace = "HelixEngine.Internal", Internal)
+    struct AttachmentData
+    {
+        HX_FIELD() i32 graphicsFormat = 0;
+        HX_FIELD() i32 loadAction = 2;
+        HX_FIELD() i32 storeAction = 3;
+        HX_FIELD() RenderTargetData loadStoreTarget;
+        HX_FIELD() RenderTargetData resolveTarget;
+        HX_FIELD() Color clearColor;
+        HX_FIELD() f32 clearDepth = 1;
+        HX_FIELD() u32 clearStencil = 0;
+    };
+
     HX_CLASS(Namespace = "HelixEngine.Internal", Static, Internal)
     class RenderPipelineNative
     {
@@ -149,6 +163,37 @@ namespace helix::engine
         // `blends`: seven values per target after the first (write mask, the four factors, the two operations).
         HX_FUNCTION() static void DrawRenderers(u64 context, u64 culling, const DrawRendererData& data, Span<const ShaderTagId> passNames,
                                                 Material* overrideMaterial, Shader* overrideShader, Material* fallbackMaterial, Span<const i32> blends);
+        // Renderer lists: the list's id (0 when it could not be made); the states of tag values added after.
+        HX_FUNCTION() static u64 CreateRendererList(u64 context, u64 culling, const DrawRendererData& data, Span<const ShaderTagId> passNames,
+                                                    Material* overrideMaterial, Shader* overrideShader, Material* fallbackMaterial, Span<const i32> blends,
+                                                    ShaderTagId tagName, bool isPassTagName);
+        HX_FUNCTION() static void AddRendererListState(u64 context, u64 list, ShaderTagId tagValue, const DrawRendererData& data, Span<const i32> blends);
+        HX_FUNCTION() static bool RendererListValid(u64 list) { return RendererUtils::RendererList{list}.isValid(); }
+        HX_FUNCTION() static void DrawRendererList(u64 buffer, u64 list) { With(buffer, [&](CommandBuffer& b) { b.DrawRendererList(RendererUtils::RendererList{list}); }); }
+        // Native render passes.
+        HX_FUNCTION() static void BeginRenderPass(u64 context, i32 width, i32 height, i32 samples, Span<const AttachmentData> attachments, i32 depthIndex);
+        HX_FUNCTION() static void BeginSubPass(u64 context, Span<const i32> colors, Span<const i32> inputs, bool depthReadOnly)
+        {
+            if (ScriptableRenderContext* c = ScriptableRenderContext::Find(context))
+                c->BeginSubPass(colors, inputs, depthReadOnly);
+        }
+        HX_FUNCTION() static void EndSubPass(u64 context)
+        {
+            if (ScriptableRenderContext* c = ScriptableRenderContext::Find(context))
+                c->EndSubPass();
+        }
+        HX_FUNCTION() static void EndRenderPass(u64 context)
+        {
+            if (ScriptableRenderContext* c = ScriptableRenderContext::Find(context))
+                c->EndRenderPass();
+        }
+        HX_FUNCTION() static void DrawProcedural(u64 buffer, Matrix4x4 matrix, Material* material, i32 shaderPass, i32 topology, i32 vertexCount,
+                                                 i32 instanceCount, PropertyBlockId properties)
+        {
+            With(buffer, [&](CommandBuffer& b) {
+                b.DrawProcedural(matrix, material, shaderPass, MeshTopology(topology), vertexCount, instanceCount, MaterialPropertyBlock::Find(properties));
+            });
+        }
         HX_FUNCTION() static void SetupCameraProperties(u64 context, Camera* camera, bool stereoSetup)
         {
             if (ScriptableRenderContext* c = ScriptableRenderContext::Find(context))

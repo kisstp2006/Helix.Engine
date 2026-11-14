@@ -18,6 +18,11 @@ namespace helix::engine
 {
     using namespace shadercompiler;
 
+    // Values without a property come by name (property blocks, globals) except in the blocks the renderer binds itself:
+    // ShaderVariables' camera (9) and draw (10) blocks and the dynamic keywords (11).
+    const u32 kEngineBlockSlots[] = {9, 10, shadercompiler::kKeywordBlockSlot};
+    const shadercompiler::NamedValues kNamedValues{Span<const u32>(kEngineBlockSlots, 3)};
+
     namespace
     {
         LogChannel ShaderLog{"Engine"};
@@ -149,7 +154,7 @@ namespace helix::engine
             return TranslateEntryPoint(assembly, pass.vertex, Stage::Vertex, vertex, error, options) &&
                    TranslateEntryPoint(assembly, pass.fragment, Stage::Fragment, fragment, error, options) && LinkStages(vertex, fragment, error) &&
                    Reflect(vertex, vr, error) && Reflect(fragment, fr, error) && LinkReflection(vr, fr, v.reflection, error) &&
-                   BindProperties(desc, v.reflection, v.layout, error) && CompileModule(vertex, target, v.vertex, error, &Shader::Cache()) &&
+                   BindProperties(desc, v.reflection, v.layout, error, &kNamedValues) && CompileModule(vertex, target, v.vertex, error, &Shader::Cache()) &&
                    CompileModule(fragment, target, v.fragment, error, &Shader::Cache());
         }
 
@@ -204,6 +209,8 @@ namespace helix::engine
         const ShaderDescription& d = *v.description;
         for (const PropertyBinding& b : v.layout.bindings)
             v.bindingIds.Push(engine::PropertyToID(d.properties[b.property].name));
+        for (const NamedTexture& t : v.layout.namedTextures)
+            v.namedTextureIds.Push(engine::PropertyToID(t.name));
         for (const ReflectedBlock& rb : v.reflection.blocks)
         {
             u32 block = ~0u;

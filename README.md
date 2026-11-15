@@ -433,6 +433,11 @@ walking the same tree instead of the compiled list takes 2.8 times as long.
   a game module whose generated registration (Helix.Bindgen) adds it as a script class below its script base; its
   messages (Awake, Start, Update, ...) are found by name in the header, without virtual. A C# script is an object
   whose C# object is its wrapper.
+- A C# script class may derive from a C++ script class: it has an engine class of its own below the C++ one, its
+  objects are made (and copied) as the C++ class (its generated subclass when it has tagged virtual functions, whose
+  calls reach the C# overrides), a message runs the C# method when the class has one and the C++ one otherwise, and
+  files hold the C++ class's fields, then the C# ones. A C++ script class of a game module may derive from another
+  module's script class the same way. A C++ script class that is abstract is made only as the C# classes below it.
 - ScriptableObject is an Object, no Component: Awake and OnEnable when it is made (`CreateInstance` by type, `<T>` or
   name), read from a file (a class hook after a file's objects are read and linked) or copied (`Instantiate`);
   OnDisable and OnDestroy when it is destroyed. Its documents are GameBehaviour documents of class 114 (the class

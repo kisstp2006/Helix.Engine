@@ -65,7 +65,7 @@ namespace helix::engine
     const ScriptClass* FindScriptClassOfEngineClass(u32 klass)
     {
         for (const ScriptClass* s : Scripts())
-            if (s->alive && s->language == ScriptLanguage::Cpp && s->engineClass == klass)
+            if (s->alive && s->OwnClass() && s->engineClass == klass)
                 return s;
         return nullptr;
     }

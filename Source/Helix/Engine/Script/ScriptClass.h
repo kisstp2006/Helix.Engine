@@ -60,8 +60,17 @@ namespace helix::engine
         String nameSpace;
         String name;
         scripting::TypeId type;
-        // The engine class its objects are made as: GameBehaviour for C# scripts, the C++ class for C++ scripts.
+        // The engine class its objects are made as: GameBehaviour (or ScriptableObject) for C# scripts, the C++ class
+        // for C++ scripts, a class of its own below the C++ class for C# scripts deriving from a C++ script class.
         u32 engineClass = ~0u;
+        // A script deriving from a C++ script class of another binary (a C# script, or a C++ script of another game
+        // module): that class's index (~0u: none) and the messages its functions answer (those the class has none of).
+        u32 nativeBase = ~0u;
+        u32 nativeMessages = 0;
+        // With a base: the class's own fields (a C++ class's transfer, a C# class's serialized fields); transfer is the
+        // base's fields, then these.
+        void (*ownTransfer)(void* instance, void* visitor) = nullptr;
+        bool managedFields = false;
         u32 messages = 0;
         // DefaultExecutionOrder.
         i32 defaultOrder = 0;
@@ -87,6 +96,10 @@ namespace helix::engine
         bool alive = true;
 
         bool Has(ScriptMessage m) const { return (messages >> u32(m)) & 1u; }
+        // The message runs a C++ function (call, callBool), not the C# object's method.
+        bool NativeCall(ScriptMessage m) const { return language == ScriptLanguage::Cpp || ((nativeMessages >> u32(m)) & 1u); }
+        // Its objects are of its own engine class (C++ scripts, C# scripts deriving from one).
+        bool OwnClass() const { return language == ScriptLanguage::Cpp || nativeBase != ~0u; }
     };
 
     // Adds a script class (a copy); the index.

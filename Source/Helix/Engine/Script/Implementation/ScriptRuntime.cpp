@@ -365,11 +365,12 @@ namespace helix::engine
                     i++;
                     continue;
                 }
-                // A run of one order and language.
+                // A run of one order and language (of the function the message calls).
                 usize end = i + 1;
-                while (end < p.list.Size() && (!p.list[end] || (p.list[end]->order_ == first->order_ && p.list[end]->script_->language == first->script_->language)))
+                bool native = first->script_->NativeCall(m);
+                while (end < p.list.Size() && (!p.list[end] || (p.list[end]->order_ == first->order_ && p.list[end]->script_->NativeCall(m) == native)))
                     end++;
-                if (first->script_->language == ScriptLanguage::Cpp)
+                if (native)
                 {
                     for (usize k = i; k < end; k++)
                     {
@@ -522,14 +523,15 @@ namespace helix::engine
         if (MonoScript* asset = scriptAsset_.Get())
             if (const ScriptClass* s = asset->GetScriptClass())
             {
-                // A C++ script lives in an object of its own class: another object cannot become one.
-                if (s->language == ScriptLanguage::CSharp || s->engineClass == ClassIndex())
+                // A C++ script (and a C# script deriving from one) lives in an object of its own class: another
+                // object cannot become one.
+                if (!s->OwnClass() || s->engineClass == ClassIndex())
                 {
                     ScriptAccess::SetScript(this, s);
                     return;
                 }
                 if (!script_)
-                    HX_LOG_ERROR(gScriptLog, "{}: the C++ script {} needs an object made as its class", Name(), s->name);
+                    HX_LOG_ERROR(gScriptLog, "{}: the script {} needs an object made as its class", Name(), s->name);
             }
         ScriptAccess::ResolveScript(this);
     }
@@ -553,13 +555,13 @@ namespace helix::engine
 
     namespace
     {
-        // The class a 114 document makes: a C++ script's class, ScriptableObject's for a C# ScriptableObject script,
+        // The class a 114 document makes: a script's own class, ScriptableObject's for a C# ScriptableObject script,
         // GameBehaviour's (kNoClass) else.
         u32 CppScriptClassOf(const ScriptOnly& only)
         {
             if (MonoScript* asset = only.m_Script.Get())
                 if (const ScriptClass* s = asset->GetScriptClass())
-                    if (s->alive && (s->language == ScriptLanguage::Cpp || IsDerivedFrom(s->engineClass, ClassOf<ScriptableObject>())))
+                    if (s->alive && (s->OwnClass() || IsDerivedFrom(s->engineClass, ClassOf<ScriptableObject>())))
                         return s->engineClass;
             return kNoClass;
         }
@@ -626,7 +628,7 @@ namespace helix::engine
     {
         if (!gameObject || !script.alive)
             return nullptr;
-        u32 klass = script.language == ScriptLanguage::Cpp ? script.engineClass : ClassOf<GameBehaviour>();
+        u32 klass = script.OwnClass() ? script.engineClass : ClassOf<GameBehaviour>();
         return static_cast<GameBehaviour*>(gameObject->AddComponent(klass, &Prepare, const_cast<ScriptClass*>(&script)));
     }
 
@@ -653,7 +655,7 @@ namespace helix::engine
     {
         if (!b || !s || !s->Has(m) || !s->alive)
             return;
-        if (s->language == ScriptLanguage::Cpp)
+        if (s->NativeCall(m))
         {
             void* self = b;
             if (ScriptMessageTakesBool(m))
@@ -745,11 +747,17 @@ namespace helix::engine
                 return false;
             if (s->language == ScriptLanguage::CSharp)
             {
-                if (!gManaged.sendMessage || !Handle(b))
+                if (gManaged.sendMessage && Handle(b))
+                {
+                    String text;
+                    MessageValue m = gPassing ? *gPassing : FromVariant(value, text);
+                    if (gManaged.sendMessage(Handle(b), name.Data(), i32(name.Size()), &m) != 0)
+                        return true;
+                }
+                // A C# script deriving from a C++ script: the C++ class's method.
+                s = s->nativeBase != ~0u ? GetScriptClass(s->nativeBase) : nullptr;
+                if (!s || !s->alive)
                     return false;
-                String text;
-                MessageValue m = gPassing ? *gPassing : FromVariant(value, text);
-                return gManaged.sendMessage(Handle(b), name.Data(), i32(name.Size()), &m) != 0;
             }
             if (gPassing)
                 return false;
@@ -845,6 +853,10 @@ namespace helix::engine
 
     namespace
     {
+        // Below (with the C# classes' registration).
+        void DerivedTransfer(void* instance, void* visitor);
+        void TakeBaseMessages(ScriptClass& s, const ScriptClass& native, u32 own);
+
         void RetireScript(ScriptClass* s)
         {
             if (!s->alive)
@@ -857,8 +869,11 @@ namespace helix::engine
             for (Object* o : objects)
                 DestroyImmediate(o, true);
             s->alive = false;
-            if (s->language == ScriptLanguage::Cpp)
+            if (s->OwnClass())
                 DisableClass(s->engineClass);
+            for (u32 i = 0; i < ScriptClassCount(); i++)
+                if (ScriptClass* d = MutableScriptClass(i); d && d->alive && d->nativeBase == s->index)
+                    RetireScript(d);
         }
 
         void OnNativeScript(const scripting::NativeScriptClass& n, bool added, void*)
@@ -898,16 +913,28 @@ namespace helix::engine
                 s.call[u32(message)] = m.call;
                 s.callBool[u32(message)] = m.callBool;
             }
-            ScriptClass* registered = MutableScriptClass(RegisterScriptClass(s));
-            // Its engine class: its script base's (GameBehaviour's, ScriptableObject's), made as the C++ class.
+            // Below a script class of another binary: its messages and fields come first (the module's own bases are
+            // in its registration).
             RegisterBuiltinClasses();
             u32 base = n.scriptBase.Empty() ? kNoClass : FindClassByName(n.scriptBase);
             if (base == kNoClass)
                 base = ClassOf<GameBehaviour>();
+            if (const ScriptClass* native = FindScriptClassOfEngineClass(base); native && native->assembly != s.assembly)
+            {
+                u32 own = s.messages;
+                s.nativeBase = native->index;
+                TakeBaseMessages(s, *native, own);
+                s.ownTransfer = s.transfer;
+                s.transfer = &DerivedTransfer;
+            }
+            ScriptClass* registered = MutableScriptClass(RegisterScriptClass(s));
+            // Its engine class: its script base's (GameBehaviour's, ScriptableObject's or a script class's), made as
+            // the C++ class.
             ClassInfo info = GetClass(base);
             info.name = registered->name;
             info.base = base;
-            info.flags = (info.flags & ~u32(ClassAbstract)) | ClassScript;
+            // A class abstract in C++ has no construct function: only the classes of C# script classes below it are made.
+            info.flags = (info.flags & ~u32(ClassAbstract)) | ClassScript | (n.construct ? 0u : u32(ClassAbstract));
             info.size = n.size;
             info.alignment = n.alignment;
             info.create = nullptr;
@@ -1043,6 +1070,86 @@ namespace helix::engine
                 gManaged.transfer(handle, visitor);
         }
 
+        // A script with a base of another binary: the base chain's fields first, then the class's own.
+        void TransferChain(const ScriptClass* s, void* instance, void* visitor)
+        {
+            if (s->nativeBase != ~0u)
+                if (const ScriptClass* n = GetScriptClass(s->nativeBase))
+                    TransferChain(n, instance, visitor);
+            if (s->nativeBase == ~0u && s->language == ScriptLanguage::Cpp)
+            {
+                if (s->transfer)
+                    s->transfer(instance, visitor);
+                return;
+            }
+            if (s->ownTransfer)
+                s->ownTransfer(instance, visitor);
+            if (s->managedFields)
+                ManagedTransfer(instance, visitor);
+        }
+
+        void DerivedTransfer(void* instance, void* visitor)
+        {
+            if (const ScriptClass* s = ScriptClassOfObject(static_cast<Object*>(instance)))
+                TransferChain(s, instance, visitor);
+        }
+
+        // A base's messages a class has none of: they call the base's functions.
+        void TakeBaseMessages(ScriptClass& s, const ScriptClass& native, u32 own)
+        {
+            s.nativeMessages = native.messages & ~own;
+            s.messages |= native.messages;
+            for (u32 m = 0; m < u32(ScriptMessage::Count); m++)
+                if ((s.nativeMessages >> m) & 1u)
+                {
+                    s.call[m] = native.call[m];
+                    s.callBool[m] = native.callBool[m];
+                }
+            if (!s.beforeSerialize)
+                s.beforeSerialize = native.beforeSerialize;
+            if (!s.afterDeserialize)
+                s.afterDeserialize = native.afterDeserialize;
+        }
+
+        // A C# script class whose base chain reaches a C++ script class: the nearest one (null: none).
+        const ScriptClass* NativeBaseOf(scripting::TypeId type)
+        {
+            const scripting::TypeInfo* t = scripting::GetType(type);
+            for (scripting::TypeId b = t ? t->base : scripting::TypeId{}; b.IsValid();)
+            {
+                if (const ScriptClass* s = FindScriptClass(b); s && s->alive && s->language == ScriptLanguage::Cpp)
+                    return s;
+                const scripting::TypeInfo* bt = scripting::GetType(b);
+                b = bt ? bt->base : scripting::TypeId{};
+            }
+            return nullptr;
+        }
+
+        // A class of its own below its C++ script class: made (and copied) as that class's derived C++ class when it
+        // has one.
+        u32 RegisterDerivedClass(const ScriptClass& s, const ScriptClass& native)
+        {
+            const scripting::NativeScriptClass* n = nullptr;
+            Array<const scripting::NativeScriptClass*> all;
+            scripting::NativeScriptClasses(all);
+            for (const scripting::NativeScriptClass* c : all)
+                if (c->type == native.type)
+                    n = c;
+            ClassInfo info = GetClass(native.engineClass);
+            info.name = s.name;
+            info.base = native.engineClass;
+            info.flags = (info.flags & ~u32(ClassAbstract)) | ClassScript;
+            info.type = s.type;
+            if (n && n->constructDerived)
+            {
+                info.size = n->derivedSize;
+                info.alignment = n->derivedAlignment;
+                info.createScript = n->constructDerived;
+                info.cloneScript = n->cloneDerived;
+            }
+            return RegisterClass(Move(info));
+        }
+
         // The Helix.Math value types C# fields hold, by their C# names: their TransferTraits (the C# structs have
         // the native layout, checked by size).
         struct ManagedValueType
@@ -1119,10 +1226,12 @@ namespace helix::engine
         }
 
         // A C# script class: its type in the scripting core (in the module of its assembly, below its base's type) and
-        // its script class; the index, ~0 when the type cannot be declared.
+        // its script class; the index, ~0 when the type cannot be declared. fields: 1 it has serialized fields, 2 it is
+        // abstract.
         u32 RegisterManagedClass(const char* assembly, i32 an, const char* ns, i32 nn, const char* name, i32 n, u32 baseType, u32 messages, i32 order,
-                                 u8 fields, u32* typeOut)
+                                 u8 fields, u32* typeOut, u8* derivedOut)
         {
+            *derivedOut = 0;
             ScriptClass s;
             s.language = ScriptLanguage::CSharp;
             s.assembly = String(StringView(assembly, usize(an)));
@@ -1138,7 +1247,8 @@ namespace helix::engine
             scripting::TypeId type = scripting::FindType(full);
             if (!type.IsValid() || scripting::GetType(type)->module != module)
             {
-                type = scripting::DeclareType(module, s.nameSpace, s.name, scripting::TypeKind::Class, scripting::TypeId{baseType});
+                type = scripting::DeclareType(module, s.nameSpace, s.name, scripting::TypeKind::Class, scripting::TypeId{baseType},
+                                              (fields & 2) ? scripting::TypeAbstract : scripting::TypeNone);
                 if (!type.IsValid())
                     return ~0u;
                 scripting::TypeBuilder(type).Finish();
@@ -1146,16 +1256,29 @@ namespace helix::engine
             if (const ScriptClass* known = FindScriptClass(type))
             {
                 *typeOut = type.value;
+                *derivedOut = known->nativeBase != ~0u ? 1 : 0;
                 return known->index;
             }
             s.type = type;
             s.messages = messages;
             s.defaultOrder = order;
-            s.transfer = fields ? &ManagedTransfer : nullptr;
+            s.managedFields = (fields & 1) != 0;
+            s.transfer = s.managedFields ? &ManagedTransfer : nullptr;
+            *typeOut = type.value;
+            if (const ScriptClass* native = NativeBaseOf(type))
+            {
+                // Below a C++ script class: its objects are that class's; a message the C# class has none of runs the
+                // C++ class's method.
+                s.nativeBase = native->index;
+                TakeBaseMessages(s, *native, messages);
+                s.transfer = &DerivedTransfer;
+                s.engineClass = RegisterDerivedClass(s, *native);
+                *derivedOut = 1;
+                return RegisterScriptClass(s);
+            }
             // Below ScriptableObject or GameBehaviour, by the C# base chain.
             u32 scriptable = ClassOf<ScriptableObject>();
             s.engineClass = scripting::IsAssignableFrom(GetClass(scriptable).type, type) ? scriptable : ClassOf<GameBehaviour>();
-            *typeOut = type.value;
             return RegisterScriptClass(s);
         }
 
@@ -1282,13 +1405,13 @@ namespace helix::engine
         if (MonoScript* asset = scriptAsset_.Get())
             if (const ScriptClass* s = asset->GetScriptClass())
             {
-                if (s->language == ScriptLanguage::CSharp || s->engineClass == ClassIndex())
+                if (!s->OwnClass() || s->engineClass == ClassIndex())
                 {
                     ScriptableAccess::SetScript(this, s);
                     return;
                 }
                 if (!script_)
-                    HX_LOG_ERROR(gScriptLog, "{}: the C++ script {} needs an object made as its class", Name(), s->name);
+                    HX_LOG_ERROR(gScriptLog, "{}: the script {} needs an object made as its class", Name(), s->name);
             }
         if (!script_)
             if (const ScriptClass* s = FindScriptClassOfEngineClass(ClassIndex()))

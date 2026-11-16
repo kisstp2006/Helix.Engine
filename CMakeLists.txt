@@ -47,6 +47,9 @@ helix_bindgen(helix_engine MODULE HelixEngine NAMESPACE HelixEngine KIND Engine 
                       "${engine_source}/Helix/Engine/Jobs/ManagedJobs.h" "${engine_source}/Helix/Engine/Rendering/Pipeline/RenderStates.h" "${engine_source}/Helix/Engine/Rendering/Pipeline/Shadows.h" "${engine_source}/Helix/Engine/Rendering/Pipeline/RenderTargets.h"
                       "${engine_source}/Helix/Engine/Rendering/Pipeline/RenderPipelineNative.h"
               CS_OUTPUT engine_cs)
+# The engine's generated bindings are one large file: MSVC needs the big object format for it (the ASan build passes the
+# section limit).
+target_compile_options(helix_engine PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
 set(HELIX_ENGINE_BINDINGS_CS "${engine_cs}" CACHE INTERNAL "")
 
 # HelixEngine: the engine and the libraries it links as one shared library (Windows, Linux, Android), which the player

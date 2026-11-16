@@ -27,10 +27,13 @@ set(engine_source "${CMAKE_CURRENT_SOURCE_DIR}/Source")
 # The value types of Helix.Math are the script API's too (their fields bound, Random over the engine's generator).
 helix_dependency_dir(engine_math_dir Math)
 set(math_source "${engine_math_dir}/Source")
+# The platform's key codes are the script API's KeyCode.
+helix_dependency_dir(engine_platform_dir Platform)
 set(HELIX_ENGINE_MATH_HEADERS "${math_source}/Helix/Math/Vector.h" "${math_source}/Helix/Math/Quaternion.h" "${math_source}/Helix/Math/Matrix4x4.h"
     "${math_source}/Helix/Math/Color.h" "${math_source}/Helix/Math/Geometry.h" "${math_source}/Helix/Math/Random.h" CACHE INTERNAL "")
 helix_bindgen(helix_engine MODULE HelixEngine NAMESPACE HelixEngine KIND Engine API INCLUDE_ROOTS "${engine_source}" "${math_source}"
-              HEADERS ${HELIX_ENGINE_MATH_HEADERS} "${engine_source}/Helix/Engine/Math/MathNative.h" "${engine_source}/Helix/Engine/Object/EntityId.h" "${engine_source}/Helix/Engine/Object/Object.h"
+                                                                                           "${engine_platform_dir}/Source"
+              HEADERS ${HELIX_ENGINE_MATH_HEADERS} "${engine_platform_dir}/Source/Helix/Platform/Window/Input.h" "${engine_source}/Helix/Engine/Math/MathNative.h" "${engine_source}/Helix/Engine/Object/EntityId.h" "${engine_source}/Helix/Engine/Object/Object.h"
                       "${engine_source}/Helix/Engine/GameObject/GameObject.h" "${engine_source}/Helix/Engine/Transform/Transform.h"
                       "${engine_source}/Helix/Engine/Script/GameBehaviour.h" "${engine_source}/Helix/Engine/Debug/Debug.h"
                       "${engine_source}/Helix/Engine/Time/Time.h" "${engine_source}/Helix/Engine/Application/Application.h"

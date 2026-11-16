@@ -45,6 +45,8 @@ namespace helix::engine
         Array<u8> visible = Array<u8>();
         // Visible in the frame before (OnBecameVisible / OnBecameInvisible are the changes).
         Array<u8> wasVisible = Array<u8>();
+        // Changes when a renderer comes, goes or changes its materials.
+        u32 materialsVersion = 0;
 
         u32 Count() const { return u32(renderer.Size()); }
         BoundsSoA Bounds() const

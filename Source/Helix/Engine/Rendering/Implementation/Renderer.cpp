@@ -86,6 +86,7 @@ namespace helix::engine
         d.lodMask.Push(0);
         d.version.Push(NextRenderVersion());
         d.materials.Emplace();
+        d.materialsVersion++;
         d.renderingLayerMask.Push(0);
         d.subMeshes.Push(0);
         d.visible.Push(0);
@@ -158,6 +159,7 @@ namespace helix::engine
         SwapRemove(d.lodMask, i);
         SwapRemove(d.version, i);
         SwapRemove(d.materials, i);
+        d.materialsVersion++;
         SwapRemove(d.renderingLayerMask, i);
         SwapRemove(d.subMeshes, i);
         SwapRemove(d.visible, i);
@@ -248,7 +250,16 @@ namespace helix::engine
             d.lodSlot[i] = lodSlots_[i];
             d.lodMask[i] = lodMasks_[i];
             d.version[i] = NextRenderVersion();
-            d.materials[i] = materials_[i];
+            const RenderMaterials& mats = materials_[i];
+            RenderMaterials& kept = d.materials[i];
+            bool same = kept.count == mats.count && kept.more == mats.more;
+            for (u32 k = 0; k < mats.count && same; k++)
+                same = kept.ids[k] == mats.ids[k];
+            if (!same)
+            {
+                kept = mats;
+                d.materialsVersion++;
+            }
             d.renderingLayerMask[i] = renderingLayers_[i];
             d.subMeshes[i] = subMeshes_[i];
         }

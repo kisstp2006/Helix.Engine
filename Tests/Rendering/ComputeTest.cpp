@@ -1,4 +1,5 @@
 #include <Support/Devices.h>
+#include <Support/GpuFrame.h>
 #include <Support/TestShaders.h>
 
 #include <Helix/Core/Logging/Log.h>
@@ -306,6 +307,54 @@ HX_TEST(Rendering, AGlobalSetBetweenDrawsOfOneMaterialReachesTheNext)
         Graphics::ReleaseResources();
     });
     std::printf("    %u devices\n", ran);
+}
+
+HX_TEST(Rendering, SamplesAreGpuScopes)
+{
+    // A command buffer's samples time the device's work in them: nested scopes by name inside the frame's.
+    u32 ran = 0;
+    ForEachDevice([&](rhi::Device& device) {
+        if (!device.Caps().gpuTimers)
+        {
+            std::printf("      no GPU timers, skipped\n");
+            return;
+        }
+        TestShaderFolder shaders;
+        Graphics::SetDevice(&device);
+        ran++;
+        RenderTexture* target = RenderTexture::New(64, 64, 0, RenderTextureFormat::ARGB32, RenderTextureReadWrite::Linear);
+        HX_REQUIRE(target->Create());
+        Material* m = Material::Create(Shader::Find("Tests/GlobalColor"));
+        Mesh* quad = Quad();
+        GpuFrameTimes times = TimeGpuFrames(device, 4, [&] {
+            CommandBuffer cb;
+            cb.BeginSample("Outer");
+            cb.SetRenderTarget(RenderTargetIdentifier(target));
+            cb.ClearRenderTarget(true, true, Color(0, 0, 0, 1));
+            cb.BeginSample("Quads");
+            cb.SetViewProjectionMatrices(Matrix4x4::identity, Matrix4x4::identity);
+            for (i32 i = 0; i < 16; i++)
+                cb.DrawMesh(quad, Matrix4x4::Scale(Vector3(2, 2, 1)), m, 0, 0, nullptr);
+            cb.EndSample("Quads");
+            cb.EndSample("Outer");
+            Graphics::ExecuteCommandBuffer(cb);
+        });
+        HX_REQUIRE(times.frames.Size() == 4 && times.scopes.Size() >= 3);
+        const rhi::GpuTiming* outer = nullptr;
+        const rhi::GpuTiming* quads = nullptr;
+        for (const rhi::GpuTiming& t : times.scopes)
+        {
+            if (StringView(t.name) == "Outer")
+                outer = &t;
+            if (StringView(t.name) == "Quads")
+                quads = &t;
+        }
+        HX_REQUIRE(outer && quads);
+        HX_CHECK(outer->depth == 1 && quads->depth == 2 && times.scopes[0].durationMs >= outer->durationMs && quads->beginMs >= outer->beginMs && outer->durationMs >= quads->durationMs && outer->durationMs < 1000.0);
+        std::printf("      outer %.3f ms, quads %.3f ms\n", outer->durationMs, quads->durationMs);
+        Graphics::ReleaseResources();
+    });
+    std::printf("    %u devices with GPU timers\n", ran);
 }
 
 HX_TEST(Rendering, BindlessMembersHoldTheTexturesIndices)

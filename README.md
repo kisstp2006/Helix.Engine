@@ -225,6 +225,8 @@ of C++ and C# scripts, a fallback pipeline without an asset), and the screen as 
   inputs as globals; clears at the first use, resolves at the end. DrawProcedural draws vertices without a mesh (the
   shader makes them from the vertex id). AsyncGPUReadback reads render textures when the frame's commands (or a
   command buffer's) are submitted and calls back at the next frame's start, in request order.
+  A command buffer's samples (BeginSample / EndSample, the render graph's passes) are profiler markers during a capture
+  and GPU scopes of the device, which the device's GPU timers report per frame.
 - GraphicsSettings.useScriptableRenderPipelineBatching keeps material blocks and per object blocks in persistent uniform
   buffers, written into fresh parts when they change and bound by offset (where the device can bind by offset and write
   parts); the command lists skip bindings that repeat. RenderStateBlock's blend, depth, raster (depth bias, depth clip,

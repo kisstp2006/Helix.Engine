@@ -1310,12 +1310,10 @@ namespace helix::engine
 
         // ------------------------------------------------------------------------------------------ DrawRenderers
 
-        // A draw of the list: its sort key (the criteria's fields, then the distance and the pass name's index) and what
-        // it draws.
+        // A draw of the list: what it draws (its sort key, the criteria's fields, then the distance and the pass name's
+        // index, is its entry in the order).
         struct Item
         {
-            u64 hi;
-            u64 lo;
             Material* material;
             const MaterialPassData* data;
             // A renderer index of the render data, or a queued mesh's index with the top bit.
@@ -1335,6 +1333,76 @@ namespace helix::engine
         constexpr u32 kQueuedBit = 0x80000000u;
         // Light modes the fallback pipeline does not draw.
         constexpr StringView kNotForward[] = {"ShadowCaster", "DepthOnly", "Meta", "MotionVectors"};
+
+        // Every material of the render side's renderers (made again when their materials change) and whether a renderer
+        // has more than the render side keeps.
+        struct SceneMaterials
+        {
+            u32 version = ~0u;
+            Array<u64> ids;
+            bool more = false;
+        };
+
+        const SceneMaterials& SceneMaterialsOf(const RenderData& d)
+        {
+            static SceneMaterials scene;
+            if (scene.version == d.materialsVersion)
+                return scene;
+            scene.version = d.materialsVersion;
+            scene.ids.Clear();
+            scene.more = false;
+            HashMap<u64, u8> seen;
+            for (const RenderMaterials& mats : d.materials)
+            {
+                scene.more |= mats.more;
+                for (u32 k = 0; k < mats.count; k++)
+                {
+                    u64 id = EntityId::ToULong(mats.ids[k]);
+                    if (!seen.Find(id))
+                    {
+                        seen.Set(id, 1);
+                        scene.ids.Push(id);
+                    }
+                }
+            }
+            return scene;
+        }
+
+        // Whether a request may draw any renderer: false when no material of the scene (nor the override material that
+        // takes their place) is in its queue range, so the renderers need no walk (the transparent list of an opaque
+        // scene).
+        bool RenderersMayDraw(const RenderData& d, const DrawRequest& r)
+        {
+            const SceneMaterials& scene = SceneMaterialsOf(d);
+            if (scene.more || r.overrideShader.IsValid() || r.fallbackMaterial.IsValid())
+                return true;
+            const RenderQueueRange& range = r.filtering.renderQueueRange;
+            if (Material* over = EntityIdToObject<Material>(r.overrideMaterial))
+                return range.Contains(over->renderQueue());
+            for (u64 id : scene.ids)
+            {
+                Material* m = EntityIdToObject<Material>(EntityId::FromULong(id));
+                if (!m || !m->shader())
+                    m = ErrorMaterial();
+                if (!m || range.Contains(m->renderQueue()))
+                    return true;
+            }
+            return false;
+        }
+
+        // What decides a request's pass templates: the materials met by one request are made first for the next of the
+        // same signature.
+        u64 RequestSignature(const DrawRequest& r, shadercompiler::ShaderTarget target)
+        {
+            u64 h = MixHash(u64(r.forward) | u64(r.shadow) << 1 | u64(u32(target)) << 8);
+            for (u32 t = 0; t < u32(DrawingSettings::maxShaderPasses); t++)
+                h = CombineHash(h, MixHash(u64(r.drawing.passNames[t].id)));
+            h = CombineHash(h, MixHash(EntityId::ToULong(r.overrideMaterial)));
+            h = CombineHash(h, MixHash(EntityId::ToULong(r.overrideShader)));
+            h = CombineHash(h, MixHash(EntityId::ToULong(r.fallbackMaterial)));
+            h = CombineHash(h, MixHash(u64(u32(r.drawing.overrideMaterialPassIndex)) | u64(u32(r.drawing.overrideShaderPassIndex)) << 32));
+            return h;
+        }
 
         // The pass templates of each material a request meets, made once per material.
         struct MaterialDraws
@@ -1486,6 +1554,14 @@ namespace helix::engine
             return bits & 0x80000000u ? ~bits : bits | 0x80000000u;
         }
 
+        // The distance's bits in a sort key's lo word (above the pass name's index): quantized front to back keeps its top
+        // 16 bits (rough buckets, which the radix sort then skips), back to front keeps all of them.
+        u64 DistanceBits(f32 distance, bool backToFront)
+        {
+            u32 bits = SortableBits(backToFront ? -distance : distance);
+            return u64(backToFront ? bits : bits & 0xFFFF0000u) << 32;
+        }
+
         // ------------------------------------------------------------------------------------------ radix sort
 
         using render::SortEntry;
@@ -1505,28 +1581,43 @@ namespace helix::engine
             bool parallel = n >= kParallelSort && jobs::IsInitialized();
             if (!parallel)
             {
-                // Every digit's counts in one pass over the entries, then a scatter per digit that is not the same everywhere.
-                static u32 histogram[16][256];
-                std::memset(histogram, 0, sizeof(histogram));
+                // The digits that differ somewhere (the others leave the order as it is), their counts in one pass over the
+                // entries, then a scatter per digit.
                 constexpr u32 firstDigit = SortEntry::kIndexBits / 8;
+                u64 hiDiff = 0, loDiff = 0;
+                const u64 hiFirst = a[0].hi, loFirst = a[0].lo;
+                for (u32 i = 1; i < n; i++)
+                {
+                    hiDiff |= a[i].hi ^ hiFirst;
+                    loDiff |= a[i].lo ^ loFirst;
+                }
+                u32 digits[16];
+                u32 used = 0;
+                for (u32 d = firstDigit; d < 8; d++)
+                    if ((loDiff >> (d * 8)) & 0xFF)
+                        digits[used++] = d;
+                for (u32 d = 0; d < 8; d++)
+                    if ((hiDiff >> (d * 8)) & 0xFF)
+                        digits[used++] = 8 + d;
+                if (!used)
+                    return;
+                static u32 histogram[16][256];
+                std::memset(histogram, 0, usize(used) * sizeof(histogram[0]));
                 for (u32 i = 0; i < n; i++)
                 {
                     const SortEntry& e = a[i];
-                    for (u32 d = firstDigit; d < 8; d++)
-                        histogram[d][(e.lo >> (d * 8)) & 0xFF]++;
-                    for (u32 d = 0; d < 8; d++)
-                        histogram[8 + d][(e.hi >> (d * 8)) & 0xFF]++;
+                    for (u32 k = 0; k < used; k++)
+                    {
+                        u32 d = digits[k];
+                        histogram[k][((d >= 8 ? e.hi : e.lo) >> ((d & 7) * 8)) & 0xFF]++;
+                    }
                 }
                 SortEntry* from = a.Data();
                 SortEntry* to = scratch.Data();
-                for (u32 d = firstDigit; d < 16; d++)
+                for (u32 pass = 0; pass < used; pass++)
                 {
-                    u32* h = histogram[d];
-                    bool trivial = false;
-                    for (u32 k = 0; k < 256 && !trivial; k++)
-                        trivial = h[k] == n;
-                    if (trivial)
-                        continue;
+                    u32 d = digits[pass];
+                    u32* h = histogram[pass];
                     u32 at = 0;
                     for (u32 k = 0; k < 256; k++)
                     {
@@ -1636,6 +1727,7 @@ namespace helix::engine
             static HashMap<u64, u64> ranges;
             templates.Clear();
             items.Clear();
+            order.Clear();
             ranges.Clear();
             MaterialDraws draws{e, request, templates, SwappedMaterials(), ranges};
             u32 layers = u32(request.filtering.layerMask);
@@ -1646,12 +1738,17 @@ namespace helix::engine
             bool byOrder = HasFlag(criteria, SortingCriteria::SortingLayer);
             auto add = [&](Material* m, i32 sortingOrder, f32 distance, u32 source, u32 submesh) {
                 u64 orderBits = byOrder ? u64(u32(sortingOrder + 0x8000) & 0xFFFF) << 32 : 0;
-                u64 distanceBits = byDistance ? u64(SortableBits(backToFront ? -distance : distance)) << 32 : 0;
+                u64 distanceBits = byDistance ? DistanceBits(distance, backToFront) : 0;
                 for (const PassTemplate& t : draws.Of(m))
-                    items.Push({t.key | orderBits, distanceBits | u64(t.tag) << SortEntry::kIndexBits, t.material, t.data, source, submesh});
+                {
+                    order.Push({t.key | orderBits, distanceBits | u64(t.tag) << SortEntry::kIndexBits | u64(items.Size())});
+                    items.Push({t.material, t.data, source, submesh});
+                }
             };
-            // The visible renderers in chunks on the jobs, from the render side data only: first the materials they use
-            // (made into pass templates here, where shaders may compile), then their items.
+            // The visible renderers in one pass of chunks on the jobs, from the render side data only. The materials this
+            // kind of request met the last time get their pass templates first (here, where shaders may compile); a
+            // renderer with a material not met yet is left to the serial pass after the chunks, with the renderers that
+            // have more materials than the render side keeps.
             struct Build
             {
                 const RenderData* d;
@@ -1662,70 +1759,34 @@ namespace helix::engine
                 bool byOrder, byDistance, backToFront;
                 const HashMap<u64, u64>* ranges;
                 const PassTemplate* templates;
-                Array<u64>* found;
                 Array<Item>* out;
+                Array<SortEntry>* keys;
                 Array<u32>* more;
             };
             constexpr u32 kBuildChunk = 2048;
             const Array<u32>& visible = request.shadow ? request.casters : cull.renderers;
-            u32 chunks = (u32(visible.Size()) + kBuildChunk - 1) / kBuildChunk;
-            static Array<Array<u64>> found;
+            u32 chunks = RenderersMayDraw(d, request) ? (u32(visible.Size()) + kBuildChunk - 1) / kBuildChunk : 0;
             static Array<Array<Item>> chunkItems;
+            static Array<Array<SortEntry>> chunkKeys;
             static Array<Array<u32>> chunkMore;
-            while (found.Size() < chunks)
+            while (chunkItems.Size() < chunks)
             {
-                found.Emplace();
                 chunkItems.Emplace();
+                chunkKeys.Emplace();
                 chunkMore.Emplace();
             }
             Build build{&d, visible.Data(), u32(visible.Size()), layers, renderingLayers, &request.drawing.sortingSettings, byOrder, byDistance,
-                        backToFront, &ranges, nullptr, found.Data(), chunkItems.Data(), chunkMore.Data()};
+                        backToFront, &ranges, nullptr, chunkItems.Data(), chunkKeys.Data(), chunkMore.Data()};
             auto passes = [](const Build& b, u32 i) {
                 const RenderData& rd = *b.d;
                 return (rd.layerMask[i] & b.layers) && (rd.renderingLayerMask[i] & b.renderingLayers) && rd.subMeshes[i] > 0 && rd.mesh[i].IsValid();
             };
-            auto gather = [passes](const Build& b, u32 c) {
-                Array<u64>& ids = b.found[c];
-                ids.Clear();
-                // A small open addressing set of the ids seen (id + 1, 0 is empty); when it fills, ids may repeat.
-                constexpr u32 kSlots = 256;
-                u64 seenIds[kSlots] = {};
-                u32 used = 0;
-                u64 last = ~0ull;
-                for (u32 k = c * kBuildChunk, end = Min(b.count, k + kBuildChunk); k < end; k++)
-                {
-                    u32 i = b.visible[k];
-                    if (!passes(b, i))
-                        continue;
-                    const RenderMaterials& mats = b.d->materials[i];
-                    for (u32 m = 0; m < mats.count; m++)
-                    {
-                        u64 id = EntityId::ToULong(mats.ids[m]);
-                        if (id == last)
-                            continue;
-                        last = id;
-                        bool seen = false;
-                        if (used < kSlots / 2)
-                        {
-                            u32 slot = u32(MixHash(id)) & (kSlots - 1);
-                            while (seenIds[slot] && seenIds[slot] != id + 1)
-                                slot = (slot + 1) & (kSlots - 1);
-                            seen = seenIds[slot] != 0;
-                            if (!seen)
-                            {
-                                seenIds[slot] = id + 1;
-                                used++;
-                            }
-                        }
-                        if (!seen)
-                            ids.Push(id);
-                    }
-                }
-            };
             auto make = [passes](const Build& b, u32 c) {
                 Array<Item>& out = b.out[c];
+                Array<SortEntry>& keys = b.keys[c];
                 Array<u32>& more = b.more[c];
                 out.Clear();
+                keys.Clear();
                 more.Clear();
                 constexpr u32 kCacheSlots = 64;
                 u64 cacheIds[kCacheSlots] = {};
@@ -1742,52 +1803,64 @@ namespace helix::engine
                         more.Push(i);
                         continue;
                     }
-                    f32 distance = b.byDistance ? SortDistance(*b.sorting, Vector3(rd.centerX[i], rd.centerY[i], rd.centerZ[i])) : 0.0f;
-                    u64 orderBits = b.byOrder ? u64(u32(rd.sortingOrder[i] + 0x8000) & 0xFFFF) << 32 : 0;
-                    u64 distanceBits = b.byDistance ? u64(SortableBits(b.backToFront ? -distance : distance)) << 32 : 0;
-                    u32 subs = rd.subMeshes[i];
-                    // Extra materials draw the last submesh again.
-                    for (u32 m = 0; m < mats.count; m++)
+                    // The ranges of the materials met in this chunk, direct mapped (id + 1, 0 is empty).
+                    u64 materialRanges[RenderMaterials::kInline];
+                    bool known = true;
+                    for (u32 m = 0; m < mats.count && known; m++)
                     {
-                        // The ranges of the materials met in this chunk, direct mapped (id + 1, 0 is empty).
                         u64 id = EntityId::ToULong(mats.ids[m]);
                         u32 slot = u32(MixHash(id)) & (kCacheSlots - 1);
                         if (cacheIds[slot] != id + 1)
                         {
-                            const u64* known = b.ranges->Find(id);
-                            cacheIds[slot] = id + 1;
-                            cacheRanges[slot] = known ? *known : 0;
+                            const u64* found = b.ranges->Find(id);
+                            known = found != nullptr;
+                            if (found)
+                                cacheIds[slot] = id + 1, cacheRanges[slot] = *found;
                         }
-                        u64 range = cacheRanges[slot];
+                        materialRanges[m] = cacheRanges[slot];
+                    }
+                    if (!known)
+                    {
+                        more.Push(i);
+                        continue;
+                    }
+                    f32 distance = b.byDistance ? SortDistance(*b.sorting, Vector3(rd.centerX[i], rd.centerY[i], rd.centerZ[i])) : 0.0f;
+                    u64 orderBits = b.byOrder ? u64(u32(rd.sortingOrder[i] + 0x8000) & 0xFFFF) << 32 : 0;
+                    u64 distanceBits = b.byDistance ? DistanceBits(distance, b.backToFront) : 0;
+                    u32 subs = rd.subMeshes[i];
+                    // Extra materials draw the last submesh again.
+                    for (u32 m = 0; m < mats.count; m++)
+                    {
+                        u64 range = materialRanges[m];
                         for (u32 t = u32(range >> 32); t < u32(range); t++)
                         {
                             const PassTemplate& pt = b.templates[t];
-                            out.Push({pt.key | orderBits, distanceBits | u64(pt.tag) << SortEntry::kIndexBits, pt.material, pt.data, i, m < subs ? m : subs - 1});
+                            keys.Push({pt.key | orderBits, distanceBits | u64(pt.tag) << SortEntry::kIndexBits | u64(out.Size())});
+                            out.Push({pt.material, pt.data, i, m < subs ? m : subs - 1});
                         }
                     }
                 }
             };
-            bool parallel = chunks > 1 && jobs::IsInitialized();
-            const Build* bp = &build;
-            if (parallel)
-                jobs::Complete(jobs::ParallelFor(chunks, 1, [bp, gather](u32 c) { gather(*bp, c); }));
-            else
-                for (u32 c = 0; c < chunks; c++)
-                    gather(build, c);
-            for (u32 c = 0; c < chunks; c++)
-                for (u64 id : found[c])
+            u64 signature = RequestSignature(request, e.shaderTarget);
+            static HashMap<u64, Array<u64>> metBefore;
+            if (const Array<u64>* met = metBefore.Find(signature))
+                for (u64 id : *met)
                     if (!ranges.Find(id))
                         draws.Of(EntityIdToObject<Material>(EntityId::FromULong(id)), id);
             build.templates = templates.Data();
-            if (parallel)
+            const Build* bp = &build;
+            if (chunks > 1 && jobs::IsInitialized())
                 jobs::Complete(jobs::ParallelFor(chunks, 1, [bp, make](u32 c) { make(*bp, c); }));
             else
                 for (u32 c = 0; c < chunks; c++)
                     make(build, c);
             for (u32 c = 0; c < chunks; c++)
             {
+                u64 base = items.Size();
                 items.Append(chunkItems[c].Data(), chunkItems[c].Size());
-                // Renderers with more materials than the render side keeps.
+                for (const SortEntry& k : chunkKeys[c])
+                    order.Push({k.hi, k.lo + base});
+                // Renderers with more materials than the render side keeps, or with a material not met yet.
                 for (u32 i : chunkMore[c])
                     if (Renderer* r = EntityIdToObject<Renderer>(d.renderer[i]))
                     {
@@ -1811,9 +1884,12 @@ namespace helix::engine
                     continue;
                 add(EntityIdToObject<Material>(item.material), 0, SortDistance(request.drawing.sortingSettings, item.bounds.center), kQueuedBit | q, item.submesh);
             }
-            order.Resize(items.Size());
-            for (u32 i = 0; i < items.Size(); i++)
-                order[i] = {items[i].hi, items[i].lo | i};
+            {
+                Array<u64> met;
+                for (auto entry : ranges)
+                    met.Push(entry.key);
+                metBefore.Set(signature, std::move(met));
+            }
             RadixSortEntries(order, scratch);
             Stats().drawListTime += listTime.ElapsedMilliseconds();
             StateOverride state;
@@ -2185,11 +2261,14 @@ namespace helix::engine
             DrawPasses(e, *mesh, u32(c.a), EntityIdToObject<Material>(c.object2), c.b, d.world[index], u64(index), r->PropertyBlock(c.a));
         }
 
+        // A sample is a profiler marker while a capture runs and a GPU scope of the device (its name kept by the marker).
         void RunBeginSample(Executor& e, const Command& c)
         {
             e.state.samples.Push(e.list.texts[c.index]);
+            profiler::Marker& marker = MarkerOf(e.list.texts[c.index]);
             if (profiler::IsCapturing())
-                profiler::detail::Begin(MarkerOf(e.list.texts[c.index]));
+                profiler::detail::Begin(marker);
+            e.cl.BeginGpuScope(marker.Name());
         }
 
         void RunEndSample(Executor& e, const Command& c)
@@ -2203,6 +2282,7 @@ namespace helix::engine
             e.state.samples.Pop();
             if (profiler::IsCapturing())
                 profiler::detail::End(MarkerOf(name));
+            e.cl.EndGpuScope();
         }
 
         void RunDrawRenderersCommand(Executor& e, const Command& c) { RunDrawRenderers(e, e.list.draws[c.index]); }
@@ -3310,7 +3390,21 @@ namespace helix::engine
         usize lights = c.lights.Size();
         c.lightSplits.Clear();
         c.lightSplits.Resize(lights);
-        u32 used = 0;
+        // The lights with splits: their casters and their splits' six planes each (unused ones keep everything).
+        struct Split
+        {
+            Plane planes[6];
+            bool all;
+        };
+        struct Group
+        {
+            Span<const u32> casters;
+            u32 firstSplit, splitCount;
+        };
+        static Array<Split> splits;
+        static Array<Group> groups;
+        splits.Clear();
+        groups.Clear();
         for (usize l = 0; l < lights; l++)
         {
             c.lightSplits[l] = -1;
@@ -3319,25 +3413,91 @@ namespace helix::engine
             const LightShadowCasterCullingInfo& info = infos.perLightInfos[l];
             if (info.splitLength <= 0 || info.splitStart < 0 || usize(info.splitStart + info.splitLength) > infos.splitBuffer.Size())
                 continue;
-            c.lightSplits[l] = i32(used);
-            Span<const u32> casters = cullingResults.ShadowCasters(i32(l));
-            for (i32 s = 0; s < info.splitLength; s++, used++)
+            c.lightSplits[l] = i32(splits.Size());
+            groups.Push({cullingResults.ShadowCasters(i32(l)), u32(splits.Size()), u32(info.splitLength)});
+            for (i32 s = 0; s < info.splitLength; s++)
             {
-                while (c.splitCasters.Size() <= used)
-                    c.splitCasters.Emplace();
-                Array<u32>& kept = c.splitCasters[used];
-                kept.Clear();
-                const ShadowSplitData& split = infos.splitBuffer[usize(info.splitStart + s)];
-                bool all = (info.splitExclusionMask >> s) & 1u;
-                Span<const Plane> planes(split.planes, usize(Clamp(split.cullingPlaneCount, 0, ShadowSplitData::maximumCullingPlaneCount)));
-                for (u32 i : casters)
-                {
-                    Bounds b(Vector3(d.centerX[i], d.centerY[i], d.centerZ[i]), Vector3(d.extentX[i], d.extentY[i], d.extentZ[i]) * 2.0f);
-                    if (all || planes.Empty() || GeometryUtility::TestPlanes(planes, b))
-                        kept.Push(i);
-                }
+                const ShadowSplitData& data = infos.splitBuffer[usize(info.splitStart + s)];
+                Split& split = splits.Emplace();
+                u32 planeCount = u32(Clamp(data.cullingPlaneCount, 0, 6));
+                for (u32 k = 0; k < 6; k++)
+                    split.planes[k] = k < planeCount ? data.planes[k] : Plane();
+                for (u32 k = planeCount; k < 6; k++)
+                    split.planes[k].distance = 1.0f;
+                split.all = ((info.splitExclusionMask >> s) & 1u) || planeCount == 0;
             }
         }
+        while (c.splitCasters.Size() < splits.Size())
+            c.splitCasters.Emplace();
+        // A light's casters in chunks on the jobs: a chunk's boxes gathered once, then tested against each of its splits
+        // four at a time; a caster stays where its box is not wholly behind a plane. The chunks of a split are joined in
+        // order (the light's order).
+        constexpr u32 kChunk = 2048;
+        struct Job
+        {
+            u32 group, chunk, firstKept;
+        };
+        static Array<Job> work;
+        static Array<Array<u32>> chunkKept;
+        work.Clear();
+        u32 keptLists = 0;
+        for (u32 g = 0; g < groups.Size(); g++)
+            for (u32 k = 0, n = (u32(groups[g].casters.Size()) + kChunk - 1) / kChunk; k < n; k++)
+            {
+                work.Push({g, k, keptLists});
+                keptLists += groups[g].splitCount;
+            }
+        while (chunkKept.Size() < keptLists)
+            chunkKept.Emplace();
+        auto run = [&d](u32 j) {
+            const Job& job = work[j];
+            const Group& group = groups[job.group];
+            u32 begin = job.chunk * kChunk, count = Min(u32(group.casters.Size()) - begin, kChunk);
+            const u32* casters = group.casters.Data() + begin;
+            thread_local f32 boxes[6][kChunk];
+            thread_local u8 inside[kChunk];
+            for (u32 k = 0; k < count; k++)
+            {
+                u32 i = casters[k];
+                boxes[0][k] = d.centerX[i], boxes[1][k] = d.centerY[i], boxes[2][k] = d.centerZ[i];
+                boxes[3][k] = d.extentX[i], boxes[4][k] = d.extentY[i], boxes[5][k] = d.extentZ[i];
+            }
+            BoundsSoA soa{boxes[0], boxes[1], boxes[2], boxes[3], boxes[4], boxes[5], count};
+            for (u32 s = 0; s < group.splitCount; s++)
+            {
+                const Split& split = splits[group.firstSplit + s];
+                Array<u32>& kept = chunkKept[job.firstKept + s];
+                kept.Clear();
+                if (split.all)
+                {
+                    kept.Append(casters, count);
+                    continue;
+                }
+                CullBoundsSoA(split.planes, soa, inside);
+                for (u32 k = 0; k < count; k++)
+                    if (inside[k])
+                        kept.Push(casters[k]);
+            }
+        };
+        if (work.Size() > 1 && jobs::IsInitialized())
+            jobs::Complete(jobs::ParallelFor(u32(work.Size()), 1, run));
+        else
+            for (u32 j = 0; j < work.Size(); j++)
+                run(j);
+        for (u32 g = 0; g < groups.Size(); g++)
+            for (u32 s = 0; s < groups[g].splitCount; s++)
+            {
+                Array<u32>& kept = c.splitCasters[groups[g].firstSplit + s];
+                kept.Clear();
+                usize total = 0;
+                for (const Job& job : work)
+                    if (job.group == g)
+                        total += chunkKept[job.firstKept + s].Size();
+                kept.Reserve(total);
+                for (const Job& job : work)
+                    if (job.group == g)
+                        kept.Append(chunkKept[job.firstKept + s].Data(), chunkKept[job.firstKept + s].Size());
+            }
     }
 
     RendererUtils::RendererList ScriptableRenderContext::CreateShadowRendererList(const ShadowDrawingSettings& settings)

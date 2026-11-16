@@ -13,6 +13,7 @@
 
 #include <TestShadersAssembly.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 
@@ -238,19 +239,34 @@ namespace
         {
             Field field(count, 200);
             Graphics::RenderFrame();
-            f64 lists = 0, submits = 0;
-            u32 frames = 0;
-            state.SetItemsPerIteration(count / 2);
+            // Each iteration draws 8 frames; the median and the best frame are printed beside the mean (the laptop's
+            // clock and other work make the mean swing).
+            Array<f64> lists, submits;
+            state.SetItemsPerIteration(count / 2 * 8);
             while (state.KeepRunning())
-            {
-                Graphics::RenderFrame();
-                device->WaitIdle();
-                lists += Graphics::LastStats().drawListTime;
-                submits += Graphics::LastStats().submitTime;
-                frames++;
-            }
-            std::printf("%u draws (%u persistent): draw list %.3f ms, submit %.3f ms (budget %s)\n", Graphics::LastStats().drawCalls,
-                        Graphics::LastStats().persistentDraws, lists / Max(frames, 1u), submits / Max(frames, 1u), budget);
+                for (u32 f = 0; f < 8; f++)
+                {
+                    Graphics::RenderFrame();
+                    device->WaitIdle();
+                    lists.Push(Graphics::LastStats().drawListTime);
+                    submits.Push(Graphics::LastStats().submitTime);
+                }
+            auto summary = [](Array<f64>& v, f64& mean, f64& median, f64& best) {
+                f64 sum = 0;
+                for (f64 x : v)
+                    sum += x;
+                std::sort(v.Data(), v.Data() + v.Size());
+                mean = v.Empty() ? 0 : sum / f64(v.Size());
+                median = v.Empty() ? 0 : v[v.Size() / 2];
+                best = v.Empty() ? 0 : v[0];
+            };
+            f64 listMean, listMedian, listBest, submitMean, submitMedian, submitBest;
+            summary(lists, listMean, listMedian, listBest);
+            summary(submits, submitMean, submitMedian, submitBest);
+            std::printf("%u draws (%u persistent), %u frames: draw list mean %.3f median %.3f best %.3f ms, submit mean %.3f median %.3f best %.3f ms "
+                        "(budget %s)\n",
+                        Graphics::LastStats().drawCalls, Graphics::LastStats().persistentDraws, u32(lists.Size()), listMean, listMedian, listBest,
+                        submitMean, submitMedian, submitBest, budget);
         }
         GraphicsSettings::SetUseScriptableRenderPipelineBatching(false);
         Graphics::SetDevice(nullptr);
@@ -278,6 +294,49 @@ HX_BENCH(BudgetCull100kRenderersAndShadowCasters)
         casters = u32(r.ShadowCasters(0).Size());
     }
     std::printf("visible %u, shadow casters %u (budget 0.8 ms)\n", visible, casters);
+}
+
+// Budget (13): culling 100k renderers with 4 cascades, 0.8 ms on the jobs: the cull, then the shadow casters of the sun
+// in each of four cascades as a pipeline culls them (the splits' matrices and planes, CullShadowCasters).
+HX_BENCH(BudgetCull100kRenderersAnd4Cascades)
+{
+    if (!jobs::IsInitialized())
+        jobs::Initialize();
+    Field field(100000, 400);
+    ScriptableCullingParameters p;
+    field.camera->TryGetCullingParameters(p);
+    p.shadowDistance = 400;
+    state.SetItemsPerIteration(100000);
+    u32 visible = 0, inSplits[4] = {};
+    f64 cullTime = 0, splitTime = 0;
+    u32 rounds = 0;
+    while (state.KeepRunning())
+    {
+        ScriptableRenderContext context;
+        auto start = std::chrono::steady_clock::now();
+        CullingResults r = context.Cull(p);
+        auto culled = std::chrono::steady_clock::now();
+        visible = u32(r.data->renderers.Size());
+        ShadowSplitData splits[4];
+        for (i32 i = 0; i < 4; i++)
+        {
+            Matrix4x4 view, projection;
+            r.ComputeDirectionalShadowMatricesAndCullingPrimitives(0, i, 4, Vector3(0.067f, 0.2f, 0.467f), 2048, 0, view, projection, splits[i]);
+        }
+        LightShadowCasterCullingInfo info;
+        info.splitStart = 0;
+        info.splitLength = 4;
+        info.projectionType = BatchCullingProjectionType::Orthographic;
+        context.CullShadowCasters(r, ShadowCastersCullingInfos{Span<const LightShadowCasterCullingInfo>(&info, 1), Span<const ShadowSplitData>(splits, 4)});
+        auto done = std::chrono::steady_clock::now();
+        cullTime += std::chrono::duration<f64, std::milli>(culled - start).count();
+        splitTime += std::chrono::duration<f64, std::milli>(done - culled).count();
+        rounds++;
+        for (u32 i = 0; i < 4; i++)
+            inSplits[i] = u32(r.data->splitCasters[i].Size());
+    }
+    std::printf("visible %u, casters per cascade %u %u %u %u: cull %.3f ms, cascades %.3f ms (budget 0.8 ms)\n", visible, inSplits[0], inSplits[1],
+                inSplits[2], inSplits[3], cullTime / Max(rounds, 1u), splitTime / Max(rounds, 1u));
 }
 
 // Budget (13): draw list building and sorting of 20k draws, 0.6 ms.

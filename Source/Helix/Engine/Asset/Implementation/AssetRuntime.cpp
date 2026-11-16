@@ -92,6 +92,9 @@ namespace helix::engine
             std::atomic<u8> stage{Queued};
             // Set once the decode job is scheduled (its handle is then valid).
             std::atomic<bool> scheduled{false};
+            // False while the IO thread holds the request (it may still write to it after the decode is done); the
+            // request is ready and may go only once it is true again.
+            std::atomic<bool> ioDone{true};
             Array<u8> bytes;
             Array<u8> meta;
             void* decoded = nullptr;
@@ -371,10 +374,13 @@ namespace helix::engine
                     r = s.ioQueue[best];
                     s.ioQueue.RemoveAt(best);
                     // Taken under the lock: a synchronous load sees it is no longer queued.
+                    r->ioDone.store(false, std::memory_order_relaxed);
                     r->stage.store(Reading, std::memory_order_release);
                 }
                 Read(*r);
                 Dispatch(*r);
+                // The last touch of the request here: after it the main thread may integrate and delete it.
+                r->ioDone.store(true, std::memory_order_release);
             }
         }
 
@@ -396,9 +402,15 @@ namespace helix::engine
         }
 
         // Reads and decodes now on this thread, or waits for the IO thread and the job.
+        // Decoded and let go by the IO thread (the stage first: its decode followed the IO thread's taking it).
+        bool Ready(const Request& r)
+        {
+            return r.stage.load(std::memory_order_acquire) == Decoded && r.ioDone.load(std::memory_order_acquire);
+        }
+
         void Await(Request& r)
         {
-            if (r.stage.load(std::memory_order_acquire) == Decoded)
+            if (Ready(r))
                 return;
             if (TakeFromQueue(r))
             {
@@ -408,9 +420,10 @@ namespace helix::engine
             }
             for (;;)
             {
-                if (r.stage.load(std::memory_order_acquire) == Decoded)
+                if (Ready(r))
                     return;
-                if (r.scheduled.load(std::memory_order_acquire))
+                // The decode job's handle is valid once the IO thread let the request go.
+                if (r.ioDone.load(std::memory_order_acquire) && r.scheduled.load(std::memory_order_acquire))
                 {
                     jobs::Complete(r.job);
                     return;
@@ -1025,7 +1038,7 @@ namespace helix::engine
             for (Request* r : s.requests)
             {
                 u8 stage = r->stage.load(std::memory_order_acquire);
-                bool ready = stage == Decoded || (!s.ioStarted && stage == Queued);
+                bool ready = Ready(*r) || (!s.ioStarted && stage == Queued);
                 if (!ready || r->waiters.Empty())
                     continue;
                 if (!best || r->priority > best->priority || (r->priority == best->priority && r->order < best->order))

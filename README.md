@@ -32,6 +32,7 @@ of C++ and C# scripts, a fallback pipeline without an asset), and the screen as 
 | `Source/Helix/Engine/Prefab/Prefab.h` | `LoadPrefab`, `UnloadPrefab`, `FindPrefab`, `RegisterPrefab`, `PrefabSource` |
 | `Source/Helix/Engine/Pool/ObjectPool.h` | `ObjectPool<T>`, `LinkedPool<T>`, `PoolCallbacks<T>` |
 | `Source/Helix/Engine/Time/Time.h` | `Time`, `TimeClock` |
+| `Source/Helix/Engine/Input/InputFeed.h` | `InputFeed`: the window's input of a frame from the host, read by the UI and the game without taking it away; the text input a focused text element asks for |
 | `Source/Helix/Engine/PlayerLoop/PlayerLoop.h` | `PlayerLoop`, `PlayerLoopSystem` |
 | `Source/Helix/Engine/Application/Application.h` | `Application`, `RuntimePlatform`, `NetworkReachability`, `LogType` |
 | `Source/Helix/Engine/Settings/Settings.h` | `TimeManager`, `TagManager`, `PlayerSettings`, `BuildSettings`, `RegisterSettings`, `LoadSettingsFile` |

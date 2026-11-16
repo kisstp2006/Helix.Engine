@@ -2472,6 +2472,20 @@ HX_TEST(Rendering, TheScreenOverlayDrawsAfterTheCamerasOnEveryDevice)
         Graphics::screenOverlayRendering().Remove(id);
         Graphics::RenderFrame();
         HX_CHECK(calls == 3);
+        // A mesh drawn in the overlay with its own view and projection: a red quad over the screen's left half.
+        static Mesh* quad = nullptr;
+        static Material* red = nullptr;
+        quad = Quad();
+        red = Material::Create(Shader::Find("Tests/Unlit"));
+        red->SetColor("color", Color(1, 0, 0, 1));
+        u32 drawer = Graphics::screenOverlayRendering().Add([](void*, CommandBuffer& cmd) {
+            cmd.SetViewProjectionMatrices(Matrix4x4::identity, Matrix4x4::Ortho(-1, 1, -1, 1, -1, 1));
+            cmd.DrawMesh(quad, Matrix4x4::TRS(Vector3(-0.5f, 0, 0), Quaternion::identity, Vector3(1, 2, 1)), red);
+        });
+        Graphics::RenderFrame();
+        HX_REQUIRE(device.ReadTexture(color, 0, pixels.Data(), pixels.Size() * 4));
+        HX_CHECK(NearColor(Pixel(pixels, size, 4, 8), Rgba(255, 0, 0)) && NearColor(Pixel(pixels, size, 12, 8), Rgba(0, 0, 0)));
+        Graphics::screenOverlayRendering().Remove(drawer);
         Graphics::SetTarget({});
         device.Destroy(color);
         device.Destroy(depth);

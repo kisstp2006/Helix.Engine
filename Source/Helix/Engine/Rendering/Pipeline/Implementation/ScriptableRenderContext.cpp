@@ -59,20 +59,26 @@ namespace helix::engine
             return ++L().next;
         }
 
-        // Profiler markers of sample names (they live as long as the process: a marker keeps its name's address).
+        // Profiler markers of sample names (they live as long as the process: a marker keeps its name's address, and the
+        // device's GPU timings keep it until they are read). The table is never destroyed, so it stays reachable to the
+        // end.
         profiler::Marker& MarkerOf(StringView name)
         {
-            static std::mutex mutex;
-            static HashMap<u64, profiler::Marker*> markers;
-            static Array<String*> names;
-            std::lock_guard<std::mutex> lock(mutex);
+            struct Markers
+            {
+                std::mutex mutex;
+                HashMap<u64, profiler::Marker*> byName;
+                Array<String*> names;
+            };
+            static Markers* table = new Markers();
+            std::lock_guard<std::mutex> lock(table->mutex);
             u64 key = Hash64(name.Data(), name.Size());
-            if (profiler::Marker** m = markers.Find(key))
+            if (profiler::Marker** m = table->byName.Find(key))
                 return **m;
             auto* text = new String(name);
-            names.Push(text);
+            table->names.Push(text);
             auto* marker = new profiler::Marker(text->CStr(), "CommandBuffer", 0);
-            markers.Set(key, marker);
+            table->byName.Set(key, marker);
             return *marker;
         }
     }

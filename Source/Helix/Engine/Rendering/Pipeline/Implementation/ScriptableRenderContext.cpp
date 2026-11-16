@@ -765,7 +765,9 @@ namespace helix::engine
             bool open = false;
             bool cameraDirty = true;
             rhi::TransientAllocation cameraBlock = rhi::TransientAllocation();
-            HashMap<const MaterialPassData*, u32> materialBlocks = HashMap<const MaterialPassData*, u32>();
+            // A pass data's uploaded blocks in this submit: the index of the first in `uploaded` (low half) and the pass
+            // data's write count they hold (high half; a pass data written again, as by a global set between draws, uploads anew).
+            HashMap<const MaterialPassData*, u64> materialBlocks = HashMap<const MaterialPassData*, u64>();
             Array<rhi::TransientAllocation> uploaded = Array<rhi::TransientAllocation>();
             u64 lastWorld = ~0ull;
             ObjectLights lastLights;
@@ -1156,12 +1158,12 @@ namespace helix::engine
                     BindUniform(e, v.layout.blocks[b].slot, parts[b], u32(data.blocks[b].Size()));
                 firstUpload = ~usize(0);
             }
-            else if (const u32* at = e.materialBlocks.Find(&data))
-                firstUpload = *at;
+            else if (const u64* at = e.materialBlocks.Find(&data); at && u32(*at >> 32) == data.writes)
+                firstUpload = usize(u32(*at));
             else
             {
                 firstUpload = e.uploaded.Size();
-                e.materialBlocks.Set(&data, u32(firstUpload));
+                e.materialBlocks.Set(&data, u64(data.writes) << 32 | u64(firstUpload));
                 for (const Array<u8>& b : *bytes)
                     Upload(b.Data(), u32(b.Size()), e.uploaded.Emplace());
             }
@@ -2264,7 +2266,7 @@ namespace helix::engine
                 Stats().submitTime += submit.ElapsedMilliseconds();
             }
             e.cl = rhi::CommandList();
-            e.materialBlocks = HashMap<const MaterialPassData*, u32>();
+            e.materialBlocks = HashMap<const MaterialPassData*, u64>();
             e.cameraDirty = true;
             e.lastWorld = ~0ull;
             if (detail::gRenderStage)

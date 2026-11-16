@@ -665,6 +665,34 @@ public sealed class Fill : ComputeDefinition
     public static void Paint([DispatchThreadId] uint3 id) => image[new int2((int)id.x, (int)id.y)] = parameters.bias;
 }
 
+/// <summary>The color of a global (a block member without a material property takes the global of its name).</summary>
+[Shader("Tests/GlobalColor")]
+public sealed class GlobalColor : ShaderDefinition
+{
+    public struct MaterialData
+    {
+        public float4 globalTint;
+    }
+
+    public struct Varyings
+    {
+        [Position] public float4 position;
+    }
+
+    [Pass("Forward")]
+    public static class Forward
+    {
+        [Uniform(0)] public static MaterialData material;
+
+        [VertexShader]
+        public static Varyings Vertex([Location(VertexInputs.Position)] float3 position) => new Varyings { position = ShaderVariables.ObjectToClip(position) };
+
+        [FragmentShader]
+        [return: Target(0)]
+        public static float4 Fragment(Varyings input) => material.globalTint;
+    }
+}
+
 /// <summary>A texture read through the device's bindless table at the index the engine writes into baseMap_Bindless (the
 /// property's texture, the property block's over the material's, else its default).</summary>
 [Shader("Tests/BindlessColor")]

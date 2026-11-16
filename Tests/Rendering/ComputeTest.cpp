@@ -271,6 +271,43 @@ HX_TEST(Compute, KernelsRunOnEveryComputeDevice)
     std::printf("    %u compute devices\n", ran);
 }
 
+HX_TEST(Rendering, AGlobalSetBetweenDrawsOfOneMaterialReachesTheNext)
+{
+    // One command buffer draws a material twice with a global of its block set anew between the draws (as a pipeline's
+    // cascades draw the same casters with their own bias): each draw sees its own value.
+    u32 ran = 0;
+    ForEachDevice([&](rhi::Device& device) {
+        TestShaderFolder shaders;
+        Graphics::SetDevice(&device);
+        ran++;
+        RenderTexture* first = RenderTexture::New(8, 8, 0, RenderTextureFormat::ARGB32, RenderTextureReadWrite::Linear);
+        RenderTexture* second = RenderTexture::New(8, 8, 0, RenderTextureFormat::ARGB32, RenderTextureReadWrite::Linear);
+        HX_REQUIRE(first->Create() && second->Create());
+        Material* m = Material::Create(Shader::Find("Tests/GlobalColor"));
+        Mesh* quad = Quad();
+        i32 tint = Shader::PropertyToID("globalTint");
+        CommandBuffer draw;
+        draw.SetViewProjectionMatrices(Matrix4x4::identity, Matrix4x4::identity);
+        draw.SetRenderTarget(RenderTargetIdentifier(first));
+        draw.ClearRenderTarget(true, true, Color(0, 0, 0, 1));
+        draw.SetGlobalVector(tint, Vector4(1, 0, 0, 1));
+        draw.DrawMesh(quad, Matrix4x4::Scale(Vector3(2, 2, 1)), m, 0, 0, nullptr);
+        draw.SetRenderTarget(RenderTargetIdentifier(second));
+        draw.ClearRenderTarget(true, true, Color(0, 0, 0, 1));
+        draw.SetGlobalVector(tint, Vector4(0, 1, 0, 1));
+        draw.DrawMesh(quad, Matrix4x4::Scale(Vector3(2, 2, 1)), m, 0, 0, nullptr);
+        Graphics::ExecuteCommandBuffer(draw);
+        Array<u32> a = Texels(device, first), b = Texels(device, second);
+        HX_REQUIRE(a.Size() == 64 && b.Size() == 64);
+        if (a[0] != 0xFF0000FFu || b[0] != 0xFF00FF00u)
+            std::printf("      %08x %08x\n", a[0], b[0]);
+        HX_CHECK(a[0] == 0xFF0000FFu && a[63] == 0xFF0000FFu && b[0] == 0xFF00FF00u && b[63] == 0xFF00FF00u);
+        Shader::Globals().Remove(tint);
+        Graphics::ReleaseResources();
+    });
+    std::printf("    %u devices\n", ran);
+}
+
 HX_TEST(Rendering, BindlessMembersHoldTheTexturesIndices)
 {
     u32 ran = 0;

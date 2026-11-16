@@ -77,6 +77,14 @@ namespace helix::engine
         Array<NamedMember> namedMembers = Array<NamedMember>();
         // The property ids of the layout's named textures (textures without a property), in its order.
         Array<i32> namedTextureIds = Array<i32>();
+        // Members named <texture property>_Bindless: the bindless index of the property's texture goes there.
+        struct BindlessMember
+        {
+            u32 block;
+            const shadercompiler::ReflectedMember* member;
+            u32 property;
+        };
+        Array<BindlessMember> bindlessMembers = Array<BindlessMember>();
     };
 
     HX_CLASS(Namespace = "HelixEngine", Sealed)
@@ -161,6 +169,8 @@ namespace helix::engine
         HX_FUNCTION() static void SetGlobalMatrix(i32 nameID, Matrix4x4 value) { Globals().SetMatrix(nameID, value); }
         HX_FUNCTION() static void SetGlobalTexture(StringView name, Texture* value) { SetGlobalTexture(PropertyToID(name), value); }
         HX_FUNCTION() static void SetGlobalTexture(i32 nameID, Texture* value) { Globals().SetTexture(nameID, value ? value->GetEntityId() : EntityId()); }
+        // A graphics buffer by its id (0: none) for the shaders and compute shaders that read it by name.
+        HX_FUNCTION(Internal) static void SetGlobalBufferId(i32 nameID, u64 buffer) { Globals().SetBuffer(nameID, buffer); }
         HX_FUNCTION() static void SetGlobalFloatArray(StringView name, Span<const f32> values) { SetGlobalFloatArray(PropertyToID(name), values); }
         HX_FUNCTION() static void SetGlobalFloatArray(i32 nameID, Span<const f32> values) { Globals().SetFloatArray(nameID, values); }
         HX_FUNCTION() static void SetGlobalVectorArray(StringView name, Span<const Vector4> values) { SetGlobalVectorArray(PropertyToID(name), values); }

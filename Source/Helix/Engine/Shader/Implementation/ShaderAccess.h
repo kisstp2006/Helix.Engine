@@ -24,6 +24,8 @@ namespace helix::engine
         Array<const shadercompiler::Assembly*> references = Array<const shadercompiler::Assembly*>();
         Array<const shadercompiler::DebugInfo*> symbols = Array<const shadercompiler::DebugInfo*>();
         Array<shadercompiler::ShaderDescription> shaders = Array<shadercompiler::ShaderDescription>();
+        // The compute definitions of the main assembly.
+        Array<shadercompiler::ComputeDescription> computes = Array<shadercompiler::ComputeDescription>();
         // Compiled variants by key (main thread).
         HashMap<u64, ShaderVariant*> variants;
 

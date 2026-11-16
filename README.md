@@ -45,11 +45,13 @@ of C++ and C# scripts, a fallback pipeline without an asset), and the screen as 
 | `Source/Helix/Engine/Jobs/ManagedJobs.h` | `JobsNative`, `TransformAccessNative`: C# jobs on Helix.Jobs (one entry point per job type, dependencies, parallel batches, the frame's `Temp` memory, `TempJob` and `Persistent` allocations), transform arrays and the transform job's reads and writes on the workers |
 | `Source/Helix/Engine/Texture/Texture.h` | `Texture`, `Texture2D`, `TextureFormat`, `FilterMode`, `TextureWrapMode` |
 | `Source/Helix/Engine/Texture/RenderTexture.h` | `RenderTexture` (class 84), `RenderTextureDescriptor`, `RenderTextureFormat`, `GraphicsFormat` and `GraphicsFormatUtility`, temporary render textures, `RenderTexture::active` |
+| `Source/Helix/Engine/Shader/ComputeShader.h` | `ComputeShader` (class 72): kernels of C# compute shaders, their thread group sizes, values, textures and buffers, keywords, `Dispatch` and `DispatchIndirect` |
 | `Source/Helix/Engine/Shader/Shader.h` | `Shader`, `ShaderVariant`, `ShaderPropertyType`, `ShaderPropertyFlags`: shaders of C# assemblies, variants on demand, global keywords and properties |
 | `Source/Helix/Engine/Material/Material.h` | `Material`, `MaterialPropertyBlock`, `MaterialPassData` (block bytes and textures per pass and variant) |
 | `Source/Helix/Engine/Material/PropertySheet.h` | `PropertyToID`, `PropertySheet`: property values by id |
 | `Source/Helix/Engine/Rendering/Renderer.h` | `MeshFilter`, `Renderer`, `MeshRenderer`, `ShadowCastingMode` |
-| `Source/Helix/Engine/Rendering/Camera.h` | `Camera`, `CameraClearFlags`, `CameraType`, `DepthTextureMode`, `GeometryUtility` |
+| `Source/Helix/Engine/Rendering/Camera.h` | `Camera` (with the physical camera: focal length, sensor size, lens shift, gate fit, ISO, shutter speed, aperture, focus distance, blades, curvature, barrel clipping, anamorphism), `CameraClearFlags`, `CameraType`, `CameraGateFitMode`, `DepthTextureMode`, `GeometryUtility` |
+| `Source/Helix/Engine/Rendering/GraphicsBuffer.h` | `GraphicsBuffer`, `GraphicsBufferTarget`: structured, raw, indirect argument, vertex and index buffers with `SetData`, `GetData` and counters |
 | `Source/Helix/Engine/Rendering/Light.h` | `Light`, `LightType`, `LightShadows`, `LightRenderMode` |
 | `Source/Helix/Engine/Rendering/Graphics.h` | `Graphics` (device, target, `RenderFrame`, `RenderMesh`, `ExecuteCommandBuffer`, `Blit`, `CopyTexture`, `ConvertTexture`, `SetRenderTarget`, `RenderMeshInstanced`, `DrawMeshInstanced`), `RenderParams`, `RenderTarget`, `RenderStats` (draws, set pass calls, triangles, instanced draws, draw list and submit times) |
 | `Source/Helix/Engine/Rendering/LODGroup.h` | `LODGroup` (class 205), `LOD`, `LODFadeMode`: levels of detail chosen while culling |
@@ -60,7 +62,7 @@ of C++ and C# scripts, a fallback pipeline without an asset), and the screen as 
 | `Source/Helix/Engine/Rendering/Pipeline/ScriptableRenderContext.h` | `ScriptableRenderContext`: `Cull`, `DrawRenderers`, `CreateRendererList`, `BeginRenderPass` / `BeginSubPass` / `EndSubPass` / `EndRenderPass`, `SetupCameraProperties`, `ExecuteCommandBuffer`, `InvokeOnRenderObjectCallback`, `Submit` |
 | `Source/Helix/Engine/Rendering/Pipeline/RendererList.h` | `RendererUtils::RendererList`, `RendererListDesc`, `RendererListParams` (states by tag value) |
 | `Source/Helix/Engine/Rendering/AsyncGPUReadback.h` | `AsyncGPUReadback`, `AsyncGPUReadbackRequest`: render textures read back without waiting |
-| `Source/Helix/Engine/Rendering/Pipeline/CommandBuffer.h` | `CommandBuffer`: clears, viewport and scissor, view and projection, globals and keywords, `DrawMesh`, `DrawRenderer`, samples, render targets, temporary render textures, `Blit`, `CopyTexture`, resolves and mips, `DrawMeshInstanced`, `SetInvertCulling`, global arrays, `DrawRendererList`, `DrawProcedural`, `RequestAsyncReadback` |
+| `Source/Helix/Engine/Rendering/Pipeline/CommandBuffer.h` | `CommandBuffer`: clears, viewport and scissor, view and projection, globals and keywords, `DrawMesh`, `DrawRenderer`, samples, render targets, temporary render textures, `Blit`, `CopyTexture`, resolves and mips, `DrawMeshInstanced`, `SetInvertCulling`, global arrays, `DrawRendererList`, `DrawProcedural`, `RequestAsyncReadback`, global buffers, compute values, textures, buffers and keywords, `DispatchCompute`, `SetBufferData` |
 | `Source/Helix/Engine/Rendering/Pipeline/RenderTargets.h` | `RenderTargetIdentifier`, `BuiltinRenderTextureType`, `RenderBufferLoadAction` / `StoreAction`, `RTClearFlags`, `CubemapFace`, `AttachmentDescriptor` |
 | `Source/Helix/Engine/Rendering/Pipeline/RenderStates.h` | `SortingSettings`, `DrawingSettings`, `FilteringSettings`, `RenderQueueRange`, `RenderStateBlock` and its states, `ScriptableCullingParameters`, `CullingResults`, `VisibleLight`, the rendering enums |
 | `Source/Helix/Engine/Rendering/Pipeline/RenderPipelineNative.h` | `RenderPipelineNative`, `DrawRendererData`: what C#'s pipeline API calls |
@@ -238,6 +240,12 @@ of C++ and C# scripts, a fallback pipeline without an asset), and the screen as 
   target. Temporaries are pooled by descriptor and freed after some frames unused. A camera with a targetTexture
   renders into it; pipelines take render requests (a StandardRequest renders a camera into a render texture), the
   fallback included. Blit draws with Hidden/BlitCopy or a material's passes.
+- Compute shaders are the compute kernels of the C# shader assemblies, one device pipeline per kernel and keyword
+  variant. A command buffer's dispatches run in its order with the draws; graphics buffers are device buffers bound by
+  name to compute kernels and to draws (a material property block's, then the material's, then the globals). A render
+  texture with enableRandomWrite is a storage texture as well. Where the device has bindless textures (OpenGL with
+  ARB_bindless_texture), a shader's `<property>_Bindless` block members receive the indices of the property's
+  textures, registered once per texture.
 - Screen keeps what the host reports (render size, dpi, mode, displays, window position) and queues what scripts ask
   (resolution and mode, window moves as AsyncOperations, orientation, sleep timeout, brightness); the host takes the
   queue at the end of the frame and applies it.

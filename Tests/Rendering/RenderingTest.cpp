@@ -1,3 +1,4 @@
+#include <Support/Devices.h>
 #include <Support/Golden.h>
 #include <Support/TestShaders.h>
 
@@ -18,6 +19,7 @@
 #include <Helix/Engine/Rendering/Light.h>
 #include <Helix/Engine/Rendering/Implementation/RendererManager.h>
 #include <Helix/Engine/Rendering/Pipeline/ScriptableRenderContext.h>
+#include <Helix/Engine/Rendering/GraphicsBuffer.h>
 #include <Helix/Engine/Rendering/Renderer.h>
 #include <Helix/Engine/Rendering/RenderSettings.h>
 #include <Helix/Engine/Rendering/ScreenCapture.h>
@@ -77,49 +79,6 @@ namespace
         c->SetClearFlags(CameraClearFlags::SolidColor);
         c->SetBackgroundColor(Color(0, 0, 0, 1));
         return c;
-    }
-
-    const char* BackendName(rhi::Backend b)
-    {
-        switch (b)
-        {
-        case rhi::Backend::D3D11: return "D3D11";
-        case rhi::Backend::OpenGL: return "OpenGL";
-        case rhi::Backend::OpenGLES: return "OpenGL ES";
-        default: return "WebGL 2";
-        }
-    }
-
-    // Runs f on every device: each D3D11 adapter, OpenGL, WebGL 2 where there is a window.
-    template <class F>
-    void ForEachDevice(F&& f)
-    {
-        for (rhi::Backend b : {rhi::Backend::D3D11, rhi::Backend::OpenGL, rhi::Backend::WebGL2})
-        {
-            if ((b == rhi::Backend::WebGL2 && !platform::Window::IsSupported()) || !rhi::Device::IsBackendAvailable(b))
-                continue;
-            char name[128];
-            u32 adapters = 0;
-            while (b == rhi::Backend::D3D11 && rhi::Device::AdapterName(b, adapters, name, sizeof(name)))
-                adapters++;
-            for (i32 adapter = adapters ? 0 : -1; adapter < i32(adapters); adapter++)
-            {
-                // HELIX_RENDER_BATCHING=1: the persistent material and object blocks; HELIX_RENDER_THREAD=1: devices of the
-                // threaded mode (a render thread owns the backend).
-                static const bool batching = std::getenv("HELIX_RENDER_BATCHING") != nullptr;
-                static const bool threaded = std::getenv("HELIX_RENDER_THREAD") != nullptr;
-                GraphicsSettings::SetUseScriptableRenderPipelineBatching(batching);
-                rhi::Device* device = rhi::Device::Create({.backend = b, .adapter = adapter, .vsync = false, .threaded = threaded});
-                if (!device)
-                    continue;
-                if (adapter >= 0)
-                    rhi::Device::AdapterName(b, u32(adapter), name, sizeof(name));
-                std::printf("    %s %s\n", BackendName(b), adapter >= 0 ? name : "");
-                f(*device);
-                Graphics::SetDevice(nullptr);
-                rhi::Device::Destroy(device);
-            }
-        }
     }
 
     u32 Pixel(const Array<u32>& pixels, u32 size, u32 x, u32 y) { return pixels[y * size + x]; }
@@ -1059,6 +1018,31 @@ HX_TEST(Culling, ReflectionProbesBlendCullAndSort)
         std::printf("    %s| %s| %s| %s| %s| %d\n", byImportance.CStr(), bySize.CStr(), both.CStr(), unsorted.CStr(), layered.CStr(),
                     c.lightAndReflectionProbeIndexCount());
     HX_CHECK(seen);
+    // The indices themselves into a buffer: the probes' are indices among the visible ones.
+    {
+        i32 count = c.lightAndReflectionProbeIndexCount();
+        GraphicsBuffer* indices = GraphicsBuffer::Create(GraphicsBufferTarget::Structured, 0, count, 4);
+        GraphicsBuffer* small1 = GraphicsBuffer::Create(GraphicsBufferTarget::Structured, 0, 1, 4);
+        HX_REQUIRE(indices && small1);
+        HX_CHECK(c.FillLightAndReflectionProbeIndices(indices));
+        Array<i32> got;
+        got.Resize(usize(count));
+        HX_CHECK(indices->GetData(got.Data(), u32(count) * 4, 0));
+        bool probes = count >= 2 && got[usize(count) - 2] >= 0 && got[usize(count) - 2] < 2 && got[usize(count) - 1] >= 0 && got[usize(count) - 1] < 2 &&
+                      got[usize(count) - 2] != got[usize(count) - 1];
+        HX_CHECK(probes);
+        u32 errors = 0;
+        LogSink count1 = [](const LogMessage& m, void* user) {
+            if (m.level >= LogLevel::Error)
+                ++*static_cast<u32*>(user);
+        };
+        AddLogSink(count1, &errors);
+        HX_CHECK((count <= 1 || !c.FillLightAndReflectionProbeIndices(small1)) && !CullingResults().FillLightAndReflectionProbeIndices(indices));
+        RemoveLogSink(count1, &errors);
+        HX_CHECK(errors == (count <= 1 ? 1u : 2u));
+        GraphicsBuffer::Release(indices);
+        GraphicsBuffer::Release(small1);
+    }
     HX_CHECK(far->bounds().center == Vector3(20, 0, 0) && ReflectionProbe::minBakedCubemapResolution() == 16);
 
     // The file form: a probe written into a scene and read back.

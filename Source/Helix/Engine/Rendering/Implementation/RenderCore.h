@@ -37,6 +37,8 @@ namespace helix::engine::render
         u32 version = ~0u;
         rhi::TextureHandle texture;
         rhi::SamplerHandle sampler;
+        // The index of the texture and sampler in the device's bindless table (registered on first use).
+        mutable u32 bindless = ~0u;
     };
 
     // Graphics.RenderMesh's meshes for the frame.
@@ -115,6 +117,11 @@ namespace helix::engine::render
 
     const GpuMesh* MeshOf(Mesh& mesh);
     const GpuTexture* TextureOf(Texture& texture);
+    // A texture's index in the device's bindless table (registered on first use; ~0 when the device has no bindless
+    // textures or the texture cannot be made).
+    u32 BindlessIndexOf(Texture& texture);
+    // Bumped whenever a bindless index goes (a texture made again or released): blocks that hold indices are written again.
+    u32 BindlessGeneration();
     // The pipeline of a variant for a mesh layout, a topology and a target (the screen's by default), with the
     // override's state over the pass's; passState: the pass's state with its material's values (`Cull [_Cull]`, the
     // variant's when null) and its key (0: the variant's state as it is).

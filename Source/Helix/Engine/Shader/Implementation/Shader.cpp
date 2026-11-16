@@ -233,6 +233,13 @@ namespace helix::engine
                     }
                 if (d.FindProperty(name) || (name.EndsWith("_ST") && d.FindProperty(name.Substr(0, name.Size() - 3))))
                     continue;
+                // "_BaseMap_Bindless": the bindless index of the texture of the property _BaseMap.
+                if (name.EndsWith("_Bindless"))
+                    if (const ShaderProperty* p = d.FindProperty(name.Substr(0, name.Size() - 9)))
+                    {
+                        v.bindlessMembers.Push({block, &m, u32(p - d.properties.Data())});
+                        continue;
+                    }
                 v.namedMembers.Push({block, &m, engine::PropertyToID(name), element});
             }
         }
@@ -316,7 +323,8 @@ namespace helix::engine
                 work.Push(found);
             }
         }
-        if (!ReadShaderDefinitions(main.assembly, p->shaders, error, Span<const Assembly* const>(p->references.Data(), p->references.Size())))
+        if (!ReadShaderDefinitions(main.assembly, p->shaders, error, Span<const Assembly* const>(p->references.Data(), p->references.Size())) ||
+            !ReadComputeDefinitions(main.assembly, p->computes, error))
             return false;
         out = Move(p);
         return true;

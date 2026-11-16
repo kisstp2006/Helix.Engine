@@ -464,6 +464,8 @@ namespace helix::engine
 
     // What Cull found: the renderers and lights inside the planes, for the context's draws (valid while the context
     // that made it renders).
+    class GraphicsBuffer;
+
     struct CullingResults
     {
         render::CullingData* data = nullptr;
@@ -473,6 +475,9 @@ namespace helix::engine
         Span<const VisibleReflectionProbe> visibleReflectionProbes() const;
         // The per object lights and reflection probes of all visible renderers.
         i32 lightAndReflectionProbeIndexCount() const;
+        // Writes those indices as ints into a buffer: for each visible renderer in order its light indices, then the
+        // indices of its probes among the visible ones; false (and an error) when the buffer is too small.
+        bool FillLightAndReflectionProbeIndices(GraphicsBuffer* buffer) const;
         // The shadow casters of a visible light (render data indices; none for lights without shadows).
         Span<const u32> ShadowCasters(i32 visibleLightIndex) const;
         bool IsValid() const;

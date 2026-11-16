@@ -205,9 +205,23 @@ namespace helix::engine
             return rhi::Format::Unknown;
         }
 
+        u32 gBindlessGeneration = 0;
+
+        // A texture's bindless index goes before its device texture.
+        void ForgetBindless(rhi::Device* d, const GpuTexture& g)
+        {
+            if (g.bindless != ~0u && d)
+            {
+                d->UnregisterBindless(g.bindless);
+                gBindlessGeneration++;
+            }
+            g.bindless = ~0u;
+        }
+
         void DestroyRenderTarget(GpuRenderTarget& g)
         {
             rhi::Device* d = R().device;
+            ForgetBindless(d, g.sampled);
             d->Destroy(g.color);
             d->Destroy(g.msaa);
             d->Destroy(g.depth);
@@ -462,7 +476,8 @@ namespace helix::engine
             {
                 g->color = s.device->CreateTexture({.type = type, .format = g->colorFormat, .width = g->width, .height = g->height,
                                                     .depthOrLayers = type == rhi::TextureType::TextureCube ? 1u : g->layers, .mipLevels = g->mips,
-                                                    .usage = rhi::TextureRenderTarget | rhi::TextureSampled, .debugName = texture.Name()});
+                                                    .usage = rhi::TextureRenderTarget | rhi::TextureSampled | (d.enableRandomWrite ? rhi::TextureStorage : 0u),
+                                                    .debugName = texture.Name()});
                 if (g->samples > 1)
                     g->msaa = s.device->CreateTexture({.format = g->colorFormat, .width = g->width, .height = g->height, .sampleCount = g->samples,
                                                        .usage = rhi::TextureRenderTarget, .debugName = texture.Name()});
@@ -541,6 +556,21 @@ namespace helix::engine
             return nullptr;
         }
 
+        u32 BindlessIndexOf(Texture& texture)
+        {
+            RenderState& s = R();
+            if (!s.device || !s.device->Caps().bindlessTextures)
+                return ~0u;
+            const GpuTexture* g = TextureOf(texture);
+            if (!g || !g->texture.IsValid() || !g->sampler.IsValid())
+                return ~0u;
+            if (g->bindless == ~0u)
+                g->bindless = s.device->RegisterBindless(g->texture, g->sampler);
+            return g->bindless;
+        }
+
+        u32 BindlessGeneration() { return gBindlessGeneration; }
+
         const GpuTexture* PixelTextureOf(Texture& texture)
         {
             RenderState& s = R();
@@ -550,6 +580,7 @@ namespace helix::engine
                 return g;
             if (!g)
                 g = &s.textures.Set(texture.GetEntityId(), GpuTexture());
+            ForgetBindless(s.device, *g);
             s.device->Destroy(g->texture);
             s.device->Destroy(g->sampler);
             *g = GpuTexture();
@@ -605,6 +636,7 @@ namespace helix::engine
                 return g;
             if (!g)
                 g = &s.textures.Set(texture.GetEntityId(), GpuTexture());
+            ForgetBindless(s.device, *g);
             s.device->Destroy(g->texture);
             s.device->Destroy(g->sampler);
             *g = GpuTexture();
@@ -953,6 +985,7 @@ namespace helix::engine
             for (EntityId id : dead)
             {
                 GpuTexture* g = s.textures.Find(id);
+                ForgetBindless(s.device, *g);
                 s.device->Destroy(g->texture);
                 s.device->Destroy(g->sampler);
                 s.textures.Remove(id);
@@ -1353,6 +1386,7 @@ namespace helix::engine
             }
             for (auto e : s.textures)
             {
+                ForgetBindless(s.device, e.value);
                 s.device->Destroy(e.value.texture);
                 s.device->Destroy(e.value.sampler);
             }

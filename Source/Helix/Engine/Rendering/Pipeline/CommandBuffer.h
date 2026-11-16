@@ -6,6 +6,7 @@
 #include <Helix/Engine/Mesh/Mesh.h>
 #include <Helix/Engine/Rendering/AsyncGPUReadback.h>
 #include <Helix/Engine/Rendering/Pipeline/RenderTargets.h>
+#include <Helix/Engine/Shader/ComputeShader.h>
 
 // CommandBuffer: rendering commands recorded now and run where the buffer is executed (a context's
 // ExecuteCommandBuffer, in the order of the context's own commands, or Graphics.ExecuteCommandBuffer at once). It
@@ -54,6 +55,13 @@ namespace helix::engine
             DrawProcedural,
             Readback,
             GlobalDepthBias,
+            GlobalBuffer,
+            ComputeValue,
+            ComputeTexture,
+            ComputeBuffer,
+            ComputeKeyword,
+            DispatchCompute,
+            BufferData,
             Count,
         };
 
@@ -161,6 +169,48 @@ namespace helix::engine
         // A depth bias (constant, and by slope) added to the draws after it, until set again (0, 0: none).
         void SetGlobalDepthBias(f32 bias, f32 slopeBias);
         void SetGlobalTexture(StringView name, Texture* value) { SetGlobalTexture(PropertyToID(name), value); }
+        // A graphics buffer for the shaders and compute shaders that read it by name (0: none).
+        void SetGlobalBuffer(i32 nameID, u64 buffer);
+        void SetGlobalBuffer(i32 nameID, GraphicsBuffer* buffer) { SetGlobalBuffer(nameID, buffer ? buffer->Id() : 0); }
+
+        // ---------------------------------------------------------------------------------------------- compute
+        // The compute shader's values when the commands run (kind: 0 float, 1 int, 2 vector, 3 matrix; the arrays
+        // 4 floats, 5 ints, 6 vectors, 7 matrices).
+        void SetComputeFloatParam(ComputeShader* shader, i32 nameID, f32 value) { ComputeValue(shader, nameID, 0, &value, 1, 1); }
+        void SetComputeIntParam(ComputeShader* shader, i32 nameID, i32 value)
+        {
+            f32 f = f32(value);
+            ComputeValue(shader, nameID, 1, &f, 1, 1);
+        }
+        void SetComputeVectorParam(ComputeShader* shader, i32 nameID, Vector4 value) { ComputeValue(shader, nameID, 2, &value.x, 1, 4); }
+        void SetComputeMatrixParam(ComputeShader* shader, i32 nameID, const Matrix4x4& value) { ComputeValue(shader, nameID, 3, &value.m00, 1, 16); }
+        void SetComputeFloatParams(ComputeShader* shader, i32 nameID, Span<const f32> values)
+        {
+            ComputeValue(shader, nameID, 4, values.Data(), u32(values.Size()), 1);
+        }
+        void SetComputeIntParams(ComputeShader* shader, i32 nameID, Span<const i32> values);
+        void SetComputeVectorArrayParam(ComputeShader* shader, i32 nameID, Span<const Vector4> values)
+        {
+            ComputeValue(shader, nameID, 6, &values.Data()->x, u32(values.Size()), 4);
+        }
+        void SetComputeMatrixArrayParam(ComputeShader* shader, i32 nameID, Span<const Matrix4x4> values)
+        {
+            ComputeValue(shader, nameID, 7, &values.Data()->m00, u32(values.Size()), 16);
+        }
+        void SetComputeTextureParam(ComputeShader* shader, i32 kernelIndex, i32 nameID, const RenderTargetIdentifier& rt, i32 mipLevel = 0);
+        void SetComputeBufferParam(ComputeShader* shader, i32 kernelIndex, i32 nameID, u64 buffer);
+        void SetComputeBufferParam(ComputeShader* shader, i32 kernelIndex, i32 nameID, GraphicsBuffer* buffer)
+        {
+            SetComputeBufferParam(shader, kernelIndex, nameID, buffer ? buffer->Id() : 0);
+        }
+        void EnableKeyword(ComputeShader* shader, const LocalKeyword& keyword) { SetKeyword(shader, keyword, true); }
+        void DisableKeyword(ComputeShader* shader, const LocalKeyword& keyword) { SetKeyword(shader, keyword, false); }
+        void SetKeyword(ComputeShader* shader, const LocalKeyword& keyword, bool value);
+        void DispatchCompute(ComputeShader* shader, i32 kernelIndex, i32 threadGroupsX, i32 threadGroupsY, i32 threadGroupsZ);
+        void DispatchCompute(ComputeShader* shader, i32 kernelIndex, u64 indirectBuffer, u32 argsOffset);
+        // Bytes into a graphics buffer in the order of the commands.
+        void SetBufferData(u64 buffer, const void* data, u32 bytes, u32 bufferOffset);
+
         void EnableShaderKeyword(StringView keyword);
         void DisableShaderKeyword(StringView keyword);
         void SetKeyword(const GlobalKeyword& keyword, bool value);
@@ -242,6 +292,7 @@ namespace helix::engine
 
     private:
         void GlobalArray(i32 nameID, i32 kind, const f32* values, u32 count, u32 width);
+        void ComputeValue(ComputeShader* shader, i32 nameID, i32 kind, const f32* values, u32 count, u32 width);
         void SetRenderTarget(const RenderTargetIdentifier* colors, u32 count, const RenderTargetIdentifier& depth, bool separateDepth,
                              RenderBufferLoadAction load = RenderBufferLoadAction::Load, RenderBufferStoreAction store = RenderBufferStoreAction::Store);
 

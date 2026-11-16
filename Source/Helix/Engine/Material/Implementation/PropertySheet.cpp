@@ -125,6 +125,14 @@ namespace helix::engine
 
     void PropertySheet::SetTexture(i32 id, EntityId texture) { Slot(id, PropertyKind::Texture, 1).texture = texture; }
 
+    void PropertySheet::SetBuffer(i32 id, u64 buffer) { Slot(id, PropertyKind::Buffer, 1).buffer = buffer; }
+
+    u64 PropertySheet::GetBuffer(i32 id) const
+    {
+        const PropertyValue* v = Find(id);
+        return v && v->kind == PropertyKind::Buffer ? v->buffer : 0;
+    }
+
     void PropertySheet::SetTextureScale(i32 id, Vector2 scale)
     {
         PropertyValue& v = Slot(id, PropertyKind::Texture, 1);
@@ -189,7 +197,7 @@ namespace helix::engine
             std::memcpy(&i, &numbers_[v->offset], 4);
             return f32(i);
         }
-        return v->kind == PropertyKind::Texture ? fallback : numbers_[v->offset];
+        return v->kind == PropertyKind::Texture || v->kind == PropertyKind::Buffer ? fallback : numbers_[v->offset];
     }
 
     i32 PropertySheet::GetInt(i32 id, i32 fallback) const
@@ -203,7 +211,7 @@ namespace helix::engine
             std::memcpy(&i, &numbers_[v->offset], 4);
             return i;
         }
-        return v->kind == PropertyKind::Texture ? fallback : i32(numbers_[v->offset]);
+        return v->kind == PropertyKind::Texture || v->kind == PropertyKind::Buffer ? fallback : i32(numbers_[v->offset]);
     }
 
     Vector4 PropertySheet::GetVector(i32 id, const Vector4& fallback) const
@@ -312,6 +320,9 @@ namespace helix::engine
             break;
         case PropertyKind::Matrix:
             to.SetMatrix(v.id, from.GetMatrix(v.id));
+            break;
+        case PropertyKind::Buffer:
+            to.SetBuffer(v.id, v.buffer);
             break;
         case PropertyKind::Texture:
             to.SetTexture(v.id, v.texture);

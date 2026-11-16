@@ -1,4 +1,5 @@
 #include <Helix/Engine/Asset/AssetLoader.h>
+#include <Helix/Engine/Shader/ComputeShader.h>
 #include <Helix/Engine/Shader/Implementation/ShaderAccess.h>
 
 #include <Helix/Core/Strings/Format.h>
@@ -59,7 +60,8 @@ namespace helix::engine
             return d;
         }
 
-        // One Shader per definition; an assembly without any (a library) makes no objects.
+        // One Shader per shader definition and one ComputeShader per compute definition; an assembly without any (a
+        // library) makes no objects.
         bool Integrate(void* decoded, AssetObjects& out, Array<String>&)
         {
             DecodedShaders& d = *static_cast<DecodedShaders*>(decoded);
@@ -71,6 +73,12 @@ namespace helix::engine
                     continue;
                 Shader* s = Shader::Create(d.program, i);
                 out.Add(AssetObjectFileId(ClassId::Shader, d.program->shaders[i].name), s, first);
+                first = false;
+            }
+            for (u32 i = 0; i < d.program->computes.Size(); i++)
+            {
+                ComputeShader* s = ComputeShader::Create(d.program, i);
+                out.Add(AssetObjectFileId(ClassId::ComputeShader, d.program->computes[i].name), s, first);
                 first = false;
             }
             return true;

@@ -12,6 +12,7 @@
 namespace helix::engine
 {
     class Shader;
+    class ComputeShader;
 
     HX_ENUM(Namespace = "HelixEngine.Rendering")
     enum class ShaderKeywordType : i32
@@ -46,6 +47,7 @@ namespace helix::engine
         // The keyword of that name in the shader's space; an error is logged when there is none (the struct is made,
         // invalid).
         LocalKeyword(const Shader* shader, StringView name);
+        LocalKeyword(const ComputeShader* shader, StringView name);
 
         String name() const;
         bool isValid() const;
@@ -104,6 +106,7 @@ namespace helix::engine
     {
     public:
         HX_FUNCTION() static LocalKeyword Find(Shader* shader, StringView name);
+        HX_FUNCTION() static LocalKeyword FindInCompute(ComputeShader* shader, StringView name);
         HX_FUNCTION() static String Name(LocalKeyword keyword) { return keyword.name(); }
         HX_FUNCTION() static bool IsValid(LocalKeyword keyword) { return keyword.isValid(); }
         HX_FUNCTION() static bool IsDynamic(LocalKeyword keyword) { return keyword.isDynamic(); }

@@ -11,6 +11,7 @@
 #include <Helix/Engine/Script/GameBehaviour.h>
 #include <Helix/Engine/Script/ScriptableObject.h>
 #include <Helix/Engine/Settings/Settings.h>
+#include <Helix/Engine/Shader/ComputeShader.h>
 #include <Helix/Engine/Shader/Shader.h>
 #include <Helix/Engine/Texture/RenderTexture.h>
 #include <Helix/Engine/Texture/Texture.h>
@@ -29,7 +30,7 @@ namespace helix::engine
             &Shader::StaticClass,       &Texture::StaticClass,     &Texture2D::StaticClass,      &TimeManager::StaticClass,
             &TagManager::StaticClass,   &PlayerSettings::StaticClass, &BuildSettings::StaticClass, &GameBehaviour::StaticClass,
             &MonoScript::StaticClass,   &ScriptableObject::StaticClass, &RenderTexture::StaticClass, &LODGroup::StaticClass,
-            &ReflectionProbe::StaticClass,
+            &ReflectionProbe::StaticClass, &ComputeShader::StaticClass,
         };
     }
 

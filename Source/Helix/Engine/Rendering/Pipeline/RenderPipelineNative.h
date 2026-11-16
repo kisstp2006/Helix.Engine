@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Helix/Engine/Rendering/Graphics.h>
+#include <Helix/Engine/Rendering/GraphicsBuffer.h>
 #include <Helix/Engine/Rendering/Pipeline/RenderPipeline.h>
 
 // What the C# scriptable pipeline API calls (internal in C#): settings, contexts and command buffers by id, culling
@@ -304,6 +305,10 @@ namespace helix::engine
         HX_FUNCTION() static i32 VisibleReflectionProbeSize() { return i32(sizeof(VisibleReflectionProbe)); }
         HX_FUNCTION() static ReflectionProbe* ReflectionProbeOf(u64 id) { return EntityIdToObject<ReflectionProbe>(EntityId::FromULong(id)); }
         HX_FUNCTION() static Texture* TextureOf(u64 id) { return EntityIdToObject<Texture>(EntityId::FromULong(id)); }
+        HX_FUNCTION() static bool FillLightAndReflectionProbeIndices(u64 culling, u64 buffer)
+        {
+            return CullingResults{reinterpret_cast<render::CullingData*>(uintptr_t(culling))}.FillLightAndReflectionProbeIndices(GraphicsBuffer::Find(buffer));
+        }
         HX_FUNCTION() static i32 LightAndReflectionProbeIndexCount(u64 culling)
         {
             return CullingResults{reinterpret_cast<render::CullingData*>(uintptr_t(culling))}.lightAndReflectionProbeIndexCount();
@@ -366,6 +371,67 @@ namespace helix::engine
         HX_FUNCTION() static void SetGlobalVectorArray(u64 buffer, i32 nameID, Span<const Vector4> values) { With(buffer, [&](CommandBuffer& b) { b.SetGlobalVectorArray(nameID, values); }); }
         HX_FUNCTION() static void SetGlobalMatrixArray(u64 buffer, i32 nameID, Span<const Matrix4x4> values) { With(buffer, [&](CommandBuffer& b) { b.SetGlobalMatrixArray(nameID, values); }); }
         HX_FUNCTION() static void SetInvertCulling(u64 buffer, bool value) { With(buffer, [&](CommandBuffer& b) { b.SetInvertCulling(value); }); }
+        HX_FUNCTION() static void SetGlobalBuffer(u64 buffer, i32 nameID, u64 graphicsBuffer)
+        {
+            With(buffer, [&](CommandBuffer& b) { b.SetGlobalBuffer(nameID, graphicsBuffer); });
+        }
+        // The compute members of CommandBuffer (kind: 0 float, 1 int, 2 vector, 3 matrix, 4 floats, 5 ints, 6 vectors,
+        // 7 matrices; `width` numbers per value).
+        HX_FUNCTION() static void SetComputeValue(u64 buffer, ComputeShader* shader, i32 nameID, i32 kind, Span<const f32> values)
+        {
+            static constexpr u32 kWidths[] = {1, 1, 4, 16, 1, 1, 4, 16};
+            u32 width = kind >= 0 && kind < 8 ? kWidths[kind] : 1;
+            With(buffer, [&](CommandBuffer& b) {
+                if (kind == 5)
+                {
+                    Array<i32> ints;
+                    for (f32 f : values)
+                        ints.Push(i32(f));
+                    b.SetComputeIntParams(shader, nameID, Span<const i32>(ints.Data(), ints.Size()));
+                    return;
+                }
+                switch (kind)
+                {
+                case 0: b.SetComputeFloatParam(shader, nameID, values.Empty() ? 0.0f : values[0]); break;
+                case 1: b.SetComputeIntParam(shader, nameID, values.Empty() ? 0 : i32(values[0])); break;
+                case 2: b.SetComputeVectorParam(shader, nameID, values.Size() >= 4 ? Vector4(values[0], values[1], values[2], values[3]) : Vector4()); break;
+                case 3:
+                    if (values.Size() >= 16)
+                        b.SetComputeMatrixParam(shader, nameID, *reinterpret_cast<const Matrix4x4*>(values.Data()));
+                    break;
+                case 4: b.SetComputeFloatParams(shader, nameID, values); break;
+                case 6: b.SetComputeVectorArrayParam(shader, nameID, Span<const Vector4>(reinterpret_cast<const Vector4*>(values.Data()), values.Size() / width)); break;
+                default:
+                    b.SetComputeMatrixArrayParam(shader, nameID, Span<const Matrix4x4>(reinterpret_cast<const Matrix4x4*>(values.Data()), values.Size() / width));
+                    break;
+                }
+            });
+        }
+        HX_FUNCTION() static void SetComputeTextureParam(u64 buffer, ComputeShader* shader, i32 kernelIndex, i32 nameID, RenderTargetData rt, i32 mipLevel)
+        {
+            With(buffer, [&](CommandBuffer& b) { b.SetComputeTextureParam(shader, kernelIndex, nameID, rt.ToIdentifier(), mipLevel); });
+        }
+        HX_FUNCTION() static void SetComputeBufferParam(u64 buffer, ComputeShader* shader, i32 kernelIndex, i32 nameID, u64 graphicsBuffer)
+        {
+            With(buffer, [&](CommandBuffer& b) { b.SetComputeBufferParam(shader, kernelIndex, nameID, graphicsBuffer); });
+        }
+        HX_FUNCTION() static void SetComputeKeyword(u64 buffer, ComputeShader* shader, LocalKeyword keyword, bool value)
+        {
+            With(buffer, [&](CommandBuffer& b) { b.SetKeyword(shader, keyword, value); });
+        }
+        HX_FUNCTION() static void DispatchCompute(u64 buffer, ComputeShader* shader, i32 kernelIndex, i32 x, i32 y, i32 z)
+        {
+            With(buffer, [&](CommandBuffer& b) { b.DispatchCompute(shader, kernelIndex, x, y, z); });
+        }
+        HX_FUNCTION() static void DispatchComputeIndirect(u64 buffer, ComputeShader* shader, i32 kernelIndex, u64 argsBuffer, u32 argsOffset)
+        {
+            With(buffer, [&](CommandBuffer& b) { b.DispatchCompute(shader, kernelIndex, argsBuffer, argsOffset); });
+        }
+        // Bytes at a pinned address into a graphics buffer in the commands' order.
+        HX_FUNCTION() static void SetBufferData(u64 buffer, u64 graphicsBuffer, u64 address, u32 bytes, u32 bufferOffset)
+        {
+            With(buffer, [&](CommandBuffer& b) { b.SetBufferData(graphicsBuffer, reinterpret_cast<const void*>(uptr(address)), bytes, bufferOffset); });
+        }
         HX_FUNCTION() static void SetGlobalDepthBias(u64 buffer, f32 bias, f32 slopeBias)
         {
             With(buffer, [&](CommandBuffer& b) { b.SetGlobalDepthBias(bias, slopeBias); });

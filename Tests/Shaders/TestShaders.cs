@@ -631,3 +631,90 @@ public sealed class NamedValues : ShaderDefinition
         public static float4 Fragment(Varyings input) => named.namedColor * namedTexture.Sample(namedSampler, new float2(0.5f, 0.5f));
     }
 }
+
+/// <summary>Kernels the compute tests dispatch: values by name in a block, buffers in and out, a keyword, an image.</summary>
+[ComputeDefinition("Tests/Fill")]
+public sealed class Fill : ComputeDefinition
+{
+    [Keyword] public static readonly bool Doubled;
+
+    public struct Params
+    {
+        public float scale;
+        public int offset;
+        public uint count;
+        public float unused;
+        public float4 bias;
+    }
+
+    [Uniform(0)] public static Params parameters;
+    [Storage(0)] public static StructuredBuffer<float> input;
+    [Storage(1)] public static RWStructuredBuffer<float> output;
+    [Storage(2, Format = StorageFormat.RGBA8)] public static RWTexture2D<float4> image;
+
+    [ComputeShader(64)]
+    public static void Scale([DispatchThreadId] uint3 id)
+    {
+        if (id.x >= parameters.count)
+            return;
+        float v = input[(int)id.x] * parameters.scale + parameters.offset + parameters.bias.x;
+        output[(int)id.x] = Doubled ? v * 2.0f : v;
+    }
+
+    [ComputeShader(8, 8)]
+    public static void Paint([DispatchThreadId] uint3 id) => image[new int2((int)id.x, (int)id.y)] = parameters.bias;
+}
+
+/// <summary>A texture read through the device's bindless table at the index the engine writes into baseMap_Bindless (the
+/// property's texture, the property block's over the material's, else its default).</summary>
+[Shader("Tests/BindlessColor")]
+public sealed class BindlessColor : ShaderDefinition
+{
+    [Property("Base Map"), DefaultTexture("white")] public Texture2D<float4> baseMap;
+
+    public struct MaterialData
+    {
+        public uint baseMap_Bindless;
+    }
+
+    public struct Varyings
+    {
+        [Position] public float4 position;
+    }
+
+    [Pass("Forward")]
+    public static class Forward
+    {
+        [Uniform(0)] public static MaterialData material;
+
+        [VertexShader]
+        public static Varyings Vertex([Location(VertexInputs.Position)] float3 position) => new Varyings { position = ShaderVariables.ObjectToClip(position) };
+
+        [FragmentShader]
+        [return: Target(0)]
+        public static float4 Fragment(Varyings input) => new BindlessTexture(material.baseMap_Bindless).Sample(new float2(0.5f, 0.5f));
+    }
+}
+
+/// <summary>A draw that reads a graphics buffer set by name (a global or a property block's).</summary>
+[Shader("Tests/BufferColor")]
+public sealed class BufferColor : ShaderDefinition
+{
+    public struct Varyings
+    {
+        [Position] public float4 position;
+    }
+
+    [Pass("Forward")]
+    public static class Forward
+    {
+        [Storage(0)] public static StructuredBuffer<float4> colors;
+
+        [VertexShader]
+        public static Varyings Vertex([Location(VertexInputs.Position)] float3 position) => new Varyings { position = ShaderVariables.ObjectToClip(position) };
+
+        [FragmentShader]
+        [return: Target(0)]
+        public static float4 Fragment(Varyings input) => colors[1];
+    }
+}

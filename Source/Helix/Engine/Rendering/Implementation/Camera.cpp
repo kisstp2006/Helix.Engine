@@ -53,7 +53,10 @@ namespace helix::engine
           eventMask_(o.eventMask_), clearFlags_(o.clearFlags_), background_(o.background_), cameraType_(o.cameraType_),
           occlusionCulling_(o.occlusionCulling_), allowHDR_(o.allowHDR_), allowMSAA_(o.allowMSAA_), depthTextureMode_(o.depthTextureMode_),
           customProjection_(o.customProjection_), customView_(o.customView_), customCulling_(o.customCulling_), targetDisplay_(o.targetDisplay_),
-          scene_(o.scene_), projection_(o.projection_), view_(o.view_), culling_(o.culling_)
+          scene_(o.scene_), projection_(o.projection_), view_(o.view_), culling_(o.culling_), projectionMode_(o.projectionMode_),
+          focalLength_(o.focalLength_), sensorSize_(o.sensorSize_), lensShift_(o.lensShift_), gateFit_(o.gateFit_), iso_(o.iso_),
+          shutterSpeed_(o.shutterSpeed_), aperture_(o.aperture_), focusDistance_(o.focusDistance_), bladeCount_(o.bladeCount_),
+          curvature_(o.curvature_), barrelClipping_(o.barrelClipping_), anamorphism_(o.anamorphism_)
     {
         std::memcpy(layerCullDistances_, o.layerCullDistances_, sizeof(layerCullDistances_));
     }
@@ -99,7 +102,34 @@ namespace helix::engine
 
     // ---------------------------------------------------------------------------------------------- settings
 
-    void Camera::SetFieldOfView(f32 degrees) { fieldOfView_ = degrees < 1e-5f ? 1e-5f : degrees > 179 ? 179 : degrees; }
+    void Camera::SetFieldOfView(f32 degrees)
+    {
+        fieldOfView_ = degrees < 1e-5f ? 1e-5f : degrees > 179 ? 179 : degrees;
+        // A physical camera keeps its lens in step with the field of view.
+        if (usePhysicalProperties())
+            focalLength_ = FieldOfViewToFocalLength(fieldOfView_, sensorSize_.y);
+    }
+
+    void Camera::SetUsePhysicalProperties(bool value)
+    {
+        projectionMode_ = value ? 2 : 1;
+        if (value)
+            fieldOfView_ = FocalLengthToFieldOfView(focalLength_, sensorSize_.y);
+    }
+
+    void Camera::SetFocalLength(f32 value)
+    {
+        focalLength_ = value < 0.1f ? 0.1f : value;
+        if (usePhysicalProperties())
+            fieldOfView_ = FocalLengthToFieldOfView(focalLength_, sensorSize_.y);
+    }
+
+    void Camera::SetSensorSize(Vector2 value)
+    {
+        sensorSize_ = Vector2(value.x < 0.1f ? 0.1f : value.x, value.y < 0.1f ? 0.1f : value.y);
+        if (usePhysicalProperties())
+            fieldOfView_ = FocalLengthToFieldOfView(focalLength_, sensorSize_.y);
+    }
 
     Rect Camera::pixelRect() const
     {
@@ -160,7 +190,14 @@ namespace helix::engine
         f32 a = aspect();
         if (orthographic_)
             return Matrix4x4::Ortho(-orthographicSize_ * a, orthographicSize_ * a, -orthographicSize_, orthographicSize_, near_, far_);
-        return Matrix4x4::Perspective(fieldOfView_, a, near_, far_);
+        Matrix4x4 p = Matrix4x4::Perspective(fieldOfView_, a, near_, far_);
+        // The lens shift moves the centre of the projection (in sensor sizes: a shift of 0.5 moves it by half the view).
+        if (usePhysicalProperties())
+        {
+            p.m02 = lensShift_.x * 2.0f;
+            p.m12 = lensShift_.y * 2.0f;
+        }
+        return p;
     }
 
     void Camera::SetProjectionMatrix(const Matrix4x4& value)
@@ -247,6 +284,9 @@ namespace helix::engine
         customProjection_ = o.customProjection_, customView_ = o.customView_, projection_ = o.projection_, view_ = o.view_;
         customCulling_ = o.customCulling_, culling_ = o.culling_, targetDisplay_ = o.targetDisplay_, scene_ = o.scene_;
         targetTexture_ = o.targetTexture_, forceIntoRenderTexture_ = o.forceIntoRenderTexture_;
+        projectionMode_ = o.projectionMode_, focalLength_ = o.focalLength_, sensorSize_ = o.sensorSize_, lensShift_ = o.lensShift_, gateFit_ = o.gateFit_;
+        iso_ = o.iso_, shutterSpeed_ = o.shutterSpeed_, aperture_ = o.aperture_, focusDistance_ = o.focusDistance_, bladeCount_ = o.bladeCount_;
+        curvature_ = o.curvature_, barrelClipping_ = o.barrelClipping_, anamorphism_ = o.anamorphism_;
         std::memcpy(layerCullDistances_, o.layerCullDistances_, sizeof(layerCullDistances_));
     }
 

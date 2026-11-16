@@ -38,7 +38,7 @@ HX_TEST(Shader, AssembliesLoadAsShaders)
     HX_REQUIRE(f.guid.IsValid());
     Array<Object*> all;
     LoadAllAssets(f.guid, all);
-    HX_CHECK(all.Size() == 16);
+    HX_CHECK(all.Size() == 19);
     Shader* s = Shader::Find("Tests/Surface");
     HX_REQUIRE(s != nullptr);
     HX_CHECK(s->isSupported() && s->IsPersistent() && s->renderQueue() == 3005 && s->passCount() == 2 && s->subshaderCount() == 1);

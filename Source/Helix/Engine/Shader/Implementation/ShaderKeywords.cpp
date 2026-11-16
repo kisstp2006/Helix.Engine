@@ -4,6 +4,7 @@
 #include <Helix/Core/Logging/Log.h>
 #include <Helix/Engine/Material/PropertySheet.h>
 #include <Helix/Engine/Rendering/Graphics.h>
+#include <Helix/Engine/Shader/ComputeShader.h>
 #include <Helix/Engine/Shader/Shader.h>
 
 namespace helix::engine
@@ -32,15 +33,30 @@ namespace helix::engine
             return h;
         }
 
-        const Shader* ShaderOf(u64 id) { return EntityIdToObject<Shader>(EntityId::FromULong(id)); }
+        // The keyword space of a shader or a compute shader by its object id; null for neither.
+        const Array<ShaderKeywordInfo>* SpaceOf(u64 id)
+        {
+            Object* o = EntityIdToObject(EntityId::FromULong(id));
+            if (o && o->Is<Shader>())
+                return &static_cast<Shader*>(o)->KeywordSpace();
+            if (o && o->Is<ComputeShader>())
+                return &static_cast<ComputeShader*>(o)->KeywordSpace();
+            return nullptr;
+        }
 
         const ShaderKeywordInfo* InfoOf(u64 shader, u32 index)
         {
-            const Shader* s = ShaderOf(shader);
-            if (!s)
-                return nullptr;
-            const Array<ShaderKeywordInfo>& space = s->KeywordSpace();
-            return index < space.Size() ? &space[index] : nullptr;
+            const Array<ShaderKeywordInfo>* space = SpaceOf(shader);
+            return space && index < space->Size() ? &(*space)[index] : nullptr;
+        }
+
+        u32 IndexIn(const Array<ShaderKeywordInfo>* space, StringView name)
+        {
+            if (space)
+                for (u32 i = 0; i < space->Size(); i++)
+                    if ((*space)[i].name == name)
+                        return i;
+            return ~0u;
         }
     }
 
@@ -74,17 +90,17 @@ namespace helix::engine
     LocalKeyword::LocalKeyword(const Shader* s, StringView name)
     {
         shader = s ? s->GetEntityId().value : 0;
-        if (s)
-        {
-            const Array<ShaderKeywordInfo>& space = s->KeywordSpace();
-            for (u32 i = 0; i < space.Size(); i++)
-                if (space[i].name == name)
-                {
-                    index = i;
-                    return;
-                }
-        }
-        HX_LOG_ERROR(gKeywordLog, "Local keyword {} doesn't exist in the shader {}.", name, s ? s->Name() : StringView("null"));
+        index = s ? IndexIn(&s->KeywordSpace(), name) : ~0u;
+        if (index == ~0u)
+            HX_LOG_ERROR(gKeywordLog, "Local keyword {} doesn't exist in the shader {}.", name, s ? s->Name() : StringView("null"));
+    }
+
+    LocalKeyword::LocalKeyword(const ComputeShader* s, StringView name)
+    {
+        shader = s ? s->GetEntityId().value : 0;
+        index = s ? IndexIn(&s->KeywordSpace(), name) : ~0u;
+        if (index == ~0u)
+            HX_LOG_ERROR(gKeywordLog, "Local keyword {} doesn't exist in the compute shader {}.", name, s ? s->Name() : StringView("null"));
     }
 
     String LocalKeyword::name() const
@@ -113,15 +129,15 @@ namespace helix::engine
 
     u32 LocalKeywordSpace::keywordCount() const
     {
-        const Shader* s = ShaderOf(shader);
-        return s ? u32(s->KeywordSpace().Size()) : 0u;
+        const Array<ShaderKeywordInfo>* space = SpaceOf(shader);
+        return space ? u32(space->Size()) : 0u;
     }
 
     Array<String> LocalKeywordSpace::keywordNames() const
     {
         Array<String> out;
-        if (const Shader* s = ShaderOf(shader))
-            for (const ShaderKeywordInfo& k : s->KeywordSpace())
+        if (const Array<ShaderKeywordInfo>* space = SpaceOf(shader))
+            for (const ShaderKeywordInfo& k : *space)
                 out.Push(k.name);
         return out;
     }
@@ -143,13 +159,7 @@ namespace helix::engine
     {
         LocalKeyword k;
         k.shader = shader;
-        if (const Shader* s = ShaderOf(shader))
-        {
-            const Array<ShaderKeywordInfo>& space = s->KeywordSpace();
-            for (u32 i = 0; i < space.Size(); i++)
-                if (space[i].name == name)
-                    k.index = i;
-        }
+        k.index = IndexIn(SpaceOf(shader), name);
         return k;
     }
 
@@ -159,6 +169,8 @@ namespace helix::engine
     String ShaderTagId::name() const { return String(PropertyName(id)); }
 
     LocalKeyword KeywordNative::Find(Shader* shader, StringView name) { return LocalKeyword(shader, name); }
+
+    LocalKeyword KeywordNative::FindInCompute(ComputeShader* shader, StringView name) { return LocalKeyword(shader, name); }
 
     LocalKeyword KeywordNative::SpaceAt(LocalKeywordSpace space, u32 index)
     {

@@ -31,6 +31,8 @@ namespace helix::engine
         FloatArray,
         VectorArray,
         MatrixArray,
+        // A graphics buffer by its id (no numbers).
+        Buffer,
     };
 
     struct PropertyValue
@@ -42,6 +44,7 @@ namespace helix::engine
         u32 offset = 0;
         u32 count = 1;
         EntityId texture;
+        u64 buffer = 0;
     };
 
     class PropertySheet;
@@ -61,6 +64,8 @@ namespace helix::engine
         void SetTexture(i32 id, EntityId texture);
         void SetTextureScale(i32 id, Vector2 scale);
         void SetTextureOffset(i32 id, Vector2 offset);
+        // A graphics buffer (its id; 0 for none).
+        void SetBuffer(i32 id, u64 buffer);
         // Arrays keep the size of their first set; longer ones are cut (with a warning), shorter ones fill the front.
         void SetFloatArray(i32 id, Span<const f32> values);
         void SetVectorArray(i32 id, Span<const Vector4> values);
@@ -72,6 +77,7 @@ namespace helix::engine
         Color GetColor(i32 id, const Color& fallback = Color()) const;
         Matrix4x4 GetMatrix(i32 id) const;
         EntityId GetTexture(i32 id) const;
+        u64 GetBuffer(i32 id) const;
         // Scale xy, offset zw; (1, 1, 0, 0) without a value.
         Vector4 GetTextureScaleOffset(i32 id) const;
         void GetFloatArray(i32 id, Array<f32>& out) const;

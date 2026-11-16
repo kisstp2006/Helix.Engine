@@ -3,6 +3,8 @@
 #include <Helix/Core/Hashing/Hash.h>
 #include <Helix/Core/Logging/Log.h>
 #include <Helix/Core/Strings/Format.h>
+#include <Helix/Engine/Rendering/Implementation/RenderCore.h>
+#include <Helix/Engine/Texture/Texture.h>
 
 #include <cstring>
 #include <mutex>
@@ -529,7 +531,7 @@ namespace helix::engine
             switch (binding.target)
             {
             case PropertyTarget::Member:
-                if (value && value->kind != PropertyKind::Texture)
+                if (value && value->kind != PropertyKind::Texture && value->kind != PropertyKind::Buffer)
                 {
                     u32 count = PropertySheet::Width(value->kind);
                     Floats(values, *value, 0, count, numbers);
@@ -573,7 +575,7 @@ namespace helix::engine
             const PropertyValue* value = values.Find(id);
             if (!value && globals && !overlay)
                 value = globals->Find(id);
-            if (!value || value->kind != PropertyKind::Texture || !EntityIdToObject(value->texture))
+            if (!value || (value->kind != PropertyKind::Texture && value->kind != PropertyKind::Buffer) || !EntityIdToObject(value->texture))
             {
                 if (overlay)
                     continue;
@@ -596,11 +598,27 @@ namespace helix::engine
             const PropertySheet* sheet = &values;
             if (!value && globals && !overlay)
                 value = globals->Find(m.id), sheet = globals;
-            if (!value || value->kind == PropertyKind::Texture || m.element >= value->count)
+            if (!value || value->kind == PropertyKind::Texture || value->kind == PropertyKind::Buffer || m.element >= value->count)
                 continue;
             u32 width = PropertySheet::Width(value->kind);
             Floats(*sheet, *value, m.element * width, width, numbers);
             WriteMember(*m.member, numbers, width, blocks[m.block]);
+        }
+        // The bindless indices of the properties' textures (the device's table; ~0 without one): the property's texture
+        // (the block's over the material's), else its default texture.
+        for (const ShaderVariant::BindlessMember& m : v.bindlessMembers)
+        {
+            const ShaderProperty& p = d->properties[m.property];
+            i32 id = engine::PropertyToID(p.name);
+            const PropertyValue* value = values.Find(id);
+            if (overlay && (!value || value->kind != PropertyKind::Texture))
+                continue;
+            Texture* texture = value && value->kind == PropertyKind::Texture ? EntityIdToObject<Texture>(value->texture) : nullptr;
+            if (!texture)
+                texture = Default(p.defaultTexture);
+            u32 index = render::BindlessIndexOf(*texture);
+            if (m.member->offset + 4 <= blocks[m.block].Size())
+                std::memcpy(blocks[m.block].Data() + m.member->offset, &index, 4);
         }
     }
 
@@ -737,11 +755,13 @@ namespace helix::engine
                 data->variant = v;
                 data->pass = pass;
                 data->target = target;
+                data->values = &values_;
                 passData_.Push(data);
             }
             data->keywordStamp = stamp;
         }
-        u32 globals = Shader::Globals().Version();
+        // The globals' version and the bindless table's (indices in the blocks go stale when it changes).
+        u32 globals = Shader::Globals().Version() ^ (render::BindlessGeneration() * 0x9E3779B9u);
         if (data->version != version_ || data->globalsVersion != globals)
         {
             Write(*data);

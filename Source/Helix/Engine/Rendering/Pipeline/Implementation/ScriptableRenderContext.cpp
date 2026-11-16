@@ -128,6 +128,13 @@ namespace helix::engine
                 Refers::Matrices, // DrawProcedural
                 Refers::Nothing,  // Readback
                 Refers::Nothing,  // GlobalDepthBias
+                Refers::Nothing,  // GlobalBuffer
+                Refers::Numbers,  // ComputeValue
+                Refers::Targets,  // ComputeTexture
+                Refers::Nothing,  // ComputeBuffer
+                Refers::Texts,    // ComputeKeyword
+                Refers::Nothing,  // DispatchCompute
+                Refers::Numbers,  // BufferData
             };
             static_assert(sizeof(kRefers) / sizeof(kRefers[0]) == usize(Op::Count), "a table entry per command kind");
         }
@@ -292,6 +299,87 @@ namespace helix::engine
         c.index = u32(list_.numbers.Size());
         if (count)
             list_.numbers.Append(values, usize(count) * width);
+    }
+
+    void CommandBuffer::SetGlobalBuffer(i32 nameID, u64 buffer)
+    {
+        Command& c = list_.Add(Op::GlobalBuffer);
+        c.a = nameID;
+        c.object = EntityId::FromULong(buffer);
+    }
+
+    void CommandBuffer::ComputeValue(ComputeShader* shader, i32 nameID, i32 kind, const f32* values, u32 count, u32 width)
+    {
+        Command& c = list_.Add(Op::ComputeValue);
+        c.object = shader ? shader->GetEntityId() : EntityId();
+        c.a = nameID, c.b = kind, c.c = i32(count);
+        c.index = u32(list_.numbers.Size());
+        if (count)
+            list_.numbers.Append(values, usize(count) * width);
+    }
+
+    void CommandBuffer::SetComputeIntParams(ComputeShader* shader, i32 nameID, Span<const i32> values)
+    {
+        Array<f32> f;
+        for (i32 v : values)
+            f.Push(f32(v));
+        ComputeValue(shader, nameID, 5, f.Data(), u32(f.Size()), 1);
+    }
+
+    void CommandBuffer::SetComputeTextureParam(ComputeShader* shader, i32 kernelIndex, i32 nameID, const RenderTargetIdentifier& rt, i32 mipLevel)
+    {
+        Command& c = list_.Add(Op::ComputeTexture);
+        c.object = shader ? shader->GetEntityId() : EntityId();
+        c.a = kernelIndex, c.b = nameID, c.c = mipLevel;
+        c.index = u32(list_.targets.Size());
+        list_.targets.Push(rt);
+    }
+
+    void CommandBuffer::SetComputeBufferParam(ComputeShader* shader, i32 kernelIndex, i32 nameID, u64 buffer)
+    {
+        Command& c = list_.Add(Op::ComputeBuffer);
+        c.object = shader ? shader->GetEntityId() : EntityId();
+        c.a = kernelIndex, c.b = nameID;
+        c.object2 = EntityId::FromULong(buffer);
+    }
+
+    void CommandBuffer::SetKeyword(ComputeShader* shader, const LocalKeyword& keyword, bool value)
+    {
+        Command& c = list_.Add(Op::ComputeKeyword);
+        c.object = shader ? shader->GetEntityId() : EntityId();
+        c.flag = value;
+        c.index = u32(list_.texts.Size());
+        list_.texts.Push(keyword.name());
+    }
+
+    void CommandBuffer::DispatchCompute(ComputeShader* shader, i32 kernelIndex, i32 threadGroupsX, i32 threadGroupsY, i32 threadGroupsZ)
+    {
+        Command& c = list_.Add(Op::DispatchCompute);
+        c.object = shader ? shader->GetEntityId() : EntityId();
+        c.a = kernelIndex, c.b = threadGroupsX, c.c = threadGroupsY, c.d = threadGroupsZ;
+    }
+
+    void CommandBuffer::DispatchCompute(ComputeShader* shader, i32 kernelIndex, u64 indirectBuffer, u32 argsOffset)
+    {
+        Command& c = list_.Add(Op::DispatchCompute);
+        c.object = shader ? shader->GetEntityId() : EntityId();
+        c.a = kernelIndex;
+        c.flag = true;
+        c.object2 = EntityId::FromULong(indirectBuffer);
+        c.index = argsOffset;
+    }
+
+    void CommandBuffer::SetBufferData(u64 buffer, const void* data, u32 bytes, u32 bufferOffset)
+    {
+        Command& c = list_.Add(Op::BufferData);
+        c.object = EntityId::FromULong(buffer);
+        c.c = i32(bytes), c.d = i32(bufferOffset);
+        c.index = u32(list_.numbers.Size());
+        // The bytes ride in the number array (rounded up to whole numbers).
+        usize at = list_.numbers.Size();
+        list_.numbers.Resize(at + (usize(bytes) + 3) / 4);
+        if (bytes)
+            std::memcpy(list_.numbers.Data() + at, data, bytes);
     }
 
     void CommandBuffer::SetInvertCulling(bool invertCulling) { list_.Add(Op::InvertCulling).flag = invertCulling; }
@@ -1087,6 +1175,22 @@ namespace helix::engine
                 if (!gt || !gt->texture.IsValid())
                     gt = TextureOf(*Texture2D::whiteTexture());
                 BindTexture(e, t.slot, gt->texture, gt->sampler);
+            }
+            // Graphics buffers by name: the property block's, else the globals (Shader.SetGlobalBuffer).
+            for (const shadercompiler::ReflectedResource& r : v.reflection.resources)
+            {
+                if (r.kind != shadercompiler::ResourceKind::StorageBuffer)
+                    continue;
+                i32 id = PropertyToID(r.name);
+                u64 bufferId = block ? block->GetBuffer(id) : 0;
+                if (!bufferId && data.values)
+                    bufferId = data.values->GetBuffer(id);
+                if (!bufferId)
+                    bufferId = Shader::Globals().GetBuffer(id);
+                GraphicsBuffer* buffer = GraphicsBuffer::Find(bufferId);
+                if (!buffer)
+                    continue;
+                e.cl.SetStorageBuffer(r.slot, buffer->Gpu(), r.writable ? rhi::StorageAccess::ReadWrite : rhi::StorageAccess::ReadOnly);
             }
             // The dynamic keywords of the variant (one block per variant in a submit).
             for (const shadercompiler::ReflectedBlock& rb : v.reflection.blocks)
@@ -2409,12 +2513,96 @@ namespace helix::engine
             Shader::SetGlobalTexture(c.a, t);
         }
 
+        void RunGlobalBuffer(Executor&, const Command& c) { Shader::Globals().SetBuffer(c.a, c.object.value); }
+
+        void RunComputeValue(Executor& e, const Command& c)
+        {
+            ComputeShader* cs = EntityIdToObject<ComputeShader>(c.object);
+            if (!cs)
+                return;
+            const f32* v = e.list.numbers.Data() + c.index;
+            u32 n = u32(c.c);
+            switch (c.b)
+            {
+            case 0: cs->SetFloat(c.a, v[0]); break;
+            case 1: cs->SetInt(c.a, i32(v[0])); break;
+            case 2: cs->SetVector(c.a, Vector4(v[0], v[1], v[2], v[3])); break;
+            case 3: cs->SetMatrix(c.a, *reinterpret_cast<const Matrix4x4*>(v)); break;
+            case 4:
+            case 5: cs->SetFloats(c.a, Span<const f32>(v, n)); break;
+            case 6: cs->SetVectorArray(c.a, Span<const Vector4>(reinterpret_cast<const Vector4*>(v), n)); break;
+            default: cs->SetMatrixArray(c.a, Span<const Matrix4x4>(reinterpret_cast<const Matrix4x4*>(v), n)); break;
+            }
+        }
+
+        void RunComputeTexture(Executor& e, const Command& c)
+        {
+            if (ComputeShader* cs = EntityIdToObject<ComputeShader>(c.object))
+                cs->SetTexture(c.a, c.b, SourceOf(e, e.list.targets[c.index]), c.c);
+        }
+
+        void RunComputeBuffer(Executor&, const Command& c)
+        {
+            if (ComputeShader* cs = EntityIdToObject<ComputeShader>(c.object))
+                cs->SetBufferId(c.a, c.b, c.object2.value);
+        }
+
+        void RunComputeKeyword(Executor& e, const Command& c)
+        {
+            ComputeShader* cs = EntityIdToObject<ComputeShader>(c.object);
+            if (!cs)
+                return;
+            if (c.flag)
+                cs->EnableKeyword(e.list.texts[c.index]);
+            else
+                cs->DisableKeyword(e.list.texts[c.index]);
+        }
+
+        // Compute work runs between render passes; the draws after it bind everything again.
+        void RunDispatchCompute(Executor& e, const Command& c)
+        {
+            ComputeShader* cs = EntityIdToObject<ComputeShader>(c.object);
+            if (!cs)
+            {
+                HX_LOG_ERROR(ContextLog, "DispatchCompute: the compute shader is null.");
+                return;
+            }
+            EndPass(e);
+            if (c.flag)
+            {
+                GraphicsBuffer* args = GraphicsBuffer::Find(c.object2.value);
+                if (!args)
+                {
+                    HX_LOG_ERROR(ContextLog, "DispatchCompute: the arguments buffer is not valid.");
+                    return;
+                }
+                cs->Record(e.cl, c.a, 0, 0, 0, args, c.index);
+            }
+            else if (c.b > 0 && c.c > 0 && c.d > 0)
+                cs->Record(e.cl, c.a, u32(c.b), u32(c.c), u32(c.d));
+            e.binds = Binds();
+            e.lastWorld = ~0ull;
+        }
+
+        void RunBufferData(Executor& e, const Command& c)
+        {
+            GraphicsBuffer* b = GraphicsBuffer::Find(c.object.value);
+            if (!b)
+            {
+                HX_LOG_ERROR(ContextLog, "SetBufferData: the buffer is not valid.");
+                return;
+            }
+            EndPass(e);
+            b->RecordData(e.cl, e.list.numbers.Data() + c.index, u32(c.c), u32(c.d));
+        }
+
         constexpr Run kRun[] = {
             RunClear,         RunViewport,     RunScissor,     RunNoScissor,    RunViewProjection, RunGlobalFloat,          RunGlobalInteger,
             RunGlobalVector,  RunGlobalMatrix, RunGlobalTexture, RunKeyword,    RunDrawMesh,       RunDrawRenderer,         RunBeginSample,
             RunEndSample,     RunSetTarget,    RunBlit,        RunCopyTexture,  RunResolveTarget,  RunGenerateMips,         RunGetTemporary,
             RunReleaseTemporary, RunGlobalTextureTarget, RunDrawRenderersCommand, RunSetupCamera, RunRenderObjects, RunDrawMeshInstanced,
             RunInvertCulling, RunGlobalArray, RunDrawRendererList, RunDrawProcedural, RunReadback, RunGlobalDepthBias,
+            RunGlobalBuffer,  RunComputeValue, RunComputeTexture, RunComputeBuffer, RunComputeKeyword, RunDispatchCompute, RunBufferData,
         };
         static_assert(sizeof(kRun) / sizeof(kRun[0]) == usize(Op::Count), "a table entry per command kind");
 
@@ -3483,6 +3671,44 @@ namespace helix::engine
             total += i32(ReflectionProbe::ClosestProbes(b, r->reflectionProbeUsage(), visible, found));
         }
         return total;
+    }
+
+    bool CullingResults::FillLightAndReflectionProbeIndices(GraphicsBuffer* buffer) const
+    {
+        if (!IsValid() || !buffer)
+        {
+            HX_LOG_ERROR(ContextLog, "FillLightAndReflectionProbeIndices: the culling results or the buffer are not valid.");
+            return false;
+        }
+        Array<ReflectionProbe*> visible;
+        for (const VisibleReflectionProbe& v : data->probes)
+            if (ReflectionProbe* p = v.reflectionProbe())
+                visible.Push(p);
+        const RenderData& d = RendererManager::Get().Render();
+        Array<i32> indices;
+        for (u32 i : data->renderers)
+        {
+            const render::ObjectLights& lights = render::ObjectLightsOf(*data, i);
+            for (u32 k = 0; k < u32(lights.data[1]) && k < render::ObjectLights::kMax; k++)
+                indices.Push(i32(lights.indices[k]));
+            Renderer* r = EntityIdToObject<Renderer>(d.renderer[i]);
+            if (!r || visible.Empty())
+                continue;
+            Bounds b(Vector3(d.centerX[i], d.centerY[i], d.centerZ[i]), Vector3(d.extentX[i], d.extentY[i], d.extentZ[i]) * 2.0f);
+            ReflectionProbeBlendInfo found[2];
+            u32 n = ReflectionProbe::ClosestProbes(b, r->reflectionProbeUsage(), visible, found);
+            for (u32 k = 0; k < n; k++)
+                for (u32 v = 0; v < visible.Size(); v++)
+                    if (visible[v] == found[k].probe)
+                        indices.Push(i32(v));
+        }
+        u32 bytes = u32(indices.Size() * 4);
+        if (bytes > buffer->sizeInBytes())
+        {
+            HX_LOG_ERROR(ContextLog, "FillLightAndReflectionProbeIndices: the buffer holds {} bytes, the indices need {}.", buffer->sizeInBytes(), bytes);
+            return false;
+        }
+        return bytes == 0 || buffer->SetData(indices.Data(), bytes, 0);
     }
 
     void Renderer::GetClosestReflectionProbes(Array<ReflectionProbeBlendInfo>& result) const

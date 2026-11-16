@@ -32,6 +32,16 @@ namespace helix::engine
         Reflection = 16,
     };
 
+    HX_ENUM(Namespace = "HelixEngine")
+    enum class CameraGateFitMode : i32
+    {
+        None = 0,
+        Vertical = 1,
+        Horizontal = 2,
+        Fill = 3,
+        Overscan = 4,
+    };
+
     HX_ENUM(Namespace = "HelixEngine", Attributes = "[System.Flags]")
     enum class DepthTextureMode : i32
     {
@@ -87,6 +97,42 @@ namespace helix::engine
         void SetFieldOfView(f32 degrees);
         HX_PROPERTY() f32 nearClipPlane() const { return near_; }
         void SetNearClipPlane(f32 value) { near_ = value; }
+
+        // ---------------------------------------------------------------------------------------------- physical camera
+        // The projection from a lens and a sensor (the field of view follows the focal length and the sensor's
+        // height, the lens shift moves the projection's centre); the exposure values are the camera's settings that
+        // physically based pipelines read (EV100 from aperture, shutter speed and ISO).
+        HX_PROPERTY() bool usePhysicalProperties() const { return projectionMode_ == 2; }
+        void SetUsePhysicalProperties(bool value);
+        // Millimetres; setting it sets the field of view.
+        HX_PROPERTY() f32 focalLength() const { return focalLength_; }
+        void SetFocalLength(f32 value);
+        // Millimetres (36 x 24 by default).
+        HX_PROPERTY() Vector2 sensorSize() const { return sensorSize_; }
+        void SetSensorSize(Vector2 value);
+        // In sensor sizes.
+        HX_PROPERTY() Vector2 lensShift() const { return lensShift_; }
+        void SetLensShift(Vector2 value) { lensShift_ = value; }
+        HX_PROPERTY() CameraGateFitMode gateFit() const { return gateFit_; }
+        void SetGateFit(CameraGateFitMode value) { gateFit_ = value; }
+        HX_PROPERTY() i32 iso() const { return iso_; }
+        void SetIso(i32 value) { iso_ = value < 1 ? 1 : value; }
+        // Seconds.
+        HX_PROPERTY() f32 shutterSpeed() const { return shutterSpeed_; }
+        void SetShutterSpeed(f32 value) { shutterSpeed_ = value < 1e-6f ? 1e-6f : value; }
+        // The f-number.
+        HX_PROPERTY() f32 aperture() const { return aperture_; }
+        void SetAperture(f32 value) { aperture_ = value < 0.7f ? 0.7f : value > 32 ? 32 : value; }
+        HX_PROPERTY() f32 focusDistance() const { return focusDistance_; }
+        void SetFocusDistance(f32 value) { focusDistance_ = value < 0.1f ? 0.1f : value; }
+        HX_PROPERTY() i32 bladeCount() const { return bladeCount_; }
+        void SetBladeCount(i32 value) { bladeCount_ = value < 3 ? 3 : value > 11 ? 11 : value; }
+        HX_PROPERTY() Vector2 curvature() const { return curvature_; }
+        void SetCurvature(Vector2 value) { curvature_ = value; }
+        HX_PROPERTY() f32 barrelClipping() const { return barrelClipping_; }
+        void SetBarrelClipping(f32 value) { barrelClipping_ = value < 0 ? 0 : value > 1 ? 1 : value; }
+        HX_PROPERTY() f32 anamorphism() const { return anamorphism_; }
+        void SetAnamorphism(f32 value) { anamorphism_ = value < -1 ? -1 : value > 1 ? 1 : value; }
         HX_PROPERTY() f32 farClipPlane() const { return far_; }
         void SetFarClipPlane(f32 value) { far_ = value; }
         HX_PROPERTY() bool orthographic() const { return orthographic_; }
@@ -241,6 +287,20 @@ namespace helix::engine
             v.Field("m_AllowMSAA", allowMSAA_);
             v.Field("m_TargetTexture", targetTexture_);
             v.Field("m_ForceIntoRT", forceIntoRenderTexture_);
+            // 2: the projection from the physical properties (1: implicit from the field of view).
+            v.Field("m_projectionMatrixMode", projectionMode_);
+            v.Field("m_GateFitMode", gateFit_);
+            v.Field("m_SensorSize", sensorSize_);
+            v.Field("m_LensShift", lensShift_);
+            v.Field("m_FocalLength", focalLength_);
+            v.Field("m_Iso", iso_);
+            v.Field("m_ShutterSpeed", shutterSpeed_);
+            v.Field("m_Aperture", aperture_);
+            v.Field("m_FocusDistance", focusDistance_);
+            v.Field("m_BladeCount", bladeCount_);
+            v.Field("m_Curvature", curvature_);
+            v.Field("m_BarrelClipping", barrelClipping_);
+            v.Field("m_Anamorphism", anamorphism_);
         }
 
     private:
@@ -274,6 +334,20 @@ namespace helix::engine
         Matrix4x4 projection_;
         Matrix4x4 view_;
         Matrix4x4 culling_;
+        // The file's projection mode: 2 physical (usePhysicalProperties), 1 from the field of view.
+        i32 projectionMode_ = 1;
+        f32 focalLength_ = 50;
+        Vector2 sensorSize_{36, 24};
+        Vector2 lensShift_{0, 0};
+        CameraGateFitMode gateFit_ = CameraGateFitMode::Horizontal;
+        i32 iso_ = 200;
+        f32 shutterSpeed_ = 0.005f;
+        f32 aperture_ = 16;
+        f32 focusDistance_ = 10;
+        i32 bladeCount_ = 5;
+        Vector2 curvature_{2, 11};
+        f32 barrelClipping_ = 0.25f;
+        f32 anamorphism_ = 0;
 
         void CopySettings(const Camera& other);
     };

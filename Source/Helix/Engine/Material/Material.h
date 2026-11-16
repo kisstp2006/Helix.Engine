@@ -55,6 +55,8 @@ namespace helix::engine
         const shadercompiler::RenderState* state = nullptr;
         shadercompiler::RenderState ownState;
         u64 stateKey = 0;
+        // The material's values (its graphics buffers are read by name from them at draws).
+        const PropertySheet* values = nullptr;
     };
 
     // A property block by its id in the block table (what scripts hold).
@@ -106,6 +108,9 @@ namespace helix::engine
         }
         void SetInt(StringView name, i32 value) { SetFloat(name, f32(value)); }
         void SetInt(i32 id, i32 value) { SetFloat(id, f32(value)); }
+        // A graphics buffer by its id (0: none) the draws' shaders read by name.
+        void SetBuffer(i32 id, u64 buffer) { sheet_.SetBuffer(id, buffer); }
+        void SetBuffer(StringView name, u64 buffer) { sheet_.SetBuffer(PropertyToID(name), buffer); }
         void SetFloatArray(StringView name, Span<const f32> values) { sheet_.SetFloatArray(PropertyToID(name), values); }
         void SetFloatArray(i32 id, Span<const f32> values) { sheet_.SetFloatArray(id, values); }
         void SetVectorArray(StringView name, Span<const Vector4> values) { sheet_.SetVectorArray(PropertyToID(name), values); }
@@ -180,6 +185,7 @@ namespace helix::engine
         HX_FUNCTION() static bool IsEmpty(PropertyBlockId block) { return With(block, [](MaterialPropertyBlock& b) { return b.isEmpty(); }, true); }
         HX_FUNCTION() static void Clear(PropertyBlockId block) { With(block, [](MaterialPropertyBlock& b) { b.Clear(); return 0; }, 0); }
         HX_FUNCTION() static void SetFloat(PropertyBlockId block, i32 id, f32 v) { With(block, [&](MaterialPropertyBlock& b) { b.SetFloat(id, v); return 0; }, 0); }
+        HX_FUNCTION() static void SetBuffer(PropertyBlockId block, i32 id, u64 v) { With(block, [&](MaterialPropertyBlock& b) { b.SetBuffer(id, v); return 0; }, 0); }
         HX_FUNCTION() static void SetInt(PropertyBlockId block, i32 id, i32 v) { With(block, [&](MaterialPropertyBlock& b) { b.SetInt(id, v); return 0; }, 0); }
         HX_FUNCTION() static void SetInteger(PropertyBlockId block, i32 id, i32 v) { With(block, [&](MaterialPropertyBlock& b) { b.SetInteger(id, v); return 0; }, 0); }
         HX_FUNCTION() static void SetColor(PropertyBlockId block, i32 id, Color v) { With(block, [&](MaterialPropertyBlock& b) { b.SetColor(id, v); return 0; }, 0); }
@@ -248,6 +254,9 @@ namespace helix::engine
         HX_FUNCTION() void SetMatrix(StringView name, const Matrix4x4& value) { SetMatrix(PropertyToID(name), value); }
         HX_FUNCTION() void SetTexture(i32 id, Texture* value) { Changed(), values_.SetTexture(id, value ? value->GetEntityId() : EntityId()); }
         HX_FUNCTION() void SetTexture(StringView name, Texture* value) { SetTexture(PropertyToID(name), value); }
+        // A graphics buffer by its id (0: none) the material's shaders read by name; C# takes GraphicsBuffer and ComputeBuffer.
+        HX_FUNCTION(Internal) void SetBufferId(i32 nameID, u64 buffer) { Changed(), values_.SetBuffer(nameID, buffer); }
+        HX_FUNCTION(Internal) u64 GetBufferId(i32 nameID) const { return values_.GetBuffer(nameID); }
         HX_FUNCTION() void SetTextureOffset(StringView name, Vector2 value) { Changed(), values_.SetTextureOffset(PropertyToID(name), value); }
         HX_FUNCTION() void SetTextureScale(StringView name, Vector2 value) { Changed(), values_.SetTextureScale(PropertyToID(name), value); }
         // Arrays keep the size of their first set; they reach uniform arrays by name, 16 bytes per element.

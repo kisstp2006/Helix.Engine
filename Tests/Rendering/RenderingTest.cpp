@@ -3,6 +3,7 @@
 
 #include <Helix/Core/Logging/Log.h>
 #include <Helix/Engine/Rendering/Graphics.h>
+#include <Helix/Engine/Rendering/GL.h>
 #include <Helix/Engine/Rendering/Implementation/RenderCore.h>
 #include <Helix/Engine/Rendering/Pipeline/RenderPipeline.h>
 #include <Scripts/TestScripts.h>
@@ -11,11 +12,14 @@
 #include <Helix/Engine/Rendering/CullingGroup.h>
 #include <Helix/Engine/Rendering/AsyncGPUReadback.h>
 #include <Helix/Engine/Rendering/LODGroup.h>
+#include <Helix/Engine/Rendering/ReflectionProbe.h>
+#include <Helix/Engine/Scene/SceneFile.h>
 #include <Helix/Engine/Rendering/SystemInfo.h>
 #include <Helix/Engine/Rendering/Light.h>
 #include <Helix/Engine/Rendering/Implementation/RendererManager.h>
 #include <Helix/Engine/Rendering/Pipeline/ScriptableRenderContext.h>
 #include <Helix/Engine/Rendering/Renderer.h>
+#include <Helix/Engine/Rendering/RenderSettings.h>
 #include <Helix/Engine/Rendering/ScreenCapture.h>
 #include <Helix/Image/Codecs/Png.h>
 #include <Helix/Engine/Transform/Hierarchy.h>
@@ -27,6 +31,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 
 using namespace helix;
 using namespace helix::engine;
@@ -157,6 +162,10 @@ HX_TEST(Rendering, CameraMatricesAndConversions)
     Vector4 nearClip = c->GpuProjectionMatrix() * Vector4(0, 0, -c->nearClipPlane(), 1);
     Vector4 farClip = c->GpuProjectionMatrix() * Vector4(0, 0, -c->farClipPlane(), 1);
     HX_CHECK(Near(nearClip.z / nearClip.w, 0) && Near(farClip.z / farClip.w, 1, 1e-2f));
+    // GL's: the same for the screen, upside down for a texture.
+    Matrix4x4 screen = GL::GetGPUProjectionMatrix(c->projectionMatrix(), false), texture = GL::GetGPUProjectionMatrix(c->projectionMatrix(), true);
+    Vector4 up = Vector4(0, 1, -5, 1);
+    HX_CHECK(Near((screen * up).z, (c->GpuProjectionMatrix() * up).z) && Near((texture * up).y, -(screen * up).y) && (screen * up).y > 0);
     // Orthographic: viewport positions are linear.
     c->SetOrthographic(true);
     c->SetOrthographicSize(5);
@@ -387,6 +396,58 @@ HX_TEST(Rendering, BackFacesAreCulledOnEveryDevice)
         pixels.Resize(size * size);
         HX_REQUIRE(device.ReadTexture(color, 0, pixels.Data(), pixels.Size() * 4));
         HX_CHECK(NearColor(Pixel(pixels, size, 4, 8), Rgba(255, 0, 0)));
+        HX_CHECK(NearColor(Pixel(pixels, size, 12, 8), Rgba(0, 0, 0)));
+        Graphics::ReleaseResources();
+        device.Destroy(color);
+        device.Destroy(depth);
+    });
+}
+
+HX_TEST(Rendering, RenderStatesComeFromMaterialPropertiesOnEveryDevice)
+{
+    // One shader, two materials: the first culls back faces and overwrites (its property defaults), the second culls
+    // nothing and blends by alpha; a quad facing the camera and one facing away from it.
+    constexpr u32 size = 16;
+    ForEachDevice([&](rhi::Device& device) {
+        TestShaderFolder shaders;
+        rhi::TextureHandle color =
+            device.CreateTexture({.format = rhi::Format::RGBA8Unorm, .width = size, .height = size, .usage = rhi::TextureRenderTarget | rhi::TextureSampled});
+        rhi::TextureHandle depth = device.CreateTexture({.format = rhi::Format::D32Float, .width = size, .height = size, .usage = rhi::TextureDepthStencil});
+        Graphics::SetDevice(&device);
+        Graphics::SetTarget({color, depth, size, size, rhi::Format::RGBA8Unorm, rhi::Format::D32Float});
+        MakeCamera(Vector3(0, 0, -10), 2);
+        Mesh* front = Quad();
+        Mesh* back = Quad();
+        const i32 reversed[] = {0, 2, 1, 0, 3, 2};
+        back->SetTriangles(Span<const i32>(reversed, 6));
+        Material* solid = Material::Create(Shader::Find("Tests/PropertyStates"));
+        solid->SetColor("color", Color(1, 0, 0, 1));
+        Material* blended = Material::Create(Shader::Find("Tests/PropertyStates"));
+        blended->SetColor("color", Color(0, 1, 0, 0.5f));
+        blended->SetFloat("_Cull", f32(CullMode::Off));
+        blended->SetFloat("_ZWrite", 0);
+        blended->SetFloat("_SrcBlend", f32(BlendMode::SrcAlpha));
+        blended->SetFloat("_DstBlend", f32(BlendMode::OneMinusSrcAlpha));
+        GameObject* a = Thing("Front", front, solid, Vector3(-1, 0, 0), 2);
+        GameObject* b = Thing("Back", back, solid, Vector3(1, 0, 0), 2);
+        Array<u32> pixels;
+        pixels.Resize(size * size);
+        Graphics::RenderFrame();
+        HX_REQUIRE(device.ReadTexture(color, 0, pixels.Data(), pixels.Size() * 4));
+        HX_CHECK(NearColor(Pixel(pixels, size, 4, 8), Rgba(255, 0, 0)));
+        HX_CHECK(NearColor(Pixel(pixels, size, 12, 8), Rgba(0, 0, 0)));
+        a->GetComponent<MeshRenderer>()->SetSharedMaterial(blended);
+        b->GetComponent<MeshRenderer>()->SetSharedMaterial(blended);
+        Graphics::RenderFrame();
+        HX_REQUIRE(device.ReadTexture(color, 0, pixels.Data(), pixels.Size() * 4));
+        // Alpha blends too (the two factor Blend takes the color factors for alpha): 0.5 * 0.5 + 0.5.
+        HX_CHECK(NearColor(Pixel(pixels, size, 4, 8), Rgba(0, 128, 0, 191)));
+        HX_CHECK(NearColor(Pixel(pixels, size, 12, 8), Rgba(0, 128, 0, 191)));
+        // A changed property changes the state of the next frame.
+        blended->SetFloat("_Cull", f32(CullMode::Back));
+        Graphics::RenderFrame();
+        HX_REQUIRE(device.ReadTexture(color, 0, pixels.Data(), pixels.Size() * 4));
+        HX_CHECK(NearColor(Pixel(pixels, size, 4, 8), Rgba(0, 128, 0, 191)));
         HX_CHECK(NearColor(Pixel(pixels, size, 12, 8), Rgba(0, 0, 0)));
         Graphics::ReleaseResources();
         device.Destroy(color);
@@ -897,6 +958,141 @@ HX_TEST(Culling, LODsLayerDistancesLightsAndShadowCasters)
 
     for (GameObject* g : made)
         DestroyImmediate(g);
+}
+
+HX_TEST(Culling, ReflectionProbesBlendCullAndSort)
+{
+    // Two probes around a quad and one far away: the closest two by importance (the smaller box between equals),
+    // weighted by how deep the quad's center is inside each; the camera sees two of the three, sorted by the culling's
+    // criteria; their per object count; a probe in a scene file.
+    TestShaderFolder shaders;
+    Mesh* quad = Quad();
+    Material* m = Material::Create(Shader::Find("Tests/Unlit"));
+    Array<GameObject*> made;
+    Camera* camera = MakeCamera(Vector3(0, 0, -10), 4);
+    made.Push(camera->gameObject());
+    auto probe = [&](StringView name, Vector3 position, f32 size, i32 importance) {
+        GameObject* g = GameObject::Create(name);
+        g->transform()->SetPosition(position);
+        ReflectionProbe* p = g->AddComponent<ReflectionProbe>();
+        p->SetSize(Vector3(size, size, size));
+        p->SetImportance(importance);
+        p->SetBlendDistance(1);
+        made.Push(g);
+        return p;
+    };
+    ReflectionProbe* big = probe("Big", Vector3(0, 0, 0), 4, 1);
+    ReflectionProbe* small = probe("Small", Vector3(0, 0, 0), 2, 1);
+    ReflectionProbe* far = probe("Far", Vector3(20, 0, 0), 2, 5);
+    GameObject* thing = Thing("Reflecting", quad, m, Vector3(1.5f, 0, 0));
+    made.Push(thing);
+    Renderer* r = thing->GetComponent<Renderer>();
+    UpdateWorldMatrices();
+    Graphics::RenderFrame();
+    Array<ReflectionProbeBlendInfo> found;
+    auto closest = [&](ReflectionProbeUsage usage) {
+        r->SetReflectionProbeUsage(usage);
+        r->GetClosestReflectionProbes(found);
+        String text;
+        for (const ReflectionProbeBlendInfo& f : found)
+            text += Format("{}:{} ", f.probe ? f.probe->gameObject()->Name() : StringView("-"), i32(std::lround(f.weight * 100)));
+        return text;
+    };
+    // The center 0.5 outside the small box (blend 1: half) and inside the big one.
+    String blend = closest(ReflectionProbeUsage::BlendProbes);
+    big->SetImportance(2);
+    String important = closest(ReflectionProbeUsage::BlendProbes);
+    String simple = closest(ReflectionProbeUsage::Simple);
+    String off = closest(ReflectionProbeUsage::Off);
+    big->SetImportance(1);
+    // 0.75 outside the big box only: a quarter, the rest to the skybox, or all of it when blending probes.
+    thing->transform()->SetPosition(Vector3(2.75f, 0, 0));
+    UpdateWorldMatrices();
+    String skybox = closest(ReflectionProbeUsage::BlendProbesAndSkybox);
+    String alone = closest(ReflectionProbeUsage::BlendProbes);
+    thing->transform()->SetPosition(Vector3(1.5f, 0, 0));
+    r->SetReflectionProbeUsage(ReflectionProbeUsage::BlendProbes);
+    UpdateWorldMatrices();
+    Graphics::RenderFrame();
+    bool blends = blend == StringView("Small:50 Big:50 ") && important == StringView("Big:100 Small:0 ") && simple == StringView("Big:100 ") &&
+                  off.Empty() && skybox == StringView("Big:25 ") && alone == StringView("Big:100 ");
+    if (!blends)
+        std::printf("    %s| %s| %s| %s| %s| %s\n", blend.CStr(), important.CStr(), simple.CStr(), off.CStr(), skybox.CStr(), alone.CStr());
+    HX_CHECK(blends);
+
+    Cubemap* cube = Cubemap::Create(4, TextureFormat::RGBA32, false);
+    big->SetMode(ReflectionProbeMode::Custom);
+    big->SetCustomBakedTexture(cube);
+    big->SetIntensity(2);
+    ScriptableRenderContext context;
+    auto order = [&](ReflectionProbeSortingCriteria criteria, i32 mask = -1) {
+        ScriptableCullingParameters p;
+        HX_CHECK(camera->TryGetCullingParameters(p));
+        p.reflectionProbeSortingCriteria = criteria;
+        p.cullingMask = mask;
+        CullingResults c = context.Cull(p);
+        String text;
+        for (const VisibleReflectionProbe& v : c.visibleReflectionProbes())
+            text += Format("{} ", v.reflectionProbe() ? v.reflectionProbe()->gameObject()->Name() : StringView("-"));
+        return text;
+    };
+    big->SetImportance(2);
+    String byImportance = order(ReflectionProbeSortingCriteria::Importance);
+    String bySize = order(ReflectionProbeSortingCriteria::Size);
+    String both = order(ReflectionProbeSortingCriteria::ImportanceThenSize);
+    String unsorted = order(ReflectionProbeSortingCriteria::None);
+    small->gameObject()->SetLayer(9);
+    String layered = order(ReflectionProbeSortingCriteria::None, ~(1 << 9));
+    small->gameObject()->SetLayer(0);
+    ScriptableCullingParameters p;
+    HX_CHECK(camera->TryGetCullingParameters(p));
+    CullingResults c = context.Cull(p);
+    const VisibleReflectionProbe* bigSeen = nullptr;
+    for (const VisibleReflectionProbe& v : c.visibleReflectionProbes())
+        if (v.reflectionProbe() == big)
+            bigSeen = &v;
+    bool seen = byImportance == StringView("Big Small ") && bySize == StringView("Small Big ") && both == StringView("Big Small ") &&
+                unsorted == StringView("Big Small ") && layered == StringView("Big ") && bigSeen && bigSeen->texture() == cube &&
+                bigSeen->hdrData.x == 2 && bigSeen->bounds.size() == Vector3(4, 4, 4) && bigSeen->importance == 2 && bigSeen->blendDistance == 1 &&
+                c.lightAndReflectionProbeIndexCount() == c.lightIndexCount() + 2;
+    if (!seen)
+        std::printf("    %s| %s| %s| %s| %s| %d\n", byImportance.CStr(), bySize.CStr(), both.CStr(), unsorted.CStr(), layered.CStr(),
+                    c.lightAndReflectionProbeIndexCount());
+    HX_CHECK(seen);
+    HX_CHECK(far->bounds().center == Vector3(20, 0, 0) && ReflectionProbe::minBakedCubemapResolution() == 16);
+
+    // The file form: a probe written into a scene and read back.
+    Scene start = SceneManager::GetActiveScene();
+    Scene written = SceneManager::CreateScene("ProbeWritten");
+    SceneManager::SetActiveScene(written);
+    GameObject* saved = GameObject::Create("Saved");
+    ReflectionProbe* sp = saved->AddComponent<ReflectionProbe>();
+    sp->SetSize(Vector3(3, 4, 5));
+    sp->SetCenter(Vector3(1, 0, 0));
+    sp->SetBoxProjection(true);
+    sp->SetMode(ReflectionProbeMode::Realtime);
+    sp->SetImportance(7);
+    sp->SetClearFlags(ReflectionProbeClearFlags::SolidColor);
+    String yaml, error;
+    HX_REQUIRE(WriteSceneYaml(written, yaml, error));
+    Scene read = SceneManager::CreateScene("ProbeRead");
+    Array<String> errors;
+    HX_REQUIRE(ReadSceneFile(StringView(yaml), read, errors));
+    Array<GameObject*> roots = read.GetRootGameObjects();
+    ReflectionProbe* back = roots.Size() == 1 ? roots[0]->GetComponent<ReflectionProbe>() : nullptr;
+    HX_CHECK(StringView(yaml).Contains("ReflectionProbe:") && StringView(yaml).Contains("m_BoxSize"));
+    HX_CHECK(back && back->size() == Vector3(3, 4, 5) && back->center() == Vector3(1, 0, 0) && back->boxProjection() &&
+             back->mode() == ReflectionProbeMode::Realtime && back->importance() == 7 && back->clearFlags() == ReflectionProbeClearFlags::SolidColor);
+    SceneManager::SetActiveScene(start);
+    SceneManager::UnloadSceneAsync(written);
+    SceneManager::UnloadSceneAsync(read);
+    SceneManager::ProcessSceneLoads();
+
+    for (GameObject* g : made)
+        DestroyImmediate(g);
+    DestroyImmediate(cube);
+    DestroyImmediate(m);
+    Graphics::ReleaseResources();
 }
 
 HX_TEST(Culling, CullingGroupsReportStateChanges)
@@ -1445,6 +1641,808 @@ HX_TEST(Rendering, ValuesWithoutPropertiesComeByName)
         DestroyImmediate(quad);
         DestroyImmediate(camera->gameObject());
         DestroyImmediate(named);
+        Graphics::ReleaseResources();
+        device.Destroy(color);
+        device.Destroy(depth);
+    });
+}
+
+HX_TEST(Rendering, CubemapsHoldSixFacesAndSampleAsCubes)
+{
+    // The pixel API per face and mip; on every device the six directions read the six faces.
+    TestShaderFolder shaders;
+    const Color colors[6] = {Color(1, 0, 0, 1), Color(0, 1, 0, 1), Color(0, 0, 1, 1), Color(1, 1, 0, 1), Color(0, 1, 1, 1), Color(1, 0, 1, 1)};
+    Cubemap* cube = Cubemap::Create(4, TextureFormat::RGBA32, true, true);
+    HX_REQUIRE(cube != nullptr);
+    HX_CHECK(cube->width() == 4 && cube->height() == 4 && cube->mipmapCount() == 3 && cube->dimension() == TextureDimension::Cube);
+    for (u32 f = 0; f < 6; f++)
+    {
+        Array<Color> face;
+        face.Resize(16);
+        for (Color& c : face)
+            c = colors[f];
+        HX_CHECK(cube->SetPixels(Span<const Color>(face.Data(), face.Size()), CubemapFace(f)));
+    }
+    cube->Apply(true);
+    HX_CHECK(cube->GetPixel(CubemapFace::NegativeY, 1, 2) == colors[3] && cube->GetPixel(CubemapFace::PositiveZ, 0, 0, 2) == colors[4]);
+    HX_CHECK(cube->GetPixels(CubemapFace::NegativeZ, 1).Size() == 4 && cube->GetPixelData<u32>(0, CubemapFace::PositiveX).Size() == 16);
+    Cubemap* copy = Cubemap::Create(4, TextureFormat::RGBA32, true, true);
+    HX_CHECK(copy->CopyPixels(cube, 2, 0, 5, 0) && copy->GetPixel(CubemapFace::NegativeZ, 3, 3) == colors[2]);
+    HX_CHECK(!copy->SetPixel(CubemapFace::Unknown, 0, 0, Color(1, 1, 1, 1)));
+    copy->SmoothEdges(1);
+    // Only -Z has pixels in the copy: its edge texels blend toward the black faces next to it, its inner ones stay blue.
+    Color edge = copy->GetPixel(CubemapFace::NegativeZ, 0, 0);
+    HX_CHECK(!(edge == colors[2]) && copy->GetPixel(CubemapFace::NegativeZ, 1, 1) == colors[2]);
+    DestroyImmediate(copy);
+
+    constexpr u32 size = 36;
+    ForEachDevice([&](rhi::Device& device) {
+        rhi::TextureHandle color =
+            device.CreateTexture({.format = rhi::Format::RGBA8Unorm, .width = size, .height = size, .usage = rhi::TextureRenderTarget | rhi::TextureSampled});
+        rhi::TextureHandle depth = device.CreateTexture({.format = rhi::Format::D32Float, .width = size, .height = size, .usage = rhi::TextureDepthStencil});
+        Graphics::SetDevice(&device);
+        Graphics::SetTarget({color, depth, size, size, rhi::Format::RGBA8Unorm, rhi::Format::D32Float});
+        Camera* main = MakeCamera(Vector3(0, 0, -10), 1);
+        Material* faces = Material::Create(Shader::Find("Tests/CubeFaces"));
+        faces->SetTexture("cube", cube);
+        Thing("Faces", Quad(), faces, Vector3(0, 0, 0), 2);
+        Graphics::RenderFrame();
+        Array<u32> pixels;
+        pixels.Resize(size * size);
+        HX_REQUIRE(device.ReadTexture(color, 0, pixels.Data(), pixels.Size() * 4));
+        // Rows top first: the top row of the screen is the quad's top row (-Y, +Z, -Z).
+        const u32 want[6] = {Rgba(255, 0, 0), Rgba(0, 255, 0), Rgba(0, 0, 255), Rgba(255, 255, 0), Rgba(0, 255, 255), Rgba(255, 0, 255)};
+        bool ok = true;
+        for (u32 f = 0; f < 6; f++)
+        {
+            u32 x = 6 + (f % 3) * 12, y = f < 3 ? 27 : 9;
+            if (!NearColor(Pixel(pixels, size, x, y), want[f]))
+            {
+                std::printf("    face %u at %u,%u: %08x\n", f, x, y, Pixel(pixels, size, x, y));
+                ok = false;
+            }
+        }
+        HX_CHECK(ok);
+        DestroyImmediate(faces);
+        DestroyImmediate(main->gameObject());
+        if (GameObject* g = GameObject::Find("Faces"))
+            DestroyImmediate(g);
+        Graphics::ReleaseResources();
+        device.Destroy(color);
+        device.Destroy(depth);
+    });
+    DestroyImmediate(cube);
+}
+
+HX_TEST(Rendering, ShadowMapsSampleTheirDepthWithAComparison)
+{
+    // A depth only render texture in the Shadowmap format, its left half covered by a quad at the middle depth, read
+    // with a comparison: a reference in front of the quad is lit everywhere, one behind it only on the right.
+    TestShaderFolder shaders;
+    constexpr u32 size = 32;
+    ForEachDevice([&](rhi::Device& device) {
+        rhi::TextureHandle color =
+            device.CreateTexture({.format = rhi::Format::RGBA8Unorm, .width = size, .height = size, .usage = rhi::TextureRenderTarget | rhi::TextureSampled});
+        rhi::TextureHandle depth = device.CreateTexture({.format = rhi::Format::D32Float, .width = size, .height = size, .usage = rhi::TextureDepthStencil});
+        Graphics::SetDevice(&device);
+        Graphics::SetTarget({color, depth, size, size, rhi::Format::RGBA8Unorm, rhi::Format::D32Float});
+        Camera* main = MakeCamera(Vector3(0, 0, -10), 1);
+        main->SetNearClipPlane(9);
+        main->SetFarClipPlane(11);
+        RenderTexture* shadow = RenderTexture::New(16, 16, 24, RenderTextureFormat::Shadowmap);
+        HX_CHECK(shadow->descriptor().shadowSamplingMode == ShadowSamplingMode::CompareDepths && shadow->descriptor().graphicsFormat == GraphicsFormat::None);
+        Mesh* quad = Quad();
+        Material* caster = Material::Create(Shader::Find("Tests/Unlit"));
+        CommandBuffer b;
+        b.SetRenderTarget(RenderTargetIdentifier(shadow));
+        b.ClearRenderTarget(true, false, Color(0, 0, 0, 0));
+        b.SetViewProjectionMatrices(main->worldToCameraMatrix(), main->projectionMatrix());
+        b.DrawMesh(quad, Matrix4x4::TRS(Vector3(-0.5f, 0, 0), Quaternion::identity, Vector3(1, 2, 1)), caster);
+        Graphics::ExecuteCommandBuffer(b);
+        Material* compare = Material::Create(Shader::Find("Tests/ShadowCompare"));
+        compare->SetTexture("shadowMap", shadow);
+        Thing("Receiver", quad, compare, Vector3(0, 0, 0), 2);
+        Array<u32> pixels;
+        pixels.Resize(size * size);
+        for (f32 reference : {0.25f, 0.75f})
+        {
+            compare->SetFloat("reference", reference);
+            Graphics::RenderFrame();
+            HX_REQUIRE(device.ReadTexture(color, 0, pixels.Data(), pixels.Size() * 4));
+            u32 left = Pixel(pixels, size, 6, 16), right = Pixel(pixels, size, 26, 16);
+            u32 wantLeft = reference < 0.5f ? Rgba(255, 255, 255) : Rgba(0, 0, 0);
+            if (!NearColor(left, wantLeft) || !NearColor(right, Rgba(255, 255, 255)))
+                std::printf("    reference %.2f: left %08x right %08x\n", reference, left, right);
+            HX_CHECK(NearColor(left, wantLeft) && NearColor(right, Rgba(255, 255, 255)));
+        }
+        DestroyImmediate(compare);
+        DestroyImmediate(caster);
+        DestroyImmediate(shadow);
+        DestroyImmediate(main->gameObject());
+        if (GameObject* g = GameObject::Find("Receiver"))
+            DestroyImmediate(g);
+        Graphics::ReleaseResources();
+        device.Destroy(color);
+        device.Destroy(depth);
+    });
+}
+
+HX_TEST(Rendering, TheSkyboxListDrawsRenderSettingsSkybox)
+{
+    // A skybox of six colored faces around a perspective camera: ahead +Z, up +Y; nothing without a skybox material.
+    constexpr u32 size = 16;
+    bool registered = false;
+    const Color colors[6] = {Color(1, 0, 0, 1), Color(0, 1, 0, 1), Color(0, 0, 1, 1), Color(1, 1, 0, 1), Color(0, 1, 1, 1), Color(1, 0, 1, 1)};
+    ForEachDevice([&](rhi::Device& device) {
+        TestShaderFolder shaders;
+        rhi::TextureHandle color =
+            device.CreateTexture({.format = rhi::Format::RGBA8Unorm, .width = size, .height = size, .usage = rhi::TextureRenderTarget | rhi::TextureSampled});
+        rhi::TextureHandle depth = device.CreateTexture({.format = rhi::Format::D32Float, .width = size, .height = size, .usage = rhi::TextureDepthStencil});
+        Graphics::SetDevice(&device);
+        Graphics::SetTarget({color, depth, size, size, rhi::Format::RGBA8Unorm, rhi::Format::D32Float});
+        Cubemap* cube = Cubemap::Create(1, TextureFormat::RGBA32, false, true);
+        cube->SetFilterMode(FilterMode::Point);
+        for (u32 f = 0; f < 6; f++)
+            cube->SetPixel(CubemapFace(f), 0, 0, colors[f]);
+        cube->Apply(false);
+        Material* sky = Material::Create(Shader::Find("Tests/SkyboxCube"));
+        sky->SetTexture("cube", cube);
+        ScriptableObject* asset = MakePipelineAsset(registered);
+        HX_REQUIRE(asset != nullptr);
+        GraphicsSettings::SetDefaultRenderPipeline(asset);
+        TestPipeline::skybox = true;
+        GameObject* eye = GameObject::Create("SkyEye");
+        Camera* camera = eye->AddComponent<Camera>();
+        camera->SetFieldOfView(60);
+        camera->SetClearFlags(CameraClearFlags::SolidColor);
+        camera->SetBackgroundColor(Color(0, 0, 0, 1));
+        Array<u32> pixels;
+        pixels.Resize(size * size);
+        auto centre = [&]() {
+            Graphics::RenderFrame();
+            if (!device.ReadTexture(color, 0, pixels.Data(), pixels.Size() * 4))
+                return 0xDEADBEEFu;
+            return Pixel(pixels, size, size / 2, size / 2);
+        };
+        RenderSettings::SetSkybox(nullptr);
+        u32 none = centre();
+        RenderSettings::SetSkybox(sky);
+        u32 ahead = centre();
+        eye->transform()->SetRotation(Quaternion::Euler(-90, 0, 0));
+        u32 up = centre();
+        bool ok = NearColor(none, Rgba(0, 0, 0)) && NearColor(ahead, Rgba(0, 255, 255)) && NearColor(up, Rgba(0, 0, 255)) && RenderSettings::skybox() == sky;
+        if (!ok)
+            std::printf("    none %08x ahead %08x up %08x\n", none, ahead, up);
+        HX_CHECK(ok);
+        TestPipeline::skybox = false;
+        RenderSettings::SetSkybox(nullptr);
+        GraphicsSettings::SetDefaultRenderPipeline(nullptr);
+        DestroyImmediate(asset);
+        DestroyImmediate(eye);
+        DestroyImmediate(sky);
+        DestroyImmediate(cube);
+        Graphics::ReleaseResources();
+        device.Destroy(color);
+        device.Destroy(depth);
+    });
+}
+
+HX_TEST(Rendering, TheBuiltInSkyboxShadersOnEveryDevice)
+{
+    // Skybox/Cubemap with a cube of six colors: ahead +Z, right +X, up +Y; turned by 90 degrees (ahead shows +X), its
+    // exposure and tint (doubled). Skybox/6 Sided with six textures whose right half is red and top half green, blue
+    // telling the side: from inside each side looks upright, its right half to the right. Both drawn by
+    // ScriptableRenderContext.DrawSkybox too; goldens of a view toward a corner where three sides meet.
+    constexpr u32 size = 32;
+    bool registered = false;
+    const Color colors[6] = {Color(1, 0, 0, 1), Color(0, 1, 0, 1), Color(0, 0, 1, 1), Color(1, 1, 0, 1), Color(0, 1, 1, 1), Color(1, 0, 1, 1)};
+    ForEachDevice([&](rhi::Device& device) {
+        TestShaderFolder shaders;
+        rhi::TextureHandle color =
+            device.CreateTexture({.format = rhi::Format::RGBA8Unorm, .width = size, .height = size, .usage = rhi::TextureRenderTarget | rhi::TextureSampled});
+        rhi::TextureHandle depth = device.CreateTexture({.format = rhi::Format::D32Float, .width = size, .height = size, .usage = rhi::TextureDepthStencil});
+        Graphics::SetDevice(&device);
+        Graphics::SetTarget({color, depth, size, size, rhi::Format::RGBA8Unorm, rhi::Format::D32Float});
+        Cubemap* cube = Cubemap::Create(1, TextureFormat::RGBA32, false, true);
+        cube->SetFilterMode(FilterMode::Point);
+        for (u32 f = 0; f < 6; f++)
+            cube->SetPixel(CubemapFace(f), 0, 0, colors[f]);
+        cube->Apply(false);
+        Material* cubemap = Material::Create(Shader::Find("Skybox/Cubemap"));
+        HX_REQUIRE(cubemap != nullptr && cubemap->shader()->Name() == StringView("Skybox/Cubemap"));
+        cubemap->SetTexture("_Tex", cube);
+        // The sides: red on the right half, green on the top half, blue the side's number / 5 (64 texels a side: devices
+        // round a coordinate to a texel differently only within 1/256 of a texel, far less than a pixel here).
+        const char* sides[6] = {"_FrontTex", "_BackTex", "_LeftTex", "_RightTex", "_UpTex", "_DownTex"};
+        Material* sixSided = Material::Create(Shader::Find("Skybox/6 Sided"));
+        HX_REQUIRE(sixSided != nullptr && sixSided->shader()->Name() == StringView("Skybox/6 Sided"));
+        Texture2D* faces[6] = {};
+        for (u32 f = 0; f < 6; f++)
+        {
+            faces[f] = Texture2D::Create(64, 64, TextureFormat::RGBA32, false, true);
+            faces[f]->SetFilterMode(FilterMode::Point);
+            faces[f]->SetWrapMode(TextureWrapMode::Clamp);
+            for (i32 y = 0; y < 64; y++)
+                for (i32 x = 0; x < 64; x++)
+                    faces[f]->SetPixel(x, y, Color(x >= 32 ? 1.0f : 0.0f, y >= 32 ? 1.0f : 0.0f, f32(f) / 5.0f, 1));
+            faces[f]->Apply(false);
+            sixSided->SetTexture(sides[f], faces[f]);
+        }
+        ScriptableObject* asset = MakePipelineAsset(registered);
+        HX_REQUIRE(asset != nullptr);
+        GraphicsSettings::SetDefaultRenderPipeline(asset);
+        TestPipeline::skybox = true;
+        GameObject* eye = GameObject::Create("SkyEye");
+        Camera* camera = eye->AddComponent<Camera>();
+        camera->SetFieldOfView(90);
+        camera->SetClearFlags(CameraClearFlags::SolidColor);
+        camera->SetBackgroundColor(Color(0, 0, 0, 1));
+        Array<u32> pixels;
+        pixels.Resize(size * size);
+        auto render = [&](Vector3 angles) {
+            eye->transform()->SetRotation(Quaternion::Euler(angles.x, angles.y, angles.z));
+            UpdateWorldMatrices();
+            Graphics::RenderFrame();
+            return device.ReadTexture(color, 0, pixels.Data(), pixels.Size() * 4);
+        };
+        auto centre = [&](Vector3 angles) { return render(angles) ? Pixel(pixels, size, size / 2, size / 2) : 0xDEADBEEFu; };
+
+        // The cube.
+        RenderSettings::SetSkybox(cubemap);
+        u32 ahead = centre(Vector3(0, 0, 0)), right = centre(Vector3(0, 90, 0)), up = centre(Vector3(-90, 0, 0));
+        cubemap->SetFloat("_Rotation", 90);
+        u32 turned = centre(Vector3(0, 0, 0));
+        cubemap->SetFloat("_Rotation", 0);
+        cubemap->SetFloat("_Exposure", 0.5f);
+        u32 exposed = centre(Vector3(0, 0, 0));
+        cubemap->SetFloat("_Exposure", 1);
+        cubemap->SetColor("_Tint", Color(0.5f, 0.5f, 0.25f, 0.5f));
+        u32 tinted = centre(Vector3(0, 0, 0));
+        cubemap->SetColor("_Tint", Color(0.5f, 0.5f, 0.5f, 0.5f));
+        bool cubeOk = NearColor(ahead, Rgba(0, 255, 255)) && NearColor(right, Rgba(255, 0, 0)) && NearColor(up, Rgba(0, 0, 255)) &&
+                      NearColor(turned, Rgba(255, 0, 0)) && NearColor(exposed, Rgba(0, 128, 128), 4) && NearColor(tinted, Rgba(0, 255, 128), 4);
+        if (!cubeOk)
+            std::printf("    cube: ahead %08x right %08x up %08x turned %08x exposed %08x tinted %08x\n", ahead, right, up, turned, exposed, tinted);
+        HX_CHECK(cubeOk);
+        // The goldens' view: no horizon or side edge through pixel centres (the horizon at 30 degrees up is between rows).
+        HX_REQUIRE(render(Vector3(-30, 33, 0)));
+        HX_CHECK(MatchGolden("SkyboxCubemap", pixels.Data(), size, size));
+
+        // The six sides, each seen upright from inside: the quarters of the view.
+        RenderSettings::SetSkybox(sixSided);
+        const Vector3 views[6] = {Vector3(0, 0, 0), Vector3(0, 180, 0), Vector3(0, 90, 0), Vector3(0, -90, 0), Vector3(-90, 0, 0), Vector3(90, 0, 0)};
+        bool sidesOk = true;
+        for (u32 f = 0; f < 6; f++)
+        {
+            HX_REQUIRE(render(views[f]));
+            u32 b = u32(std::lround(f32(f) / 5.0f * 255.0f));
+            // Rows are read top first: y 24 is low on the screen, 8 high.
+            u32 lowLeft = Pixel(pixels, size, 8, 24), lowRight = Pixel(pixels, size, 24, 24), highLeft = Pixel(pixels, size, 8, 8),
+                highRight = Pixel(pixels, size, 24, 8);
+            bool ok = NearColor(lowLeft, Rgba(0, 0, b)) && NearColor(lowRight, Rgba(255, 0, b)) && NearColor(highLeft, Rgba(0, 255, b)) &&
+                      NearColor(highRight, Rgba(255, 255, b));
+            if (!ok)
+                std::printf("    side %s: %08x %08x %08x %08x\n", sides[f], lowLeft, lowRight, highLeft, highRight);
+            sidesOk = sidesOk && ok;
+        }
+        HX_CHECK(sidesOk);
+        HX_REQUIRE(render(Vector3(-30, 33, 0)));
+        HX_CHECK(MatchGolden("SkyboxSixSided", pixels.Data(), size, size));
+        // ScriptableRenderContext.DrawSkybox draws the same.
+        Array<u32> listed = pixels;
+        TestPipeline::skybox = false;
+        TestPipeline::drawSkybox = true;
+        HX_REQUIRE(render(Vector3(-30, 33, 0)));
+        HX_CHECK(std::memcmp(listed.Data(), pixels.Data(), pixels.Size() * 4) == 0);
+
+        TestPipeline::drawSkybox = false;
+        RenderSettings::SetSkybox(nullptr);
+        GraphicsSettings::SetDefaultRenderPipeline(nullptr);
+        DestroyImmediate(asset);
+        DestroyImmediate(eye);
+        DestroyImmediate(cubemap);
+        DestroyImmediate(sixSided);
+        DestroyImmediate(cube);
+        for (Texture2D* t : faces)
+            DestroyImmediate(t);
+        Graphics::ReleaseResources();
+        device.Destroy(color);
+        device.Destroy(depth);
+    });
+}
+
+HX_TEST(Rendering, SphericalHarmonicsOfAmbientLight)
+{
+    // A flat color everywhere; a directional light about its color toward it and nothing away from it; the shaders'
+    // constants evaluate as Evaluate does; the scene's Flat, Trilight and Custom modes.
+    SphericalHarmonicsL2 flat;
+    flat.AddAmbientLight(Color(0.2f, 0.4f, 0.6f, 1));
+    Color any = flat.Evaluate(Vector3(0.3f, -0.8f, 0.52f).normalized());
+    HX_CHECK(std::fabs(any.r - 0.2f) < 1e-4f && std::fabs(any.g - 0.4f) < 1e-4f && std::fabs(any.b - 0.6f) < 1e-4f);
+    SphericalHarmonicsL2 sun;
+    sun.AddDirectionalLight(Vector3(0, 1, 0), Color(1, 1, 1, 1), 2);
+    Color toward = sun.Evaluate(Vector3(0, 1, 0)), away = sun.Evaluate(Vector3(0, -1, 0)), side = sun.Evaluate(Vector3(1, 0, 0));
+    HX_CHECK(std::fabs(toward.r - 2.125f) < 1e-3f && std::fabs(away.r) < 0.15f && side.r > 0.1f && side.r < 0.3f);
+    SphericalHarmonicsL2 both = flat + sun * 0.5f;
+    Vector4 k[7];
+    both.ShaderConstants(k);
+    bool same = true;
+    for (Vector3 n : {Vector3(1, 0, 0), Vector3(0, -1, 0), Vector3(0.6f, 0.48f, 0.64f), Vector3(-0.36f, 0.48f, -0.8f)})
+    {
+        Vector4 vB(n.x * n.y, n.y * n.z, n.z * n.z, n.z * n.x);
+        f32 c2 = n.x * n.x - n.y * n.y;
+        Color e = both.Evaluate(n);
+        f32 rgb[3] = {e.r, e.g, e.b};
+        f32 kc[3] = {k[6].x, k[6].y, k[6].z};
+        for (i32 c = 0; c < 3; c++)
+            same = same && std::fabs(Vector4::Dot(k[c], Vector4(n.x, n.y, n.z, 1)) + Vector4::Dot(k[3 + c], vB) + kc[c] * c2 - rgb[c]) < 1e-4f;
+    }
+    HX_CHECK(same);
+
+    RenderSettings::SetAmbientMode(AmbientMode::Flat);
+    RenderSettings::SetAmbientLight(Color(0.1f, 0.2f, 0.3f, 1));
+    Color flatUp = RenderSettings::ambientProbe().Evaluate(Vector3(0, 1, 0));
+    HX_CHECK(std::fabs(flatUp.g - 0.2f) < 1e-4f && RenderSettings::ambientSkyColor().b == 0.3f);
+    RenderSettings::SetAmbientMode(AmbientMode::Trilight);
+    RenderSettings::SetAmbientSkyColor(Color(0, 0, 1, 1));
+    RenderSettings::SetAmbientEquatorColor(Color(0, 1, 0, 1));
+    RenderSettings::SetAmbientGroundColor(Color(1, 0, 0, 1));
+    SphericalHarmonicsL2 tri = RenderSettings::ambientProbe();
+    Color up = tri.Evaluate(Vector3(0, 1, 0)), down = tri.Evaluate(Vector3(0, -1, 0)), side2 = tri.Evaluate(Vector3(1, 0, 0));
+    HX_CHECK(up.b > up.r && up.b > 0.5f && down.r > down.b && down.r > 0.5f && side2.g > side2.r && side2.g > side2.b);
+    RenderSettings::SetAmbientMode(AmbientMode::Custom);
+    RenderSettings::SetAmbientProbe(flat);
+    Array<f32> coefficients = RenderSettings::ambientProbeCoefficients();
+    HX_CHECK(coefficients.Size() == 27 && RenderSettings::ambientProbe() == flat && coefficients[9] == flat(1, 0));
+    RenderSettings::Apply(RenderSettingsData());
+}
+
+HX_TEST(Rendering, DrawsGetTheirReflectionProbeAndTheAmbientLight)
+{
+    // A red probe's box around the left quad, nothing around the right one: the right one reflects the scene's custom
+    // reflection (green), at RenderSettings.reflectionIntensity; both get the flat ambient light (blue). Without
+    // PerObjectData.ReflectionProbes both reflect the scene's.
+    constexpr u32 size = 32;
+    bool registered = false;
+    ForEachDevice([&](rhi::Device& device) {
+        TestShaderFolder shaders;
+        rhi::TextureHandle color =
+            device.CreateTexture({.format = rhi::Format::RGBA8Unorm, .width = size, .height = size, .usage = rhi::TextureRenderTarget | rhi::TextureSampled});
+        rhi::TextureHandle depth = device.CreateTexture({.format = rhi::Format::D32Float, .width = size, .height = size, .usage = rhi::TextureDepthStencil});
+        Graphics::SetDevice(&device);
+        Graphics::SetTarget({color, depth, size, size, rhi::Format::RGBA8Unorm, rhi::Format::D32Float});
+        ScriptableObject* asset = MakePipelineAsset(registered);
+        HX_REQUIRE(asset != nullptr);
+        GraphicsSettings::SetDefaultRenderPipeline(asset);
+        MakeCamera(Vector3(0, 0, -10), 4);
+        auto cubeOf = [](Color c) {
+            Cubemap* cube = Cubemap::Create(1, TextureFormat::RGBA32, false, true);
+            for (i32 f = 0; f < 6; f++)
+                cube->SetPixel(CubemapFace(f), 0, 0, c);
+            cube->Apply();
+            return cube;
+        };
+        Cubemap* red = cubeOf(Color(1, 0, 0, 1));
+        Cubemap* green = cubeOf(Color(0, 1, 0, 1));
+        GameObject* holder = GameObject::Create("Probe");
+        holder->transform()->SetPosition(Vector3(-2, 0, 0));
+        ReflectionProbe* probe = holder->AddComponent<ReflectionProbe>();
+        probe->SetSize(Vector3(3, 3, 3));
+        probe->SetMode(ReflectionProbeMode::Custom);
+        probe->SetCustomBakedTexture(red);
+        probe->SetIntensity(0.5f);
+        RenderSettings::SetDefaultReflectionMode(DefaultReflectionMode::Custom);
+        RenderSettings::SetCustomReflectionTexture(green);
+        RenderSettings::SetReflectionIntensity(1);
+        RenderSettings::SetAmbientMode(AmbientMode::Flat);
+        RenderSettings::SetAmbientLight(Color(0, 0, 0.5f, 1));
+        Mesh* quad = Quad();
+        Material* m = Material::Create(Shader::Find("Tests/ProbeAndAmbient"));
+        GameObject* left = Thing("Left", quad, m, Vector3(-2, 0, 0));
+        GameObject* right = Thing("Right", quad, m, Vector3(2, 0, 0));
+        Array<u32> pixels;
+        pixels.Resize(size * size);
+        bool before = GraphicsSettings::useScriptableRenderPipelineBatching();
+        for (bool persistent : {false, true})
+        {
+            GraphicsSettings::SetUseScriptableRenderPipelineBatching(persistent);
+            TestPipeline::perObjectData = PerObjectData::ReflectionProbes;
+            Graphics::RenderFrame();
+            HX_REQUIRE(device.ReadTexture(color, 0, pixels.Data(), pixels.Size() * 4));
+            u32 l = Pixel(pixels, size, 8, 16), r = Pixel(pixels, size, 24, 16);
+            bool ok = NearColor(l, Rgba(128, 0, 128)) && NearColor(r, Rgba(0, 255, 128));
+            TestPipeline::perObjectData = PerObjectData::None;
+            Graphics::RenderFrame();
+            HX_REQUIRE(device.ReadTexture(color, 0, pixels.Data(), pixels.Size() * 4));
+            u32 l2 = Pixel(pixels, size, 8, 16);
+            ok = ok && NearColor(l2, Rgba(0, 255, 128));
+            if (!ok)
+                std::printf("    persistent %d: left %08x right %08x, without probes %08x\n", int(persistent), l, r, l2);
+            HX_CHECK(ok);
+        }
+        GraphicsSettings::SetUseScriptableRenderPipelineBatching(before);
+        TestPipeline::perObjectData = PerObjectData::None;
+        RenderSettings::Apply(RenderSettingsData());
+        GraphicsSettings::SetDefaultRenderPipeline(nullptr);
+        for (Object* o : {static_cast<Object*>(left), static_cast<Object*>(right), static_cast<Object*>(holder), static_cast<Object*>(m),
+                          static_cast<Object*>(quad), static_cast<Object*>(red), static_cast<Object*>(green), static_cast<Object*>(asset)})
+            DestroyImmediate(o);
+        Graphics::ReleaseResources();
+        device.Destroy(color);
+        device.Destroy(depth);
+    });
+}
+
+HX_TEST(Rendering, SceneFilesKeepTheirRenderSettings)
+{
+    // The active scene's settings written as its RenderSettings document and read back into another scene, which
+    // applies them when it becomes the active one.
+    Scene start = SceneManager::GetActiveScene();
+    Scene written = SceneManager::CreateScene("SettingsWritten");
+    SceneManager::SetActiveScene(written);
+    RenderSettings::SetAmbientMode(AmbientMode::Trilight);
+    RenderSettings::SetAmbientGroundColor(Color(0.5f, 0.25f, 0, 1));
+    RenderSettings::SetReflectionIntensity(0.75f);
+    RenderSettings::SetReflectionBounces(3);
+    String yaml, error;
+    HX_REQUIRE(WriteSceneYaml(written, yaml, error));
+    bool named = yaml.View().Contains("--- !h!104 &2\nRenderSettings:") && yaml.View().Contains("m_AmbientMode: 1") &&
+                 yaml.View().Contains("m_ReflectionIntensity: 0.75") && yaml.View().Contains("m_ReflectionBounces: 3");
+    if (!named)
+        std::printf("%s\n", yaml.CStr());
+    HX_CHECK(named);
+    SceneManager::SetActiveScene(start);
+    RenderSettings::Apply(RenderSettingsData());
+    Scene read = SceneManager::CreateScene("SettingsRead");
+    Array<String> errors;
+    HX_REQUIRE(ReadSceneFile(StringView(yaml), read, errors));
+    HX_CHECK(errors.Empty() && RenderSettings::ambientMode() == AmbientMode::Skybox);
+    SceneManager::SetActiveScene(read);
+    HX_CHECK(RenderSettings::ambientMode() == AmbientMode::Trilight && RenderSettings::ambientGroundColor().r == 0.5f &&
+             RenderSettings::reflectionIntensity() == 0.75f && RenderSettings::reflectionBounces() == 3);
+    SceneManager::SetActiveScene(start);
+    SceneManager::UnloadSceneAsync(written);
+    SceneManager::UnloadSceneAsync(read);
+    SceneManager::ProcessSceneLoads();
+    RenderSettings::Apply(RenderSettingsData());
+}
+
+HX_TEST(Rendering, DrawsGetTheLightsOfTheirObjects)
+{
+    // Four quads, a directional light and three point lights: per object the directional light, then the point lights
+    // reaching the quad by importance; the two quads on the right share theirs and draw instanced. Then without the
+    // directional light (the light index map leaves it out). With the object blocks of each draw and the persistent ones.
+    constexpr u32 size = 64;
+    bool registered = false;
+    ForEachDevice([&](rhi::Device& device) {
+        TestShaderFolder shaders;
+        rhi::TextureHandle color =
+            device.CreateTexture({.format = rhi::Format::RGBA8Unorm, .width = size, .height = size, .usage = rhi::TextureRenderTarget | rhi::TextureSampled});
+        rhi::TextureHandle depth = device.CreateTexture({.format = rhi::Format::D32Float, .width = size, .height = size, .usage = rhi::TextureDepthStencil});
+        Graphics::SetDevice(&device);
+        Graphics::SetTarget({color, depth, size, size, rhi::Format::RGBA8Unorm, rhi::Format::D32Float});
+        ScriptableObject* asset = MakePipelineAsset(registered);
+        HX_REQUIRE(asset != nullptr);
+        GraphicsSettings::SetDefaultRenderPipeline(asset);
+        Camera* main = MakeCamera(Vector3(0, 0, -10), 4);
+        Array<GameObject*> made;
+        auto light = [&](StringView name, LightType type, Vector3 position, f32 range, f32 intensity) {
+            GameObject* g = GameObject::Create(name);
+            Light* l = g->AddComponent<Light>();
+            l->SetType(type);
+            l->SetRange(range);
+            l->SetIntensity(intensity);
+            g->transform()->SetPosition(position);
+            made.Push(g);
+            return EntityId::ToULong(l->GetEntityId());
+        };
+        u64 sun = light("Sun", LightType::Directional, Vector3(0, 0, 0), 10, 1);
+        u64 a = light("A", LightType::Point, Vector3(-3, 0, -1), 2, 1);
+        u64 b = light("B", LightType::Point, Vector3(0, 0, -1), 1.4f, 2);
+        u64 c = light("C", LightType::Point, Vector3(3, 0, -1), 3, 1);
+        Mesh* quad = Quad();
+        Material* lights = Material::Create(Shader::Find("Tests/ObjectLights"));
+        lights->SetEnableInstancing(true);
+        for (f32 x : {-3.0f, 0.0f, 1.5f, 2.5f})
+            made.Push(Thing("Lit", quad, lights, Vector3(x, 0, 0)));
+        TestPipeline::perObjectData = PerObjectData::LightData | PerObjectData::LightIndices;
+        bool before = GraphicsSettings::useScriptableRenderPipelineBatching();
+        Array<u32> pixels;
+        pixels.Resize(size * size);
+        for (bool persistent : {false, true})
+            for (bool drop : {false, true})
+            {
+                GraphicsSettings::SetUseScriptableRenderPipelineBatching(persistent);
+                TestPipeline::dropFirstLight = drop;
+                Graphics::RenderFrame();
+                HX_REQUIRE(device.ReadTexture(color, 0, pixels.Data(), pixels.Size() * 4));
+                const Array<u64>& ids = TestPipeline::lightIds;
+                auto index = [&](u64 id) {
+                    for (u32 i = 0; i < ids.Size(); i++)
+                        if (ids[i] == id)
+                            return i32(i) - (drop ? 1 : 0);
+                    return -100;
+                };
+                auto encode = [](i32 count, i32 first, i32 second) {
+                    auto byte = [](i32 v) { return u32(std::lround(f32(v) / 8.0f * 255.0f)); };
+                    return Rgba(byte(count), byte(first), byte(second));
+                };
+                // Left: the sun and A; middle: the sun, B, then C; right: the sun and C.
+                u32 want[4];
+                if (!drop)
+                {
+                    want[0] = encode(2, index(sun), index(a));
+                    want[1] = encode(3, index(sun), index(b));
+                    want[2] = want[3] = encode(2, index(sun), index(c));
+                }
+                else
+                {
+                    want[0] = encode(1, index(a), 0);
+                    want[1] = encode(2, index(b), index(c));
+                    want[2] = want[3] = encode(1, index(c), 0);
+                }
+                const u32 xs[4] = {8, 32, 44, 52};
+                bool ok = ids.Size() == 4 && TestPipeline::lightIndexMap.Size() == 4 && TestPipeline::lightIndexMap[3] == 3 &&
+                          TestPipeline::lightIndexCount == (drop ? 5 : 9);
+                for (u32 k = 0; k < 4; k++)
+                    if (!NearColor(Pixel(pixels, size, xs[k], 32), want[k]))
+                    {
+                        std::printf("    persistent %d drop %d quad %u: %08x, want %08x\n", int(persistent), int(drop), k, Pixel(pixels, size, xs[k], 32), want[k]);
+                        ok = false;
+                    }
+                const RenderStats& stats = Graphics::LastStats();
+                if (stats.instancedBatches != 1 || stats.instances != 2)
+                {
+                    std::printf("    persistent %d drop %d: %u instanced batches of %u instances, %u lights, %d indices\n", int(persistent), int(drop),
+                                stats.instancedBatches, stats.instances, u32(ids.Size()), TestPipeline::lightIndexCount);
+                    ok = false;
+                }
+                HX_CHECK(ok);
+            }
+        GraphicsSettings::SetUseScriptableRenderPipelineBatching(before);
+        TestPipeline::perObjectData = PerObjectData::None;
+        TestPipeline::dropFirstLight = false;
+        GraphicsSettings::SetDefaultRenderPipeline(nullptr);
+        DestroyImmediate(asset);
+        for (GameObject* g : made)
+            DestroyImmediate(g);
+        DestroyImmediate(main->gameObject());
+        DestroyImmediate(lights);
+        Graphics::ReleaseResources();
+        device.Destroy(color);
+        device.Destroy(depth);
+    });
+}
+
+namespace
+{
+    // Where a world point lands in a light's clip space (x, y, z over w).
+    Vector3 ClipOf(const Matrix4x4& view, const Matrix4x4& projection, Vector3 p)
+    {
+        Vector4 c = projection * (view * Vector4(p.x, p.y, p.z, 1));
+        return Vector3(c.x / c.w, c.y / c.w, c.z / c.w);
+    }
+
+    struct SpotPointResults
+    {
+        bool spot = false, spotCenter = false, spotEdge = false, spotPlanes = false, wrongKind = false;
+        bool faces = true, widened = false;
+        f32 sphere = 0;
+    };
+    SpotPointResults gSpotPoint;
+}
+
+HX_TEST(Rendering, SpotAndPointShadowsHaveTheirMatrices)
+{
+    // A spot light's view and cone, a point light's six faces (their axes and the cube map's up vectors) and fovBias;
+    // the cascades' conservative sphere is smaller than the stable one; SetGlobalDepthBias pushes the draws after it.
+    constexpr u32 size = 16;
+    bool registered = false;
+    ForEachDevice([&](rhi::Device& device) {
+        TestShaderFolder shaders;
+        rhi::TextureHandle color =
+            device.CreateTexture({.format = rhi::Format::RGBA8Unorm, .width = size, .height = size, .usage = rhi::TextureRenderTarget | rhi::TextureSampled});
+        rhi::TextureHandle depth = device.CreateTexture({.format = rhi::Format::D32Float, .width = size, .height = size, .usage = rhi::TextureDepthStencil});
+        Graphics::SetDevice(&device);
+        Graphics::SetTarget({color, depth, size, size, rhi::Format::RGBA8Unorm, rhi::Format::D32Float});
+        ScriptableObject* asset = MakePipelineAsset(registered);
+        HX_REQUIRE(asset != nullptr);
+        GraphicsSettings::SetDefaultRenderPipeline(asset);
+        GameObject* eye = GameObject::Create("ShadowEye");
+        Camera* camera = eye->AddComponent<Camera>();
+        camera->SetFieldOfView(60);
+        camera->SetFarClipPlane(40);
+        eye->transform()->SetPosition(Vector3(0, 0, -10));
+        GameObject* spotObject = GameObject::Create("Spot");
+        Light* spot = spotObject->AddComponent<Light>();
+        spot->SetType(LightType::Spot);
+        spot->SetSpotAngle(60);
+        spot->SetRange(10);
+        spotObject->transform()->SetPosition(Vector3(0, 0, -5));
+        GameObject* pointObject = GameObject::Create("Point");
+        Light* point = pointObject->AddComponent<Light>();
+        point->SetType(LightType::Point);
+        point->SetRange(5);
+        GameObject* sunObject = GameObject::Create("Sun");
+        Light* sun = sunObject->AddComponent<Light>();
+        sun->SetType(LightType::Directional);
+        sunObject->transform()->SetRotation(Quaternion::Euler(50, 0, 0));
+        Material* surface = Material::Create(Shader::Find("Tests/Surface"));
+        GameObject* caster = Thing("Caster", Quad(), surface, Vector3(0, 0, 0), 2);
+        gSpotPoint = SpotPointResults();
+        TestPipeline::afterCull = [](ScriptableRenderContext&, CullingResults culling) {
+            Span<const VisibleLight> lights = culling.visibleLights();
+            i32 spotIndex = -1, pointIndex = -1, sunIndex = -1;
+            for (u32 i = 0; i < lights.Size(); i++)
+            {
+                if (lights[i].lightType == LightType::Directional)
+                    sunIndex = i32(i);
+                if (lights[i].lightType == LightType::Spot)
+                    spotIndex = i32(i);
+                if (lights[i].lightType == LightType::Point)
+                    pointIndex = i32(i);
+            }
+            SpotPointResults& r = gSpotPoint;
+            Matrix4x4 view, projection;
+            ShadowSplitData split;
+            if (sunIndex >= 0 && culling.ComputeDirectionalShadowMatricesAndCullingPrimitives(sunIndex, 0, 2, Vector3(0.5f, 0, 0), 256, 0.5f, view, projection, split))
+                r.sphere = split.cullingSphere.w;
+            r.spot = spotIndex >= 0 && culling.ComputeSpotShadowMatricesAndCullingPrimitives(spotIndex, view, projection, split);
+            if (r.spot)
+            {
+                // The axis lands in the middle; the cone's rim at 5 along the axis is at the edge (60 degrees, tan 30).
+                Vector3 center = ClipOf(view, projection, Vector3(0, 0, 0));
+                Vector3 rim = ClipOf(view, projection, Vector3(5 * std::tan(30 * mathf::Deg2Rad), 0, 0));
+                r.spotCenter = std::abs(center.x) < 1e-4f && std::abs(center.y) < 1e-4f && std::abs(center.z) < 1;
+                r.spotEdge = std::abs(std::abs(rim.x) - 1) < 1e-3f;
+                r.spotPlanes = split.cullingPlaneCount == 5 && split.cullingSphere.w > 5 && split.GetCullingPlane(0).GetDistanceToPoint(Vector3(0, 0, 0)) > 0;
+            }
+            r.wrongKind = pointIndex >= 0 && !culling.ComputeSpotShadowMatricesAndCullingPrimitives(pointIndex, view, projection, split);
+            // Each face: its axis in the middle, the cube map's up on the screen's up.
+            const Vector3 axes[6] = {Vector3(1, 0, 0), Vector3(-1, 0, 0), Vector3(0, 1, 0), Vector3(0, -1, 0), Vector3(0, 0, 1), Vector3(0, 0, -1)};
+            const Vector3 ups[6] = {Vector3(0, -1, 0), Vector3(0, -1, 0), Vector3(0, 0, 1), Vector3(0, 0, -1), Vector3(0, -1, 0), Vector3(0, -1, 0)};
+            for (i32 f = 0; f < 6 && pointIndex >= 0; f++)
+            {
+                bool ok = culling.ComputePointShadowMatricesAndCullingPrimitives(pointIndex, CubemapFace(f), 0, view, projection, split);
+                Vector3 middle = ClipOf(view, projection, axes[f] * 2.0f);
+                Vector3 above = ClipOf(view, projection, axes[f] * 2.0f + ups[f]);
+                bool good = ok && std::abs(middle.x) < 1e-4f && std::abs(middle.y) < 1e-4f && std::abs(above.x) < 1e-4f && std::abs(above.y - 0.5f) < 1e-3f &&
+                            split.cullingSphere.w == 5;
+                if (!good)
+                    std::printf("    face %d: middle %.3f %.3f above %.3f %.3f\n", f, middle.x, middle.y, above.x, above.y);
+                r.faces = r.faces && good;
+            }
+            r.widened = pointIndex >= 0 && culling.ComputePointShadowMatricesAndCullingPrimitives(pointIndex, CubemapFace::PositiveX, 10, view, projection, split) &&
+                        std::abs(projection(1, 1) - 1.0f / std::tan(50 * mathf::Deg2Rad)) < 1e-4f &&
+                        !culling.ComputePointShadowMatricesAndCullingPrimitives(pointIndex, CubemapFace::Unknown, 0, view, projection, split);
+        };
+        Graphics::RenderFrame();
+        f32 stable = gSpotPoint.sphere;
+        TestPipeline::conservativeSphere = true;
+        Graphics::RenderFrame();
+        f32 tight = gSpotPoint.sphere;
+        TestPipeline::conservativeSphere = false;
+        TestPipeline::afterCull = nullptr;
+        const SpotPointResults& r = gSpotPoint;
+        bool ok = r.spot && r.spotCenter && r.spotEdge && r.spotPlanes && r.wrongKind && r.faces && r.widened && tight > 0 && tight < stable;
+        if (!ok)
+            std::printf("    spot %d %d %d %d kind %d faces %d widened %d spheres %.3f %.3f\n", int(r.spot), int(r.spotCenter), int(r.spotEdge),
+                        int(r.spotPlanes), int(r.wrongKind), int(r.faces), int(r.widened), stable, tight);
+        HX_CHECK(ok);
+        GraphicsSettings::SetDefaultRenderPipeline(nullptr);
+
+        // Depth bias: a green quad over a red one at the same depth wins (LEqual) unless pushed back by the bias.
+        Camera* front = MakeCamera(Vector3(0, 0, -10), 1);
+        Material* red = Material::Create(Shader::Find("Tests/Unlit"));
+        red->SetColor("color", Color(1, 0, 0, 1));
+        Material* green = Material::Create(Shader::Find("Tests/Unlit"));
+        green->SetColor("color", Color(0, 1, 0, 1));
+        Mesh* quad = Quad();
+        Matrix4x4 world = Matrix4x4::TRS(Vector3(0, 0, 0), Quaternion::identity, Vector3(4, 4, 1));
+        Array<u32> pixels;
+        pixels.Resize(size * size);
+        u32 seen[3] = {};
+        for (i32 k = 0; k < 3; k++)
+        {
+            CommandBuffer b;
+            b.ClearRenderTarget(true, true, Color(0, 0, 0, 1));
+            b.SetViewProjectionMatrices(front->worldToCameraMatrix(), front->projectionMatrix());
+            b.DrawMesh(quad, world, red);
+            if (k == 1)
+                b.SetGlobalDepthBias(1000, 4);
+            if (k == 2)
+            {
+                b.SetGlobalDepthBias(1000, 4);
+                b.SetGlobalDepthBias(0, 0);
+            }
+            b.DrawMesh(quad, world, green);
+            b.SetGlobalDepthBias(0, 0);
+            Graphics::ExecuteCommandBuffer(b);
+            HX_REQUIRE(device.ReadTexture(color, 0, pixels.Data(), pixels.Size() * 4));
+            seen[k] = Pixel(pixels, size, 8, 8);
+        }
+        bool biased = NearColor(seen[0], Rgba(0, 255, 0)) && NearColor(seen[1], Rgba(255, 0, 0)) && NearColor(seen[2], Rgba(0, 255, 0));
+        if (!biased)
+            std::printf("    depth bias: %08x %08x %08x\n", seen[0], seen[1], seen[2]);
+        HX_CHECK(biased);
+        DestroyImmediate(red);
+        DestroyImmediate(green);
+        DestroyImmediate(front->gameObject());
+        DestroyImmediate(asset);
+        for (GameObject* g : {caster, sunObject, pointObject, spotObject, eye})
+            DestroyImmediate(g);
+        DestroyImmediate(surface);
+        Graphics::ReleaseResources();
+        device.Destroy(color);
+        device.Destroy(depth);
+    });
+}
+
+HX_TEST(Rendering, DirectionalShadowCascadesCullAndDrawTheirCasters)
+{
+    // A directional light with shadows over a caster: its bounds, two cascades fitting the split of the view, each
+    // split's shadow list drawing the caster; a split whose planes leave the caster out draws nothing.
+    constexpr u32 size = 16;
+    bool registered = false;
+    ForEachDevice([&](rhi::Device& device) {
+        TestShaderFolder shaders;
+        rhi::TextureHandle color =
+            device.CreateTexture({.format = rhi::Format::RGBA8Unorm, .width = size, .height = size, .usage = rhi::TextureRenderTarget | rhi::TextureSampled});
+        rhi::TextureHandle depth = device.CreateTexture({.format = rhi::Format::D32Float, .width = size, .height = size, .usage = rhi::TextureDepthStencil});
+        Graphics::SetDevice(&device);
+        Graphics::SetTarget({color, depth, size, size, rhi::Format::RGBA8Unorm, rhi::Format::D32Float});
+        ScriptableObject* asset = MakePipelineAsset(registered);
+        HX_REQUIRE(asset != nullptr);
+        GraphicsSettings::SetDefaultRenderPipeline(asset);
+        GameObject* eye = GameObject::Create("ShadowEye");
+        Camera* camera = eye->AddComponent<Camera>();
+        camera->SetFieldOfView(60);
+        camera->SetFarClipPlane(40);
+        eye->transform()->SetPosition(Vector3(0, 0, -10));
+        GameObject* sun = GameObject::Create("ShadowSun");
+        Light* light = sun->AddComponent<Light>();
+        light->SetType(LightType::Directional);
+        light->SetShadows(LightShadows::Hard);
+        sun->transform()->SetRotation(Quaternion::Euler(50, 0, 0));
+        Material* surface = Material::Create(Shader::Find("Tests/Surface"));
+        GameObject* caster = Thing("Caster", Quad(), surface, Vector3(0, 0, 0), 2);
+        TestPipeline::shadowSplits = 2;
+        TestPipeline::awayFromCasters = false;
+        // The caster's ShadowCaster pass links (its fragment stage takes the varyings it does not read).
+        u32 errors = 0;
+        LogSink count = [](const LogMessage& m, void* user) {
+            if (m.level >= LogLevel::Error)
+                ++*static_cast<u32*>(user);
+        };
+        AddLogSink(count, &errors);
+        Graphics::RenderFrame();
+        RemoveLogSink(count, &errors);
+        HX_CHECK(errors == 0);
+        u32 bothDraws = Graphics::LastStats().drawCalls;
+        Bounds b = TestPipeline::casterBounds;
+        bool bounds = TestPipeline::shadowBounds && Near(b.center.x, 0) && Near(b.center.y, 0) && Near(b.size().x, 2) && Near(b.size().y, 2);
+        // The first split ends at a quarter of the 40 of the camera's far plane: its sphere holds the split's corners.
+        const ShadowSplitData& first = TestPipeline::splits[0];
+        bool sphere = first.cullingSphere.w > 0 && first.cullingPlaneCount == 5 && TestPipeline::splits[1].cullingSphere.w > first.cullingSphere.w;
+        // The caster's center in the first split's clip space is inside the box.
+        Vector4 clip = TestPipeline::shadowProjections[0] * (TestPipeline::shadowViews[0] * Vector4(0, 0, 0, 1));
+        bool inside = std::abs(clip.x / clip.w) <= 1 && std::abs(clip.y / clip.w) <= 1;
+        TestPipeline::awayFromCasters = true;
+        Graphics::RenderFrame();
+        u32 oneDraw = Graphics::LastStats().drawCalls;
+        // The camera's own pass draws the caster once more than the shadow lists.
+        bool ok = bounds && sphere && inside && bothDraws == oneDraw + 1;
+        if (!ok)
+            std::printf("    bounds %d sphere %d inside %d draws %u %u\n", int(bounds), int(sphere), int(inside), bothDraws, oneDraw);
+        HX_CHECK(ok);
+        TestPipeline::shadowSplits = 0;
+        TestPipeline::awayFromCasters = false;
+        GraphicsSettings::SetDefaultRenderPipeline(nullptr);
+        DestroyImmediate(asset);
+        DestroyImmediate(caster);
+        DestroyImmediate(sun);
+        DestroyImmediate(eye);
+        DestroyImmediate(surface);
         Graphics::ReleaseResources();
         device.Destroy(color);
         device.Destroy(depth);

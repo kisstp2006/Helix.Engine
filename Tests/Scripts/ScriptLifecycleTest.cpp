@@ -248,6 +248,33 @@ GameBehaviour:
     // A copy is a script of the same class, with its own lifecycle.
     Instantiate(loaded);
     HX_CHECK(Calls({"Loaded(Clone):Awake", "Loaded(Clone):OnEnable"}));
+    // A script added in code names its class's script asset when written.
+    Scene active = SceneManager::GetActiveScene();
+    SceneManager::SetActiveScene(s);
+    GameObject* made = GameObject::Create("Made");
+    auto* added = static_cast<GameBehaviour*>(made->AddComponent(Script("Recorder").type));
+    HX_CHECK(added != nullptr && added->scriptAsset() == nullptr);
+    String text, error;
+    HX_REQUIRE(WriteSceneYaml(s, text, error));
+    usize at = text.View().Find("m_Name: Made");
+    HX_CHECK(at != StringView::npos && text.View().Substr(at).Contains("guid: d0000000000000000000000000000004") && added->scriptAsset() == asset);
+    // A script asset made in code too.
+    String registerError;
+    (void)RegisterLinkedGameModule("EngineTests", registerError);
+    ScriptableObject* data = ScriptableObject::CreateInstanceByName("TestPipelineAsset");
+    HX_REQUIRE(data != nullptr && data->script() != nullptr);
+    MonoScript* dataScript = MonoScript::FromScriptClass(*data->script());
+    Guid dataGuid;
+    Guid::TryParse("d0000000000000000000000000000005", dataGuid);
+    RegisterAssetObject(dataGuid, 11500000, dataScript, true);
+    Array<u8> bytes;
+    Object* objects[] = {data};
+    HX_REQUIRE(WriteAssetFile(Span<Object* const>(objects, 1), bytes, error));
+    HX_CHECK(StringView(reinterpret_cast<const char*>(bytes.Data()), bytes.Size()).Contains("guid: d0000000000000000000000000000005") &&
+             data->scriptAsset() == dataScript);
+    DestroyImmediate(data);
+    SceneManager::SetActiveScene(active);
+    ScriptCalls().Clear();
     SceneManager::UnloadSceneAsync(s);
     SceneManager::ProcessSceneLoads();
     ScriptCalls().Clear();
@@ -604,7 +631,7 @@ HX_TEST(Scripts, CppScriptFieldsInSceneFiles)
     HX_CHECK(text.View().Contains("  count: 9\n  speed: 2.5\n  on: 0\n  pace: 0\n  title: read\n"));
     HX_CHECK(text.View().Contains("  offset: {x: 1, y: 2, z: 3}\n  tint: {r: 1, g: 0.5, b: 0, a: 1}\n"));
     HX_CHECK(text.View().Contains("  target: {fileID: 200}\n") && text.View().Contains("  secret: 11\n"));
-    HX_CHECK(!text.View().Contains("scratch") && !text.View().Contains("untagged") && !text.View().Contains("serialized"));
+    HX_CHECK(!text.View().Contains("scratch") && !text.View().Contains("untagged") && !text.View().Contains("  serialized:"));
     HX_CHECK(f->serialized == 1 && f->deserialized == 1);
     // AddComponent: the members' initializers.
     GameObject* added = GameObject::Create("Added");

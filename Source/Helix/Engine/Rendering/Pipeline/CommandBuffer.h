@@ -53,6 +53,7 @@ namespace helix::engine
             DrawRendererList,
             DrawProcedural,
             Readback,
+            GlobalDepthBias,
             Count,
         };
 
@@ -81,6 +82,11 @@ namespace helix::engine
             // Renderer lists: states by the value of a pass tag (a tag value of none: every pass).
             ShaderTagId tagName;
             Array<TaggedState> tagged = Array<TaggedState>();
+            // A skybox list: the skybox material drawn around this camera (no renderers).
+            EntityId skyboxCamera, skyboxMaterial;
+            // A shadow list: these renderers (render data indices) instead of the visible ones, no queued meshes.
+            bool shadow = false;
+            Array<u32> casters = Array<u32>();
         };
 
         // Commands with what they refer to.
@@ -152,6 +158,8 @@ namespace helix::engine
         void DrawRendererList(RendererUtils::RendererList list);
         // Front faces turn around for the draws after it (mirrored views).
         void SetInvertCulling(bool invertCulling);
+        // A depth bias (constant, and by slope) added to the draws after it, until set again (0, 0: none).
+        void SetGlobalDepthBias(f32 bias, f32 slopeBias);
         void SetGlobalTexture(StringView name, Texture* value) { SetGlobalTexture(PropertyToID(name), value); }
         void EnableShaderKeyword(StringView keyword);
         void DisableShaderKeyword(StringView keyword);

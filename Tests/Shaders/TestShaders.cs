@@ -183,6 +183,89 @@ public sealed class Unlit : ShaderDefinition
     }
 }
 
+/// <summary>A color whose culling, depth writes and blending come from material properties (`Cull [_Cull]`).</summary>
+[Shader("Tests/PropertyStates")]
+public sealed class PropertyStates : ShaderDefinition
+{
+    [Property("Color"), MainColor, Default(1.0f, 1.0f, 1.0f, 1.0f)] public float4 color;
+    [Property("Cull"), Default(2.0f)] public float _Cull;
+    [Property("ZWrite"), Default(1.0f)] public float _ZWrite;
+    [Property("Source Blend"), Default(1.0f)] public float _SrcBlend;
+    [Property("Destination Blend"), Default(0.0f)] public float _DstBlend;
+
+    public struct MaterialData
+    {
+        public float4 color;
+    }
+
+    public struct Varyings
+    {
+        [Position] public float4 position;
+    }
+
+    [Pass("Forward", CullProperty = "_Cull", ZWriteProperty = "_ZWrite")]
+    [Blend(SourceProperty = "_SrcBlend", DestinationProperty = "_DstBlend")]
+    public static class Forward
+    {
+        [Uniform(0)] public static MaterialData material;
+
+        [VertexShader]
+        public static Varyings Vertex([Location(VertexInputs.Position)] float3 position) => new Varyings { position = ShaderVariables.ObjectToClip(position) };
+
+        [FragmentShader]
+        [return: Target(0)]
+        public static float4 Fragment(Varyings input) => material.color;
+    }
+}
+
+/// <summary>
+/// The object's reflection probe and the ambient light: the probe cube toward -z scaled by its decode value, plus the
+/// ambient probe's light from above (the globals unity_SHAr ... unity_SHC).
+/// </summary>
+[Shader("Tests/ProbeAndAmbient")]
+public sealed class ProbeAndAmbient : ShaderDefinition
+{
+    [Keyword(KeywordScope.Global)] public static readonly bool INSTANCING_ON;
+
+    public struct Ambient
+    {
+        public float4 unity_SHAr, unity_SHAg, unity_SHAb, unity_SHBr, unity_SHBg, unity_SHBb, unity_SHC;
+    }
+
+    public struct Varyings
+    {
+        [Position] public float4 position;
+    }
+
+    [Pass("Forward")]
+    public static class Forward
+    {
+        [Uniform(0)] public static Ambient ambient;
+        [Texture(0)] public static TextureCube<float4> unity_SpecCube0;
+        [Sampler(0)] public static SamplerState cubeSampler;
+
+        [VertexShader]
+        public static Varyings Vertex([Location(VertexInputs.Position)] float3 position) => new Varyings { position = ShaderVariables.ObjectToClip(position) };
+
+        static float SH(float4 a, float4 b, float c, float3 n)
+        {
+            float4 vB = new float4(n.x * n.y, n.y * n.z, n.z * n.z, n.z * n.x);
+            return Dot(a, new float4(n, 1.0f)) + Dot(b, vB) + c * (n.x * n.x - n.y * n.y);
+        }
+
+        [FragmentShader]
+        [return: Target(0)]
+        public static float4 Fragment(Varyings input)
+        {
+            float3 up = new float3(0.0f, 1.0f, 0.0f);
+            float3 sky = new float3(SH(ambient.unity_SHAr, ambient.unity_SHBr, ambient.unity_SHC.x, up), SH(ambient.unity_SHAg, ambient.unity_SHBg, ambient.unity_SHC.y, up),
+                                    SH(ambient.unity_SHAb, ambient.unity_SHBb, ambient.unity_SHC.z, up));
+            float3 reflection = unity_SpecCube0.SampleLevel(cubeSampler, new float3(0.0f, 0.0f, -1.0f), 0.0f).xyz * ShaderVariables.SpecCube0HDR().x;
+            return new float4(reflection + sky, 1.0f);
+        }
+    }
+}
+
 /// <summary>Tests/Unlit that takes part in instancing (it declares the INSTANCING_ON keyword).</summary>
 [Shader("Tests/InstancedUnlit")]
 public sealed class InstancedUnlit : ShaderDefinition
@@ -211,6 +294,36 @@ public sealed class InstancedUnlit : ShaderDefinition
         [FragmentShader]
         [return: Target(0)]
         public static float4 Fragment(Varyings input) => material.color;
+    }
+}
+
+/// <summary>The object's lights as a color: red their count, green and blue the indices of the first two (each eighths).
+/// It takes part in instancing.</summary>
+[Shader("Tests/ObjectLights")]
+public sealed class ObjectLights : ShaderDefinition
+{
+    [Keyword(KeywordScope.Global)] public static readonly bool INSTANCING_ON;
+
+    public struct Varyings
+    {
+        [Position] public float4 position;
+    }
+
+    [Pass("Forward")]
+    public static class Forward
+    {
+        [VertexShader]
+        public static Varyings Vertex([Location(VertexInputs.Position)] float3 position) => new Varyings { position = ShaderVariables.ObjectToClip(position) };
+
+        [FragmentShader]
+        [return: Target(0)]
+        public static float4 Fragment(Varyings input)
+        {
+            int count = ShaderVariables.ObjectLightCount();
+            float first = count > 0 ? ShaderVariables.ObjectLightIndex(0) : 0;
+            float second = count > 1 ? ShaderVariables.ObjectLightIndex(1) : 0;
+            return new float4(count / 8.0f, first / 8.0f, second / 8.0f, 1.0f);
+        }
     }
 }
 
@@ -252,6 +365,129 @@ public sealed class Textured : ShaderDefinition
         [FragmentShader]
         [return: Target(0)]
         public static float4 Fragment(Varyings input) => baseMap.Sample(baseSampler, input.uv) * material.color;
+    }
+}
+
+/// <summary>A cube texture seen in six directions: the quad in three columns and two rows, +X, -X, +Y in the bottom row, -Y,
+/// +Z, -Z in the top one.</summary>
+[Shader("Tests/CubeFaces")]
+public sealed class CubeFaces : ShaderDefinition
+{
+    [Property("Cube"), DefaultTexture("white")] public TextureCube<float4> cube;
+
+    public struct Varyings
+    {
+        [Position] public float4 position;
+        [Location(0)] public float2 uv;
+    }
+
+    [Pass("Forward")]
+    public static class Forward
+    {
+        [Texture(0)] public static TextureCube<float4> cube;
+        [Sampler(0)] public static SamplerState cubeSampler;
+
+        [VertexShader]
+        public static Varyings Vertex([Location(VertexInputs.Position)] float3 position, [Location(VertexInputs.TexCoord0)] float2 uv)
+        {
+            Varyings o;
+            o.position = ShaderVariables.ObjectToClip(position);
+            o.uv = uv;
+            return o;
+        }
+
+        [FragmentShader]
+        [return: Target(0)]
+        public static float4 Fragment(Varyings input)
+        {
+            float column = Floor(input.uv.x * 3.0f);
+            float face = column + (input.uv.y > 0.5f ? 3.0f : 0.0f);
+            float3 direction = face < 0.5f ? new float3(1, 0, 0)
+                             : face < 1.5f ? new float3(-1, 0, 0)
+                             : face < 2.5f ? new float3(0, 1, 0)
+                             : face < 3.5f ? new float3(0, -1, 0)
+                             : face < 4.5f ? new float3(0, 0, 1)
+                                           : new float3(0, 0, -1);
+            return cube.Sample(cubeSampler, direction);
+        }
+    }
+}
+
+/// <summary>A shadow map read with a comparison sampler: white where the reference depth is not behind the stored one.</summary>
+[Shader("Tests/ShadowCompare")]
+public sealed class ShadowCompare : ShaderDefinition
+{
+    [Property("Shadow Map"), DefaultTexture("white")] public Texture2D<float> shadowMap;
+    [Property("Reference"), Default(0.5f)] public float reference;
+
+    public struct MaterialData
+    {
+        public float reference;
+    }
+
+    public struct Varyings
+    {
+        [Position] public float4 position;
+        [Location(0)] public float2 uv;
+    }
+
+    [Pass("Forward")]
+    public static class Forward
+    {
+        [Uniform(0)] public static MaterialData material;
+        [Texture(0)] public static Texture2D<float> shadowMap;
+        [Sampler(0)] public static SamplerComparisonState shadowSampler;
+
+        [VertexShader]
+        public static Varyings Vertex([Location(VertexInputs.Position)] float3 position, [Location(VertexInputs.TexCoord0)] float2 uv)
+        {
+            Varyings o;
+            o.position = ShaderVariables.ObjectToClip(position);
+            o.uv = uv;
+            return o;
+        }
+
+        [FragmentShader]
+        [return: Target(0)]
+        public static float4 Fragment(Varyings input)
+        {
+            float lit = shadowMap.SampleCmpLevelZero(shadowSampler, input.uv, material.reference);
+            return new float4(lit, lit, lit, 1.0f);
+        }
+    }
+}
+
+/// <summary>A skybox of a cube texture: the cube's object positions are the directions, drawn at the far plane.</summary>
+[Shader("Tests/SkyboxCube")]
+public sealed class SkyboxCube : ShaderDefinition
+{
+    [Property("Cube"), DefaultTexture("white")] public TextureCube<float4> cube;
+
+    public struct Varyings
+    {
+        [Position] public float4 position;
+        [Location(0)] public float3 direction;
+    }
+
+    [Pass("Forward", ZWrite = false, Cull = CullMode.Off)]
+    public static class Forward
+    {
+        [Texture(0)] public static TextureCube<float4> cube;
+        [Sampler(0)] public static SamplerState cubeSampler;
+
+        [VertexShader]
+        public static Varyings Vertex([Location(VertexInputs.Position)] float3 position)
+        {
+            Varyings o;
+            float4 clip = ShaderVariables.ObjectToClip(position);
+            o.position = new float4(clip.x, clip.y, clip.w, clip.w);
+            o.direction = position;
+            return o;
+        }
+
+        [FragmentShader]
+        [return: Target(0)]
+        public static float4 Fragment(Varyings input) => cube.Sample(cubeSampler, input.direction);
     }
 }
 

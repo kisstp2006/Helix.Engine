@@ -21,6 +21,8 @@ namespace helix::engine
         const ScriptClass* GetScriptClass() const { return FindScriptClass(assemblyName, nameSpace, className); }
         // A script asset of a script class (persistent, as assets are).
         static MonoScript* FromScriptClass(const ScriptClass& script);
+        // The loaded script asset that names a script class (null: none).
+        static MonoScript* Find(const ScriptClass& script);
 
         template <class V>
         void Transfer(V& v)

@@ -7,7 +7,9 @@
 #include <Helix/Engine/Rendering/Pipeline/CommandBuffer.h>
 #include <Helix/Engine/Application/Application.h>
 #include <Helix/Engine/Rendering/Light.h>
+#include <Helix/Engine/Rendering/RenderSettings.h>
 #include <Helix/Engine/Rendering/ScreenCapture.h>
+#include <Helix/Engine/Rendering/SystemInfo.h>
 #include <Helix/Engine/Texture/Texture.h>
 
 #include <Helix/Core/Hashing/Hash.h>
@@ -15,6 +17,7 @@
 #include <Helix/Image/Codecs/Png.h>
 #include <Helix/Image/Texture/Convert.h>
 #include <Helix/Platform/IO/FileSystem.h>
+#include <Helix/Scripting/Bindings/Interop.h>
 
 #include <algorithm>
 #include <cmath>
@@ -464,11 +467,13 @@ namespace helix::engine
                     g->msaa = s.device->CreateTexture({.format = g->colorFormat, .width = g->width, .height = g->height, .sampleCount = g->samples,
                                                        .usage = rhi::TextureRenderTarget, .debugName = texture.Name()});
             }
+            // A render texture without color is sampled through its depth (a shadow map with a comparison sampler).
+            bool depthSampled = g->colorFormat == rhi::Format::Unknown && g->samples == 1 && type != rhi::TextureType::Texture3D;
             if (g->depthFormat != rhi::Format::Unknown)
                 g->depth = s.device->CreateTexture({.type = type == rhi::TextureType::Texture3D ? rhi::TextureType::Texture2D : type,
                                                     .format = g->depthFormat, .width = g->width, .height = g->height,
                                                     .depthOrLayers = type == rhi::TextureType::Texture2DArray ? g->layers : 1u, .sampleCount = g->samples,
-                                                    .usage = rhi::TextureDepthStencil, .debugName = texture.Name()});
+                                                    .usage = rhi::TextureDepthStencil | (depthSampled ? rhi::TextureSampled : 0u), .debugName = texture.Name()});
             const TextureSettings& st = texture.settings();
             rhi::SamplerDesc sd;
             sd.minFilter = sd.magFilter = st.filterMode == FilterMode::Point ? rhi::Filter::Nearest : rhi::Filter::Linear;
@@ -477,6 +482,13 @@ namespace helix::engine
             sd.addressV = Address(st.wrapV);
             sd.addressW = Address(st.wrapW);
             g->sampled.texture = g->color;
+            if (depthSampled)
+            {
+                g->sampled.texture = g->depth;
+                sd.compare = d.shadowSamplingMode == ShadowSamplingMode::CompareDepths;
+                sd.compareFunction = rhi::CompareFunction::LessEqual;
+                sd.mipFilter = rhi::Filter::Nearest;
+            }
             g->sampled.sampler = s.device->CreateSampler(sd);
             g->sampled.version = version;
             return g;
@@ -512,12 +524,15 @@ namespace helix::engine
             return g ? &g->sampled : nullptr;
         }
 
+        const GpuTexture* CubeTextureOf(Texture& texture);
+
         const GpuTexture* TextureOf(Texture& texture)
         {
             static HashMap<u32, TextureSource> sources = [] {
                 HashMap<u32, TextureSource> m;
                 m.Set(ClassOf<Texture>(), &PixelTextureOf);
                 m.Set(ClassOf<RenderTexture>(), &RenderTextureOf);
+                m.Set(ClassOf<Cubemap>(), &CubeTextureOf);
                 return m;
             }();
             for (u32 k = texture.ClassIndex(); k != kNoClass; k = GetClass(k).base)
@@ -580,9 +595,66 @@ namespace helix::engine
             return g;
         }
 
+        // A cubemap: the top mip of its six faces in one cube texture (faces widened where the GPU lacks the format).
+        const GpuTexture* CubeTextureOf(Texture& texture)
+        {
+            RenderState& s = R();
+            GpuTexture* g = s.textures.Find(texture.GetEntityId());
+            u32 version = texture.Version() ^ (texture.updateCount() << 16);
+            if (g && g->version == version)
+                return g;
+            if (!g)
+                g = &s.textures.Set(texture.GetEntityId(), GpuTexture());
+            s.device->Destroy(g->texture);
+            s.device->Destroy(g->sampler);
+            *g = GpuTexture();
+            g->version = version;
+            const image::TextureData& d = texture.Data();
+            if (d.data.Empty() || d.subresources.Empty() || d.faces != 6 || image::IsBlockFormat(d.format))
+                return g;
+            const image::Subresource& top = d.At(0, 0, 0);
+            usize count = usize(top.width) * top.height;
+            rhi::Format format;
+            bool known = GpuFormat(d.format, texture.isDataSRGB(), format) && Supported(format, s.device->Caps());
+            image::PixelFormat to = d.format;
+            if (!known)
+            {
+                if (!image::CanConvert(d.format))
+                {
+                    HX_LOG_WARNING(RenderLog, "Cubemap '{}': its format has no GPU form here; it draws as white.", texture.Name());
+                    return g;
+                }
+                to = image::FormatInfo(d.format).kind == image::PixelKind::Float ? image::PixelFormat::RGBA32Float : image::PixelFormat::RGBA8;
+                GpuFormat(to, texture.isDataSRGB(), format);
+            }
+            usize faceBytes = count * image::FormatInfo(to).bytesPerBlock;
+            Array<u8> faces;
+            faces.Resize(faceBytes * 6);
+            for (u32 f = 0; f < 6; f++)
+            {
+                const u8* src = d.data.Data() + d.At(0, f, 0).offset;
+                if (known)
+                    std::memcpy(faces.Data() + faceBytes * f, src, faceBytes);
+                else
+                    image::ConvertPixels(d.format, src, to, faces.Data() + faceBytes * f, count);
+            }
+            g->texture = s.device->CreateTexture({.type = rhi::TextureType::TextureCube, .format = format, .width = top.width, .height = top.height,
+                                                  .depthOrLayers = 6, .usage = rhi::TextureSampled, .initialData = faces.Data(), .debugName = texture.Name()});
+            const TextureSettings& st = texture.settings();
+            rhi::SamplerDesc sd;
+            sd.minFilter = sd.magFilter = st.filterMode == FilterMode::Point ? rhi::Filter::Nearest : rhi::Filter::Linear;
+            sd.mipFilter = rhi::Filter::Nearest;
+            sd.addressU = sd.addressV = sd.addressW = rhi::AddressMode::ClampToEdge;
+            g->sampler = s.device->CreateSampler(sd);
+            s.stats.uploads++;
+            if (!texture.isReadable())
+                texture.ReleaseCpuData();
+            return g;
+        }
+
         // The pipeline of a variant for a mesh layout, a topology and the target.
         rhi::PipelineHandle PipelineOf(const ShaderVariant& v, const GpuMesh& m, rhi::PrimitiveTopology topology, const StateOverride* state,
-                                       const TargetFormats* target)
+                                       const TargetFormats* target, const shadercompiler::RenderState* passState, u64 passStateKey)
         {
             RenderState& s = R();
             TargetFormats screen;
@@ -600,8 +672,16 @@ namespace helix::engine
             for (u32 c = 0; c < target->colorCount; c++)
                 key = CombineHash(key, MixHash(u64(target->colors[c]) + 1));
             key = CombineHash(key, MixHash(u64(target->depth) | u64(target->colorCount) << 8 | u64(target->samples) << 16 | u64(target->flipped) << 24));
+            if (target->depthBias != 0 || target->depthBiasSlope != 0)
+            {
+                u32 slope;
+                std::memcpy(&slope, &target->depthBiasSlope, 4);
+                key = CombineHash(key, MixHash(u64(u32(target->depthBias)) | u64(slope) << 32));
+            }
             if (state && state->mask != RenderStateMask::Nothing)
                 key = CombineHash(key, state->hash);
+            if (passState && passStateKey)
+                key = CombineHash(key, passStateKey);
             if (rhi::PipelineHandle* p = s.pipelines.Find(key))
                 return *p;
             const GpuShader& shader = ShaderOf(v);
@@ -622,7 +702,7 @@ namespace helix::engine
             d.vertexBufferCount = k;
             d.attributeCount = k;
             d.topology = topology;
-            const shadercompiler::RenderState& st = *v.state;
+            const shadercompiler::RenderState& st = passState ? *passState : *v.state;
             d.cull = st.cull == shadercompiler::CullMode::Off     ? rhi::CullMode::None
                      : st.cull == shadercompiler::CullMode::Front ? rhi::CullMode::Front
                                                                   : rhi::CullMode::Back;
@@ -691,6 +771,8 @@ namespace helix::engine
                 d.depthClip = state->depthClip;
                 d.conservative = state->conservative;
             }
+            d.depthBias += target->depthBias;
+            d.depthBiasSlope += target->depthBiasSlope;
             for (u32 t = 0; t < target->colorCount; t++)
                 d.colorFormats[t] = target->colors[t];
             d.colorTargetCount = target->colorCount;
@@ -1000,6 +1082,8 @@ namespace helix::engine
 
     void Graphics::RenderFrame()
     {
+        // The objects C# owned whose C# objects were collected (passes, renderers) go before the frame.
+        scripting::ReleaseCollected();
         RendererManager& m = RendererManager::Get();
         m.Update();
         m.Sync();
@@ -1014,6 +1098,8 @@ namespace helix::engine
             s.queued.Clear();
             return;
         }
+        // The scene's ambient light and default reflection as the shaders' globals (frames that draw).
+        RenderSettings::ApplyGlobals();
         if ((++s.frame & 63) == 0)
             ForgetDead();
         render::BeginPersistentBlocks(s.device, s.frame);
@@ -1286,4 +1372,12 @@ namespace helix::engine
         s.shaders = HashMap<u32, GpuShader>();
         s.pipelines = HashMap<u64, rhi::PipelineHandle>();
     }
+}
+
+bool helix::engine::SystemInfo::SupportsRenderTextureFormat(RenderTextureFormat format)
+{
+    if (format == RenderTextureFormat::Depth || format == RenderTextureFormat::Shadowmap)
+        return true;
+    GraphicsFormat g = GraphicsFormatUtility::GetGraphicsFormat(format, false);
+    return g != GraphicsFormat::None && render::DeviceFormat(g) != rhi::Format::Unknown;
 }

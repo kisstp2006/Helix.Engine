@@ -50,6 +50,11 @@ namespace helix::engine
         // Unique per pass data, and how often its values were written (the renderer's persistent copies follow them).
         u64 uid = 0;
         u32 writes = 0;
+        // The pass's render state: the variant's, or with the states its material properties give (`Cull [_Cull]`)
+        // taken from the material; a key of the states taken that way (0: the variant's state as it is).
+        const shadercompiler::RenderState* state = nullptr;
+        shadercompiler::RenderState ownState;
+        u64 stateKey = 0;
     };
 
     // A property block by its id in the block table (what scripts hold).

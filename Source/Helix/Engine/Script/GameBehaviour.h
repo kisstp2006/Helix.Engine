@@ -56,6 +56,9 @@ namespace helix::engine
         void Transfer(V& v)
         {
             Base::Transfer(v);
+            // An object made in code names its class's script asset (when one is loaded).
+            if constexpr (!V::kReading)
+                FindScriptAsset();
             v.Field("m_Script", scriptAsset_);
             if constexpr (V::kReading)
                 AttachScriptAsset();
@@ -83,6 +86,8 @@ namespace helix::engine
         friend struct ScriptAccess;
         // The script of the asset m_Script names (a C# script gets its C# object).
         void AttachScriptAsset();
+        // Without a script asset: the loaded one of its script class, if any.
+        void FindScriptAsset();
 
         PPtr<MonoScript> scriptAsset_;
         const ScriptClass* script_ = nullptr;

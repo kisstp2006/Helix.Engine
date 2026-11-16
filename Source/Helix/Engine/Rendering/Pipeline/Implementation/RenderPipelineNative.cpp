@@ -5,7 +5,7 @@ namespace helix::engine
 {
     u64 RenderPipelineNative::Cull(u64 context, Camera* camera, i32 cullingMask, Matrix4x4 cullingMatrix, Span<const Plane> planes, i32 options,
                                    Vector3 origin, bool orthographic, Vector4 lod, Vector3 lodPosition, Span<const f32> layerCullDistances,
-                                   bool layerCullSpherical, i32 maximumVisibleLights)
+                                   bool layerCullSpherical, i32 maximumVisibleLights, Vector4 shadows, i32 probeSorting)
     {
         ScriptableRenderContext* c = ScriptableRenderContext::Find(context);
         if (!c)
@@ -25,6 +25,11 @@ namespace helix::engine
             p.layerCullDistances[i] = layerCullDistances[i];
         p.layerCullSpherical = layerCullSpherical;
         p.maximumVisibleLights = maximumVisibleLights;
+        p.shadowDistance = shadows.x;
+        p.shadowNearPlaneOffset = shadows.y;
+        p.conservativeEnclosingSphere = shadows.z != 0;
+        p.numIterationsEnclosingSphere = i32(shadows.w);
+        p.reflectionProbeSortingCriteria = ReflectionProbeSortingCriteria(probeSorting);
         CullingResults r = c->Cull(p);
         return u64(reinterpret_cast<uintptr_t>(r.data));
     }

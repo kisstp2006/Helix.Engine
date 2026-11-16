@@ -2,6 +2,8 @@
 #include <Helix/Engine/Rendering/Pipeline/RenderPipeline.h>
 
 #include <Helix/Engine/Script/Coroutines.h>
+#include <Helix/Engine/Asset/Resources.h>
+#include <Helix/Engine/Script/MonoScript.h>
 
 #include <Helix/Core/Logging/Log.h>
 #include <Helix/Engine/Application/Application.h>
@@ -612,6 +614,28 @@ namespace helix::engine
         m->nameSpace = script.nameSpace;
         m->assemblyName = script.assembly;
         return m;
+    }
+
+    MonoScript* MonoScript::Find(const ScriptClass& script)
+    {
+        Array<Object*> all;
+        FindObjectsOfTypeAll(ClassOf<MonoScript>(), all);
+        for (Object* o : all)
+            if (auto* m = static_cast<MonoScript*>(o); m->GetScriptClass() == &script)
+                return m;
+        return nullptr;
+    }
+
+    void GameBehaviour::FindScriptAsset()
+    {
+        if (!scriptAsset_.Get() && script_)
+            scriptAsset_ = PPtr<MonoScript>(MonoScript::Find(*script_));
+    }
+
+    void ScriptableObject::FindScriptAsset()
+    {
+        if (!scriptAsset_.Get() && script_)
+            scriptAsset_ = PPtr<MonoScript>(MonoScript::Find(*script_));
     }
 
     // ---------------------------------------------------------------------------------------------- the runtime

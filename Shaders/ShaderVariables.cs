@@ -25,6 +25,19 @@ public struct PerDraw
 {
     public float4x4 helix_ObjectToWorld;
     public float4x4 helix_WorldToObject;
+    /// <summary>y: the count of the object's lights (when the draw asks for PerObjectData.LightData or LightIndices).</summary>
+    public float4 helix_LightData;
+    /// <summary>The indices of the object's lights (the first four and the next four) by importance, in the order of the
+    /// culling's light index map.</summary>
+    public float4 helix_LightIndices0;
+    public float4 helix_LightIndices1;
+    /// <summary>The object's reflection probe (when the draw asks for PerObjectData.ReflectionProbes): the reference's
+    /// unity_SpecCube0_HDR, _BoxMax (w: blend distance), _BoxMin (w: weight) and _ProbePosition (w: 1 for box
+    /// projection); the cube is the texture unity_SpecCube0.</summary>
+    public float4 helix_SpecCube0_HDR;
+    public float4 helix_SpecCube0_BoxMax;
+    public float4 helix_SpecCube0_BoxMin;
+    public float4 helix_SpecCube0_ProbePosition;
 }
 
 /// <summary>One instance's object data in the instance block.</summary>
@@ -40,9 +53,17 @@ public struct PerInstanceArray
     private PerInstance element;
 }
 
-/// <summary>What the renderer sets per instanced draw: the object data of each instance (the draw slot's block then).</summary>
+/// <summary>What the renderer sets per instanced draw: the lights the instances share (instances have the same ones), then
+/// the object data of each instance (the draw slot's block then).</summary>
 public struct PerInstances
 {
+    public float4 helix_LightData;
+    public float4 helix_LightIndices0;
+    public float4 helix_LightIndices1;
+    public float4 helix_SpecCube0_HDR;
+    public float4 helix_SpecCube0_BoxMax;
+    public float4 helix_SpecCube0_BoxMin;
+    public float4 helix_SpecCube0_ProbePosition;
     public PerInstanceArray helix_Instances;
 }
 
@@ -54,8 +75,8 @@ public static class ShaderVariables
 {
     public const int CameraSlot = 9;
     public const int DrawSlot = 10;
-    /// <summary>The most instances of one instanced draw.</summary>
-    public const int MaxInstances = 128;
+    /// <summary>The most instances of one instanced draw (their block and the shared lights fit 16 KiB).</summary>
+    public const int MaxInstances = 127;
 
     [Uniform(CameraSlot)] public static PerCamera camera;
     [Uniform(DrawSlot)] public static PerDraw draw;
@@ -70,6 +91,28 @@ public static class ShaderVariables
     /// <summary>The object to world matrix of the object (of the instance in instanced variants).</summary>
     public static float4x4 ObjectToWorldMatrix() =>
         INSTANCING_ON ? instances.helix_Instances[(int)ShaderMath.InstanceId()].helix_ObjectToWorld : draw.helix_ObjectToWorld;
+
+    /// <summary>The count of the object's lights (zero unless the draw asks for per object light data).</summary>
+    public static int ObjectLightCount() => (int)(INSTANCING_ON ? instances.helix_LightData.y : draw.helix_LightData.y);
+
+    /// <summary>The index of the object's light number i (0 to 7, below ObjectLightCount) in the culling's light index map.</summary>
+    public static int ObjectLightIndex(int i)
+    {
+        float4 four = i < 4 ? (INSTANCING_ON ? instances.helix_LightIndices0 : draw.helix_LightIndices0)
+                            : (INSTANCING_ON ? instances.helix_LightIndices1 : draw.helix_LightIndices1);
+        int k = i & 3;
+        return (int)(k == 0 ? four.x : k == 1 ? four.y : k == 2 ? four.z : four.w);
+    }
+
+    /// <summary>The object's reflection probe as the reference's shaders name it: unity_SpecCube0_HDR (the cube's decode
+    /// values), _BoxMax (w: blend distance), _BoxMin (w: weight), _ProbePosition (w: 1 for box projection).</summary>
+    public static float4 SpecCube0HDR() => INSTANCING_ON ? instances.helix_SpecCube0_HDR : draw.helix_SpecCube0_HDR;
+
+    public static float4 SpecCube0BoxMax() => INSTANCING_ON ? instances.helix_SpecCube0_BoxMax : draw.helix_SpecCube0_BoxMax;
+
+    public static float4 SpecCube0BoxMin() => INSTANCING_ON ? instances.helix_SpecCube0_BoxMin : draw.helix_SpecCube0_BoxMin;
+
+    public static float4 SpecCube0ProbePosition() => INSTANCING_ON ? instances.helix_SpecCube0_ProbePosition : draw.helix_SpecCube0_ProbePosition;
 
     /// <summary>An object space position in clip space.</summary>
     public static float4 ObjectToClip(float3 position) =>

@@ -9,6 +9,19 @@
 // pixels to the renderer (a version counter it watches).
 namespace helix::engine
 {
+    // The faces of a cubemap (and of cube render textures).
+    HX_ENUM(Namespace = "HelixEngine")
+    enum class CubemapFace : i32
+    {
+        Unknown = -1,
+        PositiveX = 0,
+        NegativeX = 1,
+        PositiveY = 2,
+        NegativeY = 3,
+        PositiveZ = 4,
+        NegativeZ = 5,
+    };
+
     // The reference's numbers; formats without a layout in Helix.Image are refused by the constructors.
     HX_ENUM(Namespace = "HelixEngine")
     enum class TextureFormat : i32
@@ -196,6 +209,17 @@ namespace helix::engine
         Texture() = default;
         Texture(const Texture&) = default;
 
+        // The pixels of a mip of a face (face 0 for 2D textures): their bytes, reads and writes of rectangles as floats
+        // (block formats decoded for reading); false with an error on bad arguments.
+        bool Writable(StringView what) const;
+        bool Readable(StringView what) const;
+        Span<u8> MipBytes(i32 mip, u32 face = 0) const;
+        bool SetPixelBytes(const u8* data, usize size, i32 mip, u32 face = 0);
+        bool ReadRect(i32 x, i32 y, i32 w, i32 h, i32 mip, f32* rgba, StringView what, u32 face = 0) const;
+        bool WriteRect(i32 x, i32 y, i32 w, i32 h, i32 mip, const f32* rgba, StringView what, u32 face = 0);
+        // The mips made again from the top level (every face).
+        void UpdateMips(StringView what);
+
         image::TextureData data_;
         TextureSettings settings_;
         bool linear_ = false;
@@ -342,14 +366,98 @@ namespace helix::engine
 
     private:
         bool Init(i32 width, i32 height, TextureFormat format, i32 mipCount, bool linear, bool clear);
-        bool Writable(StringView what) const;
-        bool Readable(StringView what) const;
-        Span<u8> MipBytes(i32 mip) const;
-        bool SetPixelBytes(const u8* data, usize size, i32 mip);
-        // Reads a rectangle of a mip as floats (block formats decoded); false on bad arguments.
-        bool ReadRect(i32 x, i32 y, i32 w, i32 h, i32 mip, f32* rgba, StringView what) const;
-        bool WriteRect(i32 x, i32 y, i32 w, i32 h, i32 mip, const f32* rgba, StringView what);
         void Loaded(i32 width, i32 height, TextureFormat format, i32 mips);
+
+        TextureFormat format_ = TextureFormat::RGBA32;
+    };
+
+    // Six square faces (PositiveX to NegativeZ) sampled as a cube, each with its mips.
+    HX_CLASS(Namespace = "HelixEngine", Sealed)
+    class Cubemap : public Texture
+    {
+        HX_ENGINE_CLASS(Cubemap, Texture, ClassId::Cubemap, ClassNone)
+
+    public:
+        Cubemap() = default;
+        Cubemap(const Cubemap&) = default;
+
+        // new Cubemap(width, format, mipChain[, createUninitialized]); null with an error for formats the engine cannot
+        // hold. Pixels start black unless createUninitialized.
+        static Cubemap* Create(i32 width, TextureFormat format = TextureFormat::RGBA32, bool mipChain = true, bool linear = false, bool createUninitialized = false);
+        // With a mip count (-1 for the full chain).
+        static Cubemap* Create(i32 width, TextureFormat format, i32 mipCount, bool linear, bool createUninitialized);
+        HX_FUNCTION(Constructor) static Cubemap* New(i32 width, TextureFormat textureFormat, bool mipChain) { return Create(width, textureFormat, mipChain); }
+        HX_FUNCTION(Constructor) static Cubemap* New(i32 width, TextureFormat textureFormat, bool mipChain, bool createUninitialized)
+        {
+            return Create(width, textureFormat, mipChain, false, createUninitialized);
+        }
+        HX_FUNCTION(Constructor) static Cubemap* New(i32 width, TextureFormat textureFormat, i32 mipCount) { return Create(width, textureFormat, mipCount, false, false); }
+        HX_FUNCTION(Constructor) static Cubemap* New(i32 width, TextureFormat textureFormat, i32 mipCount, bool createUninitialized)
+        {
+            return Create(width, textureFormat, mipCount, false, createUninitialized);
+        }
+
+        HX_PROPERTY(SetterThrows) TextureDimension dimension() const override { return TextureDimension::Cube; }
+        HX_PROPERTY(ReadOnly) TextureFormat format() const { return format_; }
+
+        HX_FUNCTION() Color GetPixel(CubemapFace face, i32 x, i32 y, i32 mip = 0) const;
+        HX_FUNCTION(Void) bool SetPixel(CubemapFace face, i32 x, i32 y, Color color, i32 mip = 0);
+        HX_FUNCTION() Array<Color> GetPixels(CubemapFace face, i32 miplevel = 0) const;
+        HX_FUNCTION(Void) bool SetPixels(Span<const Color> colors, CubemapFace face, i32 miplevel = 0);
+        // The bytes of one mip of a face in the texture's format, as T.
+        template <class T>
+        Span<T> GetPixelData(i32 mipLevel, CubemapFace face) const
+        {
+            Span<u8> b = MipBytes(mipLevel, FaceIndex(face));
+            return Span<T>(reinterpret_cast<T*>(b.Data()), b.Size() / sizeof(T));
+        }
+        template <class T>
+        bool SetPixelData(Span<const T> data, i32 mipLevel, CubemapFace face, i32 sourceDataStartIndex = 0)
+        {
+            if (sourceDataStartIndex < 0 || usize(sourceDataStartIndex) > data.Size())
+                return SetPixelBytes(nullptr, ~usize(0), mipLevel, FaceIndex(face));
+            return SetPixelBytes(reinterpret_cast<const u8*>(data.Data() + sourceDataStartIndex), (data.Size() - usize(sourceDataStartIndex)) * sizeof(T),
+                                 mipLevel, FaceIndex(face));
+        }
+        // Where the bytes of a mip of a face are (C# views them as NativeArrays); 0 when there are none.
+        HX_FUNCTION(Internal) u64 PixelDataAddress(i32 mipLevel, CubemapFace face) const { return u64(uptr(MipBytes(mipLevel, FaceIndex(face)).Data())); }
+        HX_FUNCTION(Internal) i32 PixelDataSize(i32 mipLevel, CubemapFace face) const { return i32(MipBytes(mipLevel, FaceIndex(face)).Size()); }
+        HX_FUNCTION(Internal, Void, NativeArrays) bool SetPixelDataRaw(Span<const u8> data, i32 mipLevel, CubemapFace face)
+        {
+            return SetPixelBytes(data.Data(), data.Size(), mipLevel, FaceIndex(face));
+        }
+        // A mip of a face of another readable cubemap of the same format into a mip of a face of this one (sizes equal).
+        HX_FUNCTION(Void) bool CopyPixels(Texture* src, i32 srcElement, i32 srcMip, i32 dstFace, i32 dstMip);
+
+        // Makes the mips of every face from their top levels when updateMipmaps, then hands the pixels to the renderer;
+        // makeNoLongerReadable makes the CPU copy inaccessible.
+        HX_FUNCTION() void Apply(bool updateMipmaps = true, bool makeNoLongerReadable = false);
+        // The edge texels of the top level of each face blended with the adjacent faces' over the given width.
+        HX_FUNCTION() void SmoothEdges(i32 smoothRegionWidthInPixels = 1);
+
+        // A 1 x 1 cube of one color for every face, made on first use and kept (the default of cube shader properties).
+        static Cubemap* white();
+        static Cubemap* black();
+        static Cubemap* gray();
+
+        template <class V>
+        void Transfer(V& v)
+        {
+            Base::Transfer(v);
+            i32 w = i32(data_.width), mips = i32(data_.mips);
+            TextureFormat f = format_;
+            v.Field("m_Width", w);
+            v.Field("m_TextureFormat", f);
+            v.Field("m_MipCount", mips);
+            v.Field("m_ImageData", data_.data);
+            if constexpr (V::kReading)
+                Loaded(w, f, mips);
+        }
+
+    private:
+        static u32 FaceIndex(CubemapFace face) { return face >= CubemapFace::PositiveX && face <= CubemapFace::NegativeZ ? u32(face) : 6u; }
+        bool Init(i32 width, TextureFormat format, i32 mipCount, bool linear, bool clear);
+        void Loaded(i32 width, TextureFormat format, i32 mips);
 
         TextureFormat format_ = TextureFormat::RGBA32;
     };

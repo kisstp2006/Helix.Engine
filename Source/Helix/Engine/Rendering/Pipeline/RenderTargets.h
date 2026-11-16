@@ -2,6 +2,7 @@
 
 #include <Helix/Engine/Object/EntityId.h>
 #include <Helix/Engine/Texture/RenderTexture.h>
+#include <Helix/Engine/Texture/Texture.h>
 #include <Helix/Scripting/Bindings/Tags.h>
 
 // Where command buffers draw and what they copy: the reference's RenderTargetIdentifier (a built in target, a
@@ -67,18 +68,6 @@ namespace helix::engine
         DepthStencil = 6,
         ColorDepth = 3,
         ColorStencil = 5,
-    };
-
-    HX_ENUM(Namespace = "HelixEngine")
-    enum class CubemapFace : i32
-    {
-        Unknown = -1,
-        PositiveX = 0,
-        NegativeX = 1,
-        PositiveY = 2,
-        NegativeY = 3,
-        PositiveZ = 4,
-        NegativeZ = 5,
     };
 
     struct RenderTargetIdentifier

@@ -6,6 +6,7 @@
 #include <Helix/Engine/Rendering/Camera.h>
 #include <Helix/Engine/Rendering/LODGroup.h>
 #include <Helix/Engine/Rendering/Light.h>
+#include <Helix/Engine/Rendering/ReflectionProbe.h>
 #include <Helix/Engine/Rendering/Renderer.h>
 #include <Helix/Engine/Script/GameBehaviour.h>
 #include <Helix/Engine/Script/ScriptableObject.h>
@@ -28,6 +29,7 @@ namespace helix::engine
             &Shader::StaticClass,       &Texture::StaticClass,     &Texture2D::StaticClass,      &TimeManager::StaticClass,
             &TagManager::StaticClass,   &PlayerSettings::StaticClass, &BuildSettings::StaticClass, &GameBehaviour::StaticClass,
             &MonoScript::StaticClass,   &ScriptableObject::StaticClass, &RenderTexture::StaticClass, &LODGroup::StaticClass,
+            &ReflectionProbe::StaticClass,
         };
     }
 

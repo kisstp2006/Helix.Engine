@@ -275,7 +275,29 @@ namespace helix::engine::testing
         static inline RenderStateBlock state = RenderStateBlock();
         static inline i32 layerMask = -1;
         static inline CommandBuffer* extra = nullptr;
+        // The skybox list after the opaques.
+        static inline bool skybox = false;
+        // The skybox through ScriptableRenderContext.DrawSkybox instead of a list.
+        static inline bool drawSkybox = false;
+        // The first visible light's cascades (0: none): split, its casters culled per split, each split's shadow list
+        // drawn; the second split's planes moved away from every caster when awayFromCasters.
+        static inline i32 shadowSplits = 0;
+        static inline bool awayFromCasters = false;
+        static inline bool shadowBounds = false;
+        static inline Bounds casterBounds = Bounds();
+        static inline ShadowSplitData splits[4] = {};
+        static inline Matrix4x4 shadowViews[4] = {}, shadowProjections[4] = {};
+        // The per object data the draws ask for; the first visible light left out of the per object lists (the others
+        // move down one).
+        static inline PerObjectData perObjectData = PerObjectData::None;
+        static inline bool dropFirstLight = false;
+        // The cascades' spheres tightened; a test's look at each camera's culling results.
+        static inline bool conservativeSphere = false;
+        static inline void (*afterCull)(ScriptableRenderContext& context, CullingResults culling) = nullptr;
         // What the last frame saw.
+        static inline Array<u64> lightIds = Array<u64>();
+        static inline Array<i32> lightIndexMap = Array<i32>();
+        static inline i32 lightIndexCount = 0;
         static inline u32 visibleLights = 0;
         static inline Color lightColor = Color();
         static inline CullingResults last = CullingResults();
@@ -295,10 +317,25 @@ namespace helix::engine::testing
                 ScriptableCullingParameters parameters;
                 if (!camera->TryGetCullingParameters(parameters))
                     continue;
+                parameters.conservativeEnclosingSphere = conservativeSphere;
                 CullingResults culling = context.Cull(parameters);
                 last = culling;
+                if (afterCull)
+                    afterCull(context, culling);
                 Span<const VisibleLight> lights = culling.visibleLights();
                 visibleLights += u32(lights.Size());
+                lightIds.Clear();
+                for (const VisibleLight& l : lights)
+                    lightIds.Push(l.lightId);
+                lightIndexMap = culling.GetLightIndexMap();
+                if (dropFirstLight && !lights.Empty())
+                {
+                    Array<i32> map = lightIndexMap;
+                    for (u32 i = 0; i < map.Size(); i++)
+                        map[i] = i32(i) - 1;
+                    culling.SetLightIndexMap(map);
+                }
+                lightIndexCount = culling.lightIndexCount();
                 if (!lights.Empty())
                     lightColor = lights[0].finalColor;
                 context.SetupCameraProperties(camera);
@@ -311,8 +348,45 @@ namespace helix::engine::testing
                 DrawingSettings drawing(ShaderTagId("SRPDefaultUnlit"), sorting);
                 drawing.SetShaderPassName(1, ShaderTagId("ForwardBase"));
                 drawing.overrideMaterial = overrideMaterial;
+                drawing.perObjectData = perObjectData;
                 FilteringSettings filtering(RenderQueueRange::opaque(), layerMask);
                 context.DrawRenderers(culling, drawing, filtering, state);
+                if (shadowSplits > 0 && !lights.Empty())
+                {
+                    shadowBounds = culling.GetShadowCasterBounds(0, casterBounds);
+                    for (i32 i = 0; i < shadowSplits; i++)
+                        culling.ComputeDirectionalShadowMatricesAndCullingPrimitives(0, i, shadowSplits, Vector3(0.25f, 0.5f, 0.75f), 256, 0.5f,
+                                                                                     shadowViews[i], shadowProjections[i], splits[i]);
+                    ShadowSplitData culled[4];
+                    for (i32 i = 0; i < shadowSplits; i++)
+                        culled[i] = splits[i];
+                    if (awayFromCasters && shadowSplits > 1)
+                        culled[1].SetCullingPlane(0, Plane(Vector3(1, 0, 0), -1000.0f));
+                    LightShadowCasterCullingInfo info;
+                    info.splitLength = shadowSplits;
+                    ShadowCastersCullingInfos infos{Span<const LightShadowCasterCullingInfo>(&info, 1), Span<const ShadowSplitData>(culled, usize(shadowSplits))};
+                    context.CullShadowCasters(culling, infos);
+                    for (i32 i = 0; i < shadowSplits; i++)
+                    {
+                        ShadowDrawingSettings shadow(culling, 0, BatchCullingProjectionType::Orthographic);
+                        shadow.splitIndex = i;
+                        CommandBuffer cmd;
+                        cmd.SetName("Shadows");
+                        cmd.SetViewProjectionMatrices(shadowViews[i], shadowProjections[i]);
+                        cmd.DrawRendererList(context.CreateShadowRendererList(shadow));
+                        context.ExecuteCommandBuffer(cmd);
+                    }
+                    context.SetupCameraProperties(camera);
+                }
+                if (skybox)
+                {
+                    CommandBuffer sky;
+                    sky.SetName("Skybox");
+                    sky.DrawRendererList(context.CreateSkyboxRendererList(camera));
+                    context.ExecuteCommandBuffer(sky);
+                }
+                else if (drawSkybox)
+                    context.DrawSkybox(camera);
                 sorting.criteria = SortingCriteria::CommonTransparent;
                 drawing.sortingSettings = sorting;
                 filtering.renderQueueRange = RenderQueueRange::transparent();

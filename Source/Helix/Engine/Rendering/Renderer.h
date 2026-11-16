@@ -3,6 +3,7 @@
 #include <Helix/Engine/GameObject/GameObject.h>
 #include <Helix/Engine/Material/Material.h>
 #include <Helix/Engine/Mesh/Mesh.h>
+#include <Helix/Engine/Rendering/ReflectionProbe.h>
 
 // MeshFilter, Renderer and MeshRenderer. The components are thin: what drawing needs lives in the renderer manager's
 // dense arrays (world matrix, bounds, mesh, layer, flags), which follow the Transform system and are copied for the
@@ -142,6 +143,10 @@ namespace helix::engine
         void SetForceRenderingOff(bool value);
         HX_PROPERTY() bool allowOcclusionWhenDynamic() const { return allowOcclusionWhenDynamic_; }
         void SetAllowOcclusionWhenDynamic(bool value) { allowOcclusionWhenDynamic_ = value; }
+        HX_PROPERTY() ReflectionProbeUsage reflectionProbeUsage() const { return reflectionProbeUsage_; }
+        void SetReflectionProbeUsage(ReflectionProbeUsage value) { reflectionProbeUsage_ = value; }
+        // The probes the renderer reflects (of the enabled ones), at most two, with their weights (ReflectionProbe::ClosestProbes).
+        void GetClosestReflectionProbes(Array<ReflectionProbeBlendInfo>& result) const;
 
         // ---------------------------------------------------------------------------------------------- native
         // The mesh this renderer draws (MeshRenderer: the MeshFilter's).
@@ -168,6 +173,7 @@ namespace helix::engine
             v.Field("m_ReceiveShadows", receiveShadows_);
             v.Field("m_StaticShadowCaster", staticShadowCaster_);
             v.Field("m_AllowOcclusionWhenDynamic", allowOcclusionWhenDynamic_);
+            v.Field("m_ReflectionProbeUsage", reflectionProbeUsage_);
             v.Field("m_RenderingLayerMask", renderingLayerMask_);
             v.Field("m_RendererPriority", rendererPriority_);
             v.Field("m_Materials", materials_);
@@ -197,6 +203,7 @@ namespace helix::engine
         bool receiveShadows_ = true;
         bool staticShadowCaster_ = false;
         bool allowOcclusionWhenDynamic_ = true;
+        ReflectionProbeUsage reflectionProbeUsage_ = ReflectionProbeUsage::BlendProbes;
         bool forceRenderingOff_ = false;
         ShadowCastingMode shadowCasting_ = ShadowCastingMode::On;
         u32 renderingLayerMask_ = 1;

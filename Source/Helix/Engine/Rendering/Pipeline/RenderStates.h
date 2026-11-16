@@ -1,7 +1,9 @@
 #pragma once
 
+#include <Helix/Core/Containers/Array.h>
 #include <Helix/Engine/Object/EntityId.h>
 #include <Helix/Engine/Rendering/Light.h>
+#include <Helix/Engine/Rendering/ReflectionProbe.h>
 #include <Helix/Engine/Shader/ShaderKeywords.h>
 #include <Helix/Math/Color.h>
 #include <Helix/Math/Geometry.h>
@@ -13,6 +15,9 @@
 // hands them over as these.
 namespace helix::engine
 {
+    // Texture.h.
+    enum class CubemapFace : i32;
+
     class Camera;
     class Material;
     class Shader;
@@ -206,6 +211,9 @@ namespace helix::engine
 
     inline bool HasFlag(SortingCriteria all, SortingCriteria flag) { return (i32(all) & i32(flag)) != 0; }
     inline bool HasFlag(RenderStateMask all, RenderStateMask flag) { return (i32(all) & i32(flag)) != 0; }
+    inline bool HasFlag(PerObjectData all, PerObjectData flag) { return (i32(all) & i32(flag)) != 0; }
+    inline bool HasFlag(CullingOptions all, CullingOptions flag) { return (i32(all) & i32(flag)) != 0; }
+    constexpr PerObjectData operator|(PerObjectData a, PerObjectData b) { return PerObjectData(i32(a) | i32(b)); }
 
     // ------------------------------------------------------------------------------------------------ settings
 
@@ -385,6 +393,17 @@ namespace helix::engine
         // else along the view direction.
         f32 layerCullDistances[32] = {};
         bool layerCullSpherical = false;
+        // How far from the camera shadows are drawn (the cascades split it).
+        f32 shadowDistance = 0;
+        // How far toward the light the casters of a split are kept (the split's near side is open, so every caster
+        // toward the light is kept: the value is carried).
+        f32 shadowNearPlaneOffset = 3;
+        // The order of the visible reflection probes.
+        ReflectionProbeSortingCriteria reflectionProbeSortingCriteria = ReflectionProbeSortingCriteria::ImportanceThenSize;
+        // A cascade's sphere tightened around the split's corners (numIterationsEnclosingSphere refinements) instead
+        // of the stable one centered on the view axis.
+        bool conservativeEnclosingSphere = false;
+        i32 numIterationsEnclosingSphere = 64;
 
         Plane GetCullingPlane(i32 index) const { return index >= 0 && index < cullingPlaneCount ? planes[index] : Plane(); }
         void SetCullingPlane(i32 index, const Plane& plane)
@@ -415,10 +434,33 @@ namespace helix::engine
     };
     static_assert(sizeof(VisibleLight) == 120, "VisibleLight: the layout C# reads");
 
+    // A reflection probe the camera sees: its box, transform, decode values, center (in world space), blend distance,
+    // importance, box projection and texture.
+    struct VisibleReflectionProbe
+    {
+        Bounds bounds;
+        Matrix4x4 localToWorldMatrix = Matrix4x4::identity;
+        Vector4 hdrData;
+        Vector3 center;
+        f32 blendDistance = 0;
+        i32 importance = 0;
+        i32 boxProjection = 0;
+        // The texture's and the ReflectionProbe's EntityIds.
+        u64 textureId = 0;
+        u64 probeId = 0;
+
+        bool isBoxProjection() const { return boxProjection != 0; }
+        Texture* texture() const;
+        ReflectionProbe* reflectionProbe() const;
+    };
+    static_assert(sizeof(VisibleReflectionProbe) == 144, "VisibleReflectionProbe: the layout C# reads");
+
     namespace render
     {
         struct CullingData;
     }
+
+    struct ShadowSplitData;
 
     // What Cull found: the renderers and lights inside the planes, for the context's draws (valid while the context
     // that made it renders).
@@ -427,8 +469,37 @@ namespace helix::engine
         render::CullingData* data = nullptr;
 
         Span<const VisibleLight> visibleLights() const;
+        // The visible reflection probes, in the order of the culling's sorting criteria.
+        Span<const VisibleReflectionProbe> visibleReflectionProbes() const;
+        // The per object lights and reflection probes of all visible renderers.
+        i32 lightAndReflectionProbeIndexCount() const;
         // The shadow casters of a visible light (render data indices; none for lights without shadows).
         Span<const u32> ShadowCasters(i32 visibleLightIndex) const;
         bool IsValid() const;
+
+        // The index of each visible light in the per object light lists (PerObjectData LightIndices); -1 leaves a light
+        // out of them. A map of another length than the visible lights is refused.
+        Array<i32> GetLightIndexMap() const;
+        void SetLightIndexMap(Span<const i32> lightIndexMap);
+        // The per object light indices of all visible renderers.
+        i32 lightIndexCount() const;
+
+        // The bounds of a visible light's shadow casters (false: it has none).
+        bool GetShadowCasterBounds(i32 lightIndex, Bounds& outBounds) const;
+        // A cascade of a directional light: the split of the shadow distance (splitRatio the ends of the first three
+        // splits as fractions of it), the light's view and projection fitting the split's bounding sphere (texel
+        // snapped for the resolution) and the split's culling sphere and planes. False when the light is no visible
+        // directional light or the camera is gone.
+        bool ComputeDirectionalShadowMatricesAndCullingPrimitives(i32 activeLightIndex, i32 splitIndex, i32 splitCount, Vector3 splitRatio,
+                                                                  i32 shadowResolution, f32 shadowNearPlaneOffset, Matrix4x4& viewMatrix,
+                                                                  Matrix4x4& projMatrix, ShadowSplitData& shadowSplitData) const;
+        // A spot light: its view from the light along its axis and the perspective over its cone (the light's shadow near
+        // plane to its range), the split's sphere around the cone and the planes of its sides and far end.
+        bool ComputeSpotShadowMatricesAndCullingPrimitives(i32 activeLightIndex, Matrix4x4& viewMatrix, Matrix4x4& projMatrix,
+                                                           ShadowSplitData& shadowSplitData) const;
+        // A point light's cube face: the view along the face's axis (the cube map's up vectors) and a 90 degree
+        // perspective widened by fovBias; the split's sphere is the light's range.
+        bool ComputePointShadowMatricesAndCullingPrimitives(i32 activeLightIndex, CubemapFace cubemapFace, f32 fovBias, Matrix4x4& viewMatrix,
+                                                            Matrix4x4& projMatrix, ShadowSplitData& shadowSplitData) const;
     };
 }

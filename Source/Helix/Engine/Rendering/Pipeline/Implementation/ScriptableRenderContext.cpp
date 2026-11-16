@@ -1,4 +1,6 @@
 #include <Helix/Engine/Rendering/Pipeline/ScriptableRenderContext.h>
+#include <Helix/Engine/Rendering/RenderSettings.h>
+#include <Helix/Engine/Rendering/Pipeline/Shadows.h>
 #include <Helix/Engine/Rendering/Pipeline/RenderPipeline.h>
 #include <Helix/Engine/Rendering/Implementation/RenderCore.h>
 #include <Helix/Engine/Rendering/Implementation/RendererManager.h>
@@ -125,6 +127,7 @@ namespace helix::engine
                 Refers::Nothing,  // DrawRendererList
                 Refers::Matrices, // DrawProcedural
                 Refers::Nothing,  // Readback
+                Refers::Nothing,  // GlobalDepthBias
             };
             static_assert(sizeof(kRefers) / sizeof(kRefers[0]) == usize(Op::Count), "a table entry per command kind");
         }
@@ -292,6 +295,13 @@ namespace helix::engine
     }
 
     void CommandBuffer::SetInvertCulling(bool invertCulling) { list_.Add(Op::InvertCulling).flag = invertCulling; }
+
+    void CommandBuffer::SetGlobalDepthBias(f32 bias, f32 slopeBias)
+    {
+        Command& c = list_.Add(Op::GlobalDepthBias);
+        c.v[0] = bias;
+        c.v[1] = slopeBias;
+    }
 
     void CommandBuffer::DrawProcedural(const Matrix4x4& matrix, Material* material, i32 shaderPass, MeshTopology topology, i32 vertexCount, i32 instanceCount,
                                        const MaterialPropertyBlock* properties)
@@ -611,6 +621,9 @@ namespace helix::engine
             HashMap<i32, EntityId> temporaries = HashMap<i32, EntityId>();
             // SetInvertCulling: front faces turned around for the draws.
             bool invertCulling = false;
+            // SetGlobalDepthBias.
+            i32 depthBias = 0;
+            f32 depthBiasSlope = 0;
         };
 
         ContextState WholeTarget()
@@ -667,6 +680,7 @@ namespace helix::engine
             HashMap<const MaterialPassData*, u32> materialBlocks = HashMap<const MaterialPassData*, u32>();
             Array<rhi::TransientAllocation> uploaded = Array<rhi::TransientAllocation>();
             u64 lastWorld = ~0ull;
+            ObjectLights lastLights;
             rhi::TransientAllocation drawBlock = rhi::TransientAllocation();
             Array<Array<u8>> blocks = Array<Array<u8>>();
             Array<MaterialPassData::TextureSlot> textures = Array<MaterialPassData::TextureSlot>();
@@ -676,17 +690,19 @@ namespace helix::engine
             HashMap<const ShaderVariant*, rhi::TransientAllocation> keywordBlocks = HashMap<const ShaderVariant*, rhi::TransientAllocation>();
             // The stencil reference set last (the device starts each submit at 0; render passes keep it).
             u32 stencilReference = 0;
-            // The target's formats with the facing turned around (SetInvertCulling).
+            // The target's formats with the facing turned around (SetInvertCulling) and the global depth bias.
             TargetFormats inverted;
         };
 
         // The formats pipelines of draws are made for: the target's, with the facing turned when culling is inverted.
         const TargetFormats* DrawFormats(Executor& e)
         {
-            if (!e.state.invertCulling)
+            if (!e.state.invertCulling && e.state.depthBias == 0 && e.state.depthBiasSlope == 0)
                 return &e.state.bound.formats;
             e.inverted = e.state.bound.formats;
-            e.inverted.flipped = !e.inverted.flipped;
+            e.inverted.flipped = e.inverted.flipped != e.state.invertCulling;
+            e.inverted.depthBias = e.state.depthBias;
+            e.inverted.depthBiasSlope = e.state.depthBiasSlope;
             return &e.inverted;
         }
 
@@ -745,9 +761,10 @@ namespace helix::engine
         }
 
         // The stencil reference of a draw: the override's where it sets stencil, else the pass's.
-        void BindStencilReference(Executor& e, const ShaderVariant& v, const StateOverride* state)
+        void BindStencilReference(Executor& e, const MaterialPassData& data, const StateOverride* state)
         {
-            u32 reference = state && HasFlag(state->mask, RenderStateMask::Stencil) ? state->stencilReference : u32(v.state->stencilReference);
+            const shadercompiler::RenderState& pass = data.state ? *data.state : *data.variant->state;
+            u32 reference = state && HasFlag(state->mask, RenderStateMask::Stencil) ? state->stencilReference : u32(pass.stencilReference);
             if (reference == e.stencilReference)
                 return;
             e.cl.SetStencilReference(reference);
@@ -948,12 +965,16 @@ namespace helix::engine
         }
 
         void BindMaterial(Executor& e, const MaterialPassData& data, const PropertySheet* block);
+        void BindProbe(Executor& e, const ShaderVariant& v, u64 probeTexture);
 
         // One submesh with one pass's data: the camera block, its matrices, the material's blocks (once per pass data
         // in a Submit; a property block makes its own), textures and dynamic keywords.
         void DrawOne(Executor& e, Mesh& mesh, u32 submesh, const MaterialPassData& data, const Matrix4x4& world, u64 worldKey,
-                     const PropertySheet* block, const StateOverride* state, i32 renderIndex = -1, u32 instances = 1)
+                     const PropertySheet* block, const StateOverride* state, i32 renderIndex = -1, u32 instances = 1,
+                     const ObjectLights* objectLights = nullptr, u64 probeTexture = 0)
         {
+            static const ObjectLights kNoLights;
+            const ObjectLights& lights = objectLights ? *objectLights : kNoLights;
             const ShaderVariant& v = *data.variant;
             const GpuMesh* gm = MeshOf(mesh);
             if (!gm->vertices.IsValid() || !gm->indices.IsValid() || submesh >= gm->subs.Size() || gm->subs[submesh].count == 0)
@@ -961,8 +982,8 @@ namespace helix::engine
             EnsurePass(e);
             UploadCamera(e);
             const GpuMesh::Sub& sub = gm->subs[submesh];
-            BindPipeline(e, PipelineOf(v, *gm, sub.topology, state, DrawFormats(e)));
-            BindStencilReference(e, v, state);
+            BindPipeline(e, PipelineOf(v, *gm, sub.topology, state, DrawFormats(e), data.state, data.stateKey));
+            BindStencilReference(e, data, state);
             u32 k = 0;
             for (const shadercompiler::ReflectedValue& in : v.reflection.vertexInputs)
             {
@@ -979,24 +1000,46 @@ namespace helix::engine
             BindUniform(e, 9, e.cameraBlock);
             bool persistent = PersistentBlocksEnabled();
             if (persistent && renderIndex >= 0)
-                BindUniform(e, 10, ObjectBlockPart(e.cl, u32(renderIndex)), u32(sizeof(Matrix4x4) * 2));
+                BindUniform(e, 10, ObjectBlockPart(e.cl, u32(renderIndex), lights), kDrawBlockBytes);
             else
             {
-                if (worldKey != e.lastWorld)
+                if (worldKey != e.lastWorld || !(lights == e.lastLights))
                 {
-                    Matrix4x4 m[2] = {world, world.inverse()};
-                    Upload(m, sizeof(m), e.drawBlock);
+                    struct
+                    {
+                        Matrix4x4 m[2];
+                        ObjectLights lights;
+                    } drawBlock{{world, world.inverse()}, lights};
+                    Upload(&drawBlock, sizeof(drawBlock), e.drawBlock);
                     e.lastWorld = worldKey;
+                    e.lastLights = lights;
                 }
                 BindUniform(e, 10, e.drawBlock);
             }
             BindMaterial(e, data, block);
+            BindProbe(e, v, probeTexture);
             e.cl.DrawIndexed(sub.count, instances, sub.start, sub.baseVertex);
             RenderStats& stats = Stats();
             stats.drawCalls++;
             stats.triangles += u64(sub.count / 3) * instances;
             if (persistent && renderIndex >= 0 && !block)
                 stats.persistentDraws++;
+        }
+
+        // An object's reflection probe cube in the variant's unity_SpecCube0 (0: the material bound the scene's, the
+        // global).
+        void BindProbe(Executor& e, const ShaderVariant& v, u64 probeTexture)
+        {
+            if (!probeTexture)
+                return;
+            for (const shadercompiler::ReflectedResource& r : v.reflection.resources)
+                if (r.kind == shadercompiler::ResourceKind::Texture && r.name == StringView("unity_SpecCube0"))
+                {
+                    Texture* tex = EntityIdToObject<Texture>(EntityId::FromULong(probeTexture));
+                    const GpuTexture* gt = tex ? TextureOf(*tex) : nullptr;
+                    if (gt && gt->texture.IsValid())
+                        BindTexture(e, r.slot, gt->texture, gt->sampler);
+                }
         }
 
         // A pass's material blocks (once per pass data in a Submit; a property block makes its own), textures and the
@@ -1071,9 +1114,11 @@ namespace helix::engine
                 }
         }
 
-        // The most instances of one draw (ShaderVariables.MaxInstances) and the size of their block.
-        constexpr u32 kMaxInstances = 128;
+        // The most instances of one draw (ShaderVariables.MaxInstances) and the size of each in their block, which
+        // starts with the lights the instances share (within the 16 KiB a uniform block may always have).
+        constexpr u32 kMaxInstances = 127;
         constexpr u32 kInstanceBytes = 2 * sizeof(Matrix4x4);
+        static_assert(sizeof(ObjectLights) + kMaxInstances * kInstanceBytes <= 16384);
 
         bool TakesInstancing(const Material& m)
         {
@@ -1084,7 +1129,7 @@ namespace helix::engine
 
         // One draw of a submesh for several objects: the INSTANCING_ON variant reads each one's matrices by instance id.
         bool DrawInstanced(Executor& e, Mesh& mesh, u32 submesh, Material& material, const MaterialPassData& data, Span<const Matrix4x4* const> worlds,
-                           const StateOverride* state)
+                           const StateOverride* state, const ObjectLights* lights = nullptr, u64 probeTexture = 0)
         {
             const MaterialPassData* instanced = material.GetPassData(data.pass, e.shaderTarget, true);
             const GpuMesh* gm = MeshOf(mesh);
@@ -1094,8 +1139,8 @@ namespace helix::engine
             EnsurePass(e);
             UploadCamera(e);
             const GpuMesh::Sub& sub = gm->subs[submesh];
-            BindPipeline(e, PipelineOf(v, *gm, sub.topology, state, DrawFormats(e)));
-            BindStencilReference(e, v, state);
+            BindPipeline(e, PipelineOf(v, *gm, sub.topology, state, DrawFormats(e), instanced->state, instanced->stateKey));
+            BindStencilReference(e, *instanced, state);
             u32 k = 0;
             for (const shadercompiler::ReflectedValue& in : v.reflection.vertexInputs)
             {
@@ -1111,10 +1156,13 @@ namespace helix::engine
             BindIndex(e, gm->indices);
             BindUniform(e, 9, e.cameraBlock);
             // The whole block is bound (its declared size), the instances fill its start.
-            rhi::TransientAllocation block = e.device.AllocateTransient(kMaxInstances * kInstanceBytes);
+            rhi::TransientAllocation block = e.device.AllocateTransient(u32(sizeof(ObjectLights)) + kMaxInstances * kInstanceBytes);
             if (!block.data)
                 return false;
             u8* out = static_cast<u8*>(block.data);
+            ObjectLights shared = lights ? *lights : ObjectLights();
+            std::memcpy(out, &shared, sizeof(shared));
+            out += sizeof(shared);
             for (const Matrix4x4* w : worlds)
             {
                 Matrix4x4 m[2] = {*w, w->inverse()};
@@ -1124,6 +1172,7 @@ namespace helix::engine
             BindUniform(e, 10, block);
             e.lastWorld = ~0ull;
             BindMaterial(e, *instanced, nullptr);
+            BindProbe(e, v, probeTexture);
             e.cl.DrawIndexed(sub.count, u32(worlds.Size()), sub.start, sub.baseVertex);
             RenderStats& stats = Stats();
             stats.drawCalls++;
@@ -1512,7 +1561,8 @@ namespace helix::engine
                 Array<u32>* more;
             };
             constexpr u32 kBuildChunk = 2048;
-            u32 chunks = (u32(cull.renderers.Size()) + kBuildChunk - 1) / kBuildChunk;
+            const Array<u32>& visible = request.shadow ? request.casters : cull.renderers;
+            u32 chunks = (u32(visible.Size()) + kBuildChunk - 1) / kBuildChunk;
             static Array<Array<u64>> found;
             static Array<Array<Item>> chunkItems;
             static Array<Array<u32>> chunkMore;
@@ -1522,7 +1572,7 @@ namespace helix::engine
                 chunkItems.Emplace();
                 chunkMore.Emplace();
             }
-            Build build{&d, cull.renderers.Data(), u32(cull.renderers.Size()), layers, renderingLayers, &request.drawing.sortingSettings, byOrder, byDistance,
+            Build build{&d, visible.Data(), u32(visible.Size()), layers, renderingLayers, &request.drawing.sortingSettings, byOrder, byDistance,
                         backToFront, &ranges, nullptr, found.Data(), chunkItems.Data(), chunkMore.Data()};
             auto passes = [](const Build& b, u32 i) {
                 const RenderData& rd = *b.d;
@@ -1642,7 +1692,8 @@ namespace helix::engine
                             add(materials[k].Get(), d.sortingOrder[i], distance, i, k < subs ? k : subs - 1);
                     }
             }
-            for (u32 q : cull.queued)
+            static const Array<u32> noQueued;
+            for (u32 q : request.shadow ? noQueued : cull.queued)
             {
                 if (q >= queued.Size())
                     continue;
@@ -1700,6 +1751,48 @@ namespace helix::engine
             bool instancing = request.drawing.enableInstancing;
             u32 batchLayers = request.filtering.batchLayerMask;
             static Array<const Matrix4x4*> worlds;
+            // The lights of an item's object when the draw asks for them (none in shadow lists).
+            bool wantsLights = !request.shadow && (HasFlag(request.drawing.perObjectData, PerObjectData::LightData) ||
+                                                   HasFlag(request.drawing.perObjectData, PerObjectData::LightIndices));
+            // And its reflection probe (the cube in probeTexture, 0: the scene's reflection).
+            bool wantsProbes = !request.shadow && HasFlag(request.drawing.perObjectData, PerObjectData::ReflectionProbes);
+            ObjectLights queuedLights, maskedLights;
+            u64 probeTexture = 0;
+            auto lightsOf = [&](const Item& item) -> const ObjectLights* {
+                probeTexture = 0;
+                if (!wantsLights && !wantsProbes)
+                    return nullptr;
+                u32 index = item.source & ~kQueuedBit;
+                const ObjectLights* full;
+                if (item.source & kQueuedBit)
+                {
+                    const Bounds& b = queued[index].bounds;
+                    queuedLights = LightsAt(cull, b.center, b.extents);
+                    probeTexture = ProbeAt(cull, b.center, b.extents, queuedLights);
+                    full = &queuedLights;
+                }
+                else
+                {
+                    full = &ObjectLightsOf(cull, index);
+                    probeTexture = ObjectProbeTextureOf(cull, index);
+                }
+                if (wantsLights && wantsProbes)
+                    return full;
+                maskedLights = *full;
+                if (!wantsLights)
+                {
+                    std::memset(maskedLights.data, 0, sizeof(maskedLights.data));
+                    std::memset(maskedLights.indices, 0, sizeof(maskedLights.indices));
+                }
+                if (!wantsProbes)
+                {
+                    ObjectLights none;
+                    std::memcpy(maskedLights.probe, none.probe, sizeof(none.probe));
+                    maskedLights.probe[0] = cull.reflectionIntensity;
+                    probeTexture = 0;
+                }
+                return &maskedLights;
+            };
             for (u32 at = 0; at < order.Size();)
             {
                 const Item& item = items[order[at].item()];
@@ -1712,6 +1805,9 @@ namespace helix::engine
                 }
                 // Consecutive draws of the same mesh, submesh and pass without property blocks share one instanced draw.
                 u32 run = 1;
+                const ObjectLights* lights = lightsOf(item);
+                ObjectLights runLights = lights ? *lights : ObjectLights();
+                u64 runProbe = probeTexture;
                 if (instancing && !src.block && (src.layerMask & batchLayers) && TakesInstancing(*item.material))
                 {
                     worlds.Clear();
@@ -1724,11 +1820,14 @@ namespace helix::engine
                         Source s2 = sourceOf(next);
                         if (s2.mesh != src.mesh || s2.block || !(s2.layerMask & batchLayers))
                             break;
+                        // Instances share their lights and probe.
+                        if (const ObjectLights* l2 = lightsOf(next); l2 && (!(*l2 == runLights) || probeTexture != runProbe))
+                            break;
                         worlds.Push(s2.world);
                         run++;
                     }
                 }
-                if (run > 1 && DrawInstanced(e, *mesh, item.submesh, *item.material, *item.data, worlds, stateOf(item)))
+                if (run > 1 && DrawInstanced(e, *mesh, item.submesh, *item.material, *item.data, worlds, stateOf(item), &runLights, runProbe))
                 {
                     at += run;
                     continue;
@@ -1736,7 +1835,7 @@ namespace helix::engine
                 bool isQueued = (item.source & kQueuedBit) != 0;
                 u32 index = item.source & ~kQueuedBit;
                 DrawOne(e, *mesh, item.submesh, *item.data, *src.world, u64(item.source), src.block, stateOf(item), isQueued ? -1 : i32(index),
-                        isQueued ? queued[index].instances : 1u);
+                        isQueued ? queued[index].instances : 1u, &runLights, runProbe);
                 at++;
             }
         }
@@ -1868,6 +1967,12 @@ namespace helix::engine
 
         void RunInvertCulling(Executor& e, const Command& c) { e.state.invertCulling = c.flag; }
 
+        void RunGlobalDepthBias(Executor& e, const Command& c)
+        {
+            e.state.depthBias = i32(std::lround(c.v[0]));
+            e.state.depthBiasSlope = c.v[1];
+        }
+
         void RunDrawProcedural(Executor& e, const Command& c)
         {
             Mesh* mesh = EntityIdToObject<Mesh>(c.object);
@@ -1894,6 +1999,39 @@ namespace helix::engine
             render::ArmReadback(u64(u32(c.a)) | u64(u32(c.b)) << 32);
         }
 
+        // A cube around the origin seen from inside (its faces wound for a camera within it).
+        Mesh* SkyboxCube()
+        {
+            static EntityId id;
+            if (Mesh* m = EntityIdToObject<Mesh>(id))
+                return m;
+            Mesh* m = Mesh::Create();
+            m->SetName("SkyboxCube");
+            m->SetPersistent(true);
+            m->hideFlags = HideFlags::HideAndDontSave;
+            const Vector3 v[] = {{-1, -1, -1}, {1, -1, -1}, {1, 1, -1}, {-1, 1, -1}, {-1, -1, 1}, {1, -1, 1}, {1, 1, 1}, {-1, 1, 1}};
+            // Each face's two triangles, clockwise seen from inside.
+            const i32 t[] = {0, 3, 2, 0, 2, 1, 4, 5, 6, 4, 6, 7, 0, 4, 7, 0, 7, 3, 1, 2, 6, 1, 6, 5, 3, 7, 6, 3, 6, 2, 0, 1, 5, 0, 5, 4};
+            m->SetVertices(Span<const Vector3>(v, 8));
+            m->SetTriangles(Span<const i32>(t, 36));
+            m->RecalculateBounds();
+            id = m->GetEntityId();
+            return m;
+        }
+
+        // The skybox material on the cube around the camera, sized within its clip planes.
+        void RunDrawSkybox(Executor& e, const DrawRequest& request)
+        {
+            Camera* camera = EntityIdToObject<Camera>(request.skyboxCamera);
+            Material* material = EntityIdToObject<Material>(request.skyboxMaterial);
+            if (!camera || !material)
+                return;
+            f32 n = camera->nearClipPlane(), f = camera->farClipPlane();
+            f32 scale = (n + f) * 0.5f / 1.7320508f;
+            Matrix4x4 world = Matrix4x4::TRS(camera->transform()->position(), Quaternion::identity, Vector3(scale, scale, scale));
+            DrawPasses(e, *SkyboxCube(), 0, material, -1, world, (1ull << 63) | ++e.drawSerial, nullptr);
+        }
+
         void RunDrawRendererList(Executor& e, const Command& c)
         {
             u64 id = u64(u32(c.a)) | u64(u32(c.b)) << 32;
@@ -1908,7 +2046,10 @@ namespace helix::engine
                 HX_LOG_ERROR(ContextLog, "DrawRendererList: the renderer list is not valid (its context ended, or it was never made).");
                 return;
             }
-            RunDrawRenderers(e, *request);
+            if (request->skyboxCamera.IsValid())
+                RunDrawSkybox(e, *request);
+            else
+                RunDrawRenderers(e, *request);
         }
 
         void RunGlobalArray(Executor& e, const Command& c)
@@ -2078,7 +2219,7 @@ namespace helix::engine
             EnsurePass(e);
             UploadCamera(e);
             static const GpuMesh kNoVertices{};
-            e.cl.SetPipeline(PipelineOf(*data->variant, kNoVertices, rhi::PrimitiveTopology::TriangleList, nullptr, &e.state.bound.formats));
+            e.cl.SetPipeline(PipelineOf(*data->variant, kNoVertices, rhi::PrimitiveTopology::TriangleList, nullptr, &e.state.bound.formats, data->state, data->stateKey));
             e.cl.SetUniformBuffer(9, e.cameraBlock);
             BindMaterial(e, *data, &block);
             e.cl.Draw(3);
@@ -2273,7 +2414,7 @@ namespace helix::engine
             RunGlobalVector,  RunGlobalMatrix, RunGlobalTexture, RunKeyword,    RunDrawMesh,       RunDrawRenderer,         RunBeginSample,
             RunEndSample,     RunSetTarget,    RunBlit,        RunCopyTexture,  RunResolveTarget,  RunGenerateMips,         RunGetTemporary,
             RunReleaseTemporary, RunGlobalTextureTarget, RunDrawRenderersCommand, RunSetupCamera, RunRenderObjects, RunDrawMeshInstanced,
-            RunInvertCulling, RunGlobalArray, RunDrawRendererList, RunDrawProcedural, RunReadback,
+            RunInvertCulling, RunGlobalArray, RunDrawRendererList, RunDrawProcedural, RunReadback, RunGlobalDepthBias,
         };
         static_assert(sizeof(kRun) / sizeof(kRun[0]) == usize(Op::Count), "a table entry per command kind");
 
@@ -2498,11 +2639,24 @@ namespace helix::engine
         data->renderers.Clear();
         data->queued.Clear();
         data->lights.Clear();
+        data->probes.Clear();
+        data->objectProbeTextures.Clear();
+        data->reflectionIntensity = RenderSettings::reflectionIntensity();
         data->casters.Clear();
         data->casterStart.Clear();
+        data->lightSplits.Clear();
+        for (Array<u32>& split : data->splitCasters)
+            split.Clear();
+        data->lightIndexMap.Clear();
+        data->objectLightSlot.Clear();
+        data->objectLights.Clear();
         culling_.Push(data);
         data->camera = parameters.camera;
         data->origin = parameters.origin;
+        data->shadowDistance = parameters.shadowDistance;
+        data->shadowNearPlaneOffset = parameters.shadowNearPlaneOffset;
+        data->conservativeEnclosingSphere = parameters.conservativeEnclosingSphere;
+        data->numIterationsEnclosingSphere = parameters.numIterationsEnclosingSphere;
         RenderData& d = RendererManager::Get().RenderMutable();
         // LOD levels of the groups for this camera.
         static Array<u8> lodLevels;
@@ -2557,6 +2711,46 @@ namespace helix::engine
                 in = Inside(parameters.planes[k], item.bounds.center, item.bounds.extents);
             if (in)
                 data->queued.Push(q);
+        }
+        // Reflection probes whose box is inside the planes, on the culled layers, in the parameters' order.
+        if (HasFlag(parameters.cullingOptions, CullingOptions::NeedsReflectionProbes))
+        {
+            for (ReflectionProbe* p : ReflectionProbe::EnabledProbes())
+            {
+                GameObject* go = p->gameObject();
+                Transform* t = p->transform();
+                if (!go || !t || !((1u << u32(go->layer())) & mask))
+                    continue;
+                Bounds box = p->bounds();
+                bool in = true;
+                for (i32 k = 0; in && k < planeCount; k++)
+                    in = Inside(parameters.planes[k], box.center, box.extents);
+                if (!in)
+                    continue;
+                VisibleReflectionProbe& v = data->probes.Emplace();
+                v.bounds = box;
+                v.localToWorldMatrix = t->localToWorldMatrix();
+                v.hdrData = p->textureHDRDecodeValues();
+                v.center = box.center;
+                v.blendDistance = p->blendDistance();
+                v.importance = p->importance();
+                v.boxProjection = p->boxProjection() ? 1 : 0;
+                v.textureId = p->texture() ? EntityId::ToULong(p->texture()->GetEntityId()) : 0;
+                v.probeId = EntityId::ToULong(p->GetEntityId());
+            }
+            ReflectionProbeSortingCriteria criteria = parameters.reflectionProbeSortingCriteria;
+            auto volume = [](const VisibleReflectionProbe& v) {
+                Vector3 s = v.bounds.size();
+                return s.x * s.y * s.z;
+            };
+            if (criteria != ReflectionProbeSortingCriteria::None)
+                std::stable_sort(data->probes.begin(), data->probes.end(), [&](const VisibleReflectionProbe& a, const VisibleReflectionProbe& b) {
+                    bool byImportance = criteria != ReflectionProbeSortingCriteria::Size;
+                    bool bySize = criteria != ReflectionProbeSortingCriteria::Importance;
+                    if (byImportance && a.importance != b.importance)
+                        return a.importance > b.importance;
+                    return bySize && volume(a) < volume(b);
+                });
         }
         // Lights: directional ones always, others when their range reaches inside the planes.
         Camera* camera = EntityIdToObject<Camera>(parameters.camera);
@@ -2886,6 +3080,104 @@ namespace helix::engine
             (*r)->tagged.Push(state);
     }
 
+    void ScriptableRenderContext::DrawSkybox(Camera* camera)
+    {
+        RendererUtils::RendererList list = CreateSkyboxRendererList(camera);
+        if (!list.isValid())
+            return;
+        CommandBuffer buffer;
+        buffer.DrawRendererList(list);
+        ExecuteCommandBuffer(buffer);
+    }
+
+    RendererUtils::RendererList ScriptableRenderContext::CreateSkyboxRendererList(Camera* camera)
+    {
+        if (!camera)
+        {
+            HX_LOG_ERROR(ContextLog, "ScriptableRenderContext.CreateSkyboxRendererList: the camera is null.");
+            return {};
+        }
+        auto* r = new DrawRequest();
+        r->skyboxCamera = camera->GetEntityId();
+        if (Material* sky = RenderSettings::skybox())
+            r->skyboxMaterial = sky->GetEntityId();
+        std::lock_guard<std::mutex> lock(L().mutex);
+        u64 id = NextId();
+        L().lists.Set(id, r);
+        lists_.Push(id);
+        return {id};
+    }
+
+    void ScriptableRenderContext::CullShadowCasters(CullingResults cullingResults, const ShadowCastersCullingInfos& infos)
+    {
+        if (!cullingResults.IsValid())
+        {
+            HX_LOG_ERROR(ContextLog, "ScriptableRenderContext.CullShadowCasters: the culling results are not valid.");
+            return;
+        }
+        CullingData& c = *cullingResults.data;
+        const RenderData& d = RendererManager::Get().Render();
+        usize lights = c.lights.Size();
+        c.lightSplits.Clear();
+        c.lightSplits.Resize(lights);
+        u32 used = 0;
+        for (usize l = 0; l < lights; l++)
+        {
+            c.lightSplits[l] = -1;
+            if (l >= infos.perLightInfos.Size())
+                continue;
+            const LightShadowCasterCullingInfo& info = infos.perLightInfos[l];
+            if (info.splitLength <= 0 || info.splitStart < 0 || usize(info.splitStart + info.splitLength) > infos.splitBuffer.Size())
+                continue;
+            c.lightSplits[l] = i32(used);
+            Span<const u32> casters = cullingResults.ShadowCasters(i32(l));
+            for (i32 s = 0; s < info.splitLength; s++, used++)
+            {
+                while (c.splitCasters.Size() <= used)
+                    c.splitCasters.Emplace();
+                Array<u32>& kept = c.splitCasters[used];
+                kept.Clear();
+                const ShadowSplitData& split = infos.splitBuffer[usize(info.splitStart + s)];
+                bool all = (info.splitExclusionMask >> s) & 1u;
+                Span<const Plane> planes(split.planes, usize(Clamp(split.cullingPlaneCount, 0, ShadowSplitData::maximumCullingPlaneCount)));
+                for (u32 i : casters)
+                {
+                    Bounds b(Vector3(d.centerX[i], d.centerY[i], d.centerZ[i]), Vector3(d.extentX[i], d.extentY[i], d.extentZ[i]) * 2.0f);
+                    if (all || planes.Empty() || GeometryUtility::TestPlanes(planes, b))
+                        kept.Push(i);
+                }
+            }
+        }
+    }
+
+    RendererUtils::RendererList ScriptableRenderContext::CreateShadowRendererList(const ShadowDrawingSettings& settings)
+    {
+        const CullingResults& cull = settings.cullingResults;
+        if (!cull.IsValid() || settings.lightIndex < 0 || usize(settings.lightIndex) >= cull.data->lights.Size())
+        {
+            HX_LOG_ERROR(ContextLog, "ScriptableRenderContext.CreateShadowRendererList: the culling results or the light index are not valid.");
+            return {};
+        }
+        auto* r = new DrawRequest();
+        r->culling = cull.data;
+        r->drawing = DrawingSettings(ShaderTagId("ShadowCaster"), SortingSettings());
+        r->filtering = FilteringSettings(RenderQueueRange::all());
+        r->tagName = ShaderTagId("LightMode");
+        r->shadow = true;
+        const CullingData& c = *cull.data;
+        i32 first = usize(settings.lightIndex) < c.lightSplits.Size() ? c.lightSplits[usize(settings.lightIndex)] : -1;
+        if (first >= 0 && usize(first + settings.splitIndex) < c.splitCasters.Size())
+            r->casters = c.splitCasters[usize(first + settings.splitIndex)];
+        else
+            for (u32 i : cull.ShadowCasters(settings.lightIndex))
+                r->casters.Push(i);
+        std::lock_guard<std::mutex> lock(L().mutex);
+        u64 id = NextId();
+        L().lists.Set(id, r);
+        lists_.Push(id);
+        return {id};
+    }
+
     bool RendererUtils::RendererList::isValid() const
     {
         std::lock_guard<std::mutex> lock(L().mutex);
@@ -2997,7 +3289,210 @@ namespace helix::engine
         }
     }
 
+    render::ObjectLights render::LightsAt(const CullingData& culling, const Vector3& center, const Vector3& extent)
+    {
+        // The best lights so far, by importance (higher first; equal ones keep the visible lights' order).
+        struct Candidate
+        {
+            f32 importance;
+            i32 index;
+        };
+        Candidate best[ObjectLights::kMax];
+        u32 count = 0;
+        f32 radius = extent.magnitude();
+        for (u32 l = 0; l < culling.lights.Size(); l++)
+        {
+            i32 mapped = culling.lightIndexMap.Empty() ? i32(l) : l < culling.lightIndexMap.Size() ? culling.lightIndexMap[l] : -1;
+            if (mapped < 0)
+                continue;
+            const VisibleLight& v = culling.lights[l];
+            f32 brightness = v.finalColor.grayscale();
+            f32 importance;
+            if (v.lightType == LightType::Directional)
+                importance = 1e30f;
+            else if (v.lightType == LightType::Point || v.lightType == LightType::Spot)
+            {
+                // The distance from the light to the bounds, within its range.
+                Vector3 position = v.localToWorldMatrix.GetPosition();
+                Vector3 q = position - center;
+                Vector3 outside(std::fmax(std::fabs(q.x) - extent.x, 0.0f), std::fmax(std::fabs(q.y) - extent.y, 0.0f),
+                                std::fmax(std::fabs(q.z) - extent.z, 0.0f));
+                f32 distance2 = Vector3::Dot(outside, outside);
+                f32 range2 = v.range * v.range;
+                if (v.range <= 0 || distance2 > range2)
+                    continue;
+                if (v.lightType == LightType::Spot)
+                {
+                    // The bounds' sphere against the cone.
+                    Vector3 axis = Vector3(v.localToWorldMatrix.GetColumn(2)).normalized();
+                    Vector3 toCenter = center - position;
+                    f32 along = Vector3::Dot(toCenter, axis);
+                    f32 across = std::sqrt(std::fmax(Vector3::Dot(toCenter, toCenter) - along * along, 0.0f));
+                    f32 half = v.spotAngle * 0.5f * mathf::Deg2Rad;
+                    if (std::cos(half) * across - along * std::sin(half) > radius || along < -radius)
+                        continue;
+                }
+                // The reference's attenuation of the light at the bounds.
+                importance = brightness / (1.0f + 25.0f * distance2 / range2);
+            }
+            else
+                continue;
+            if (v.lightType == LightType::Directional)
+                importance += brightness;
+            u32 at = count;
+            while (at > 0 && best[at - 1].importance < importance)
+                at--;
+            if (at >= ObjectLights::kMax)
+                continue;
+            for (u32 k = Min(count, ObjectLights::kMax - 1); k > at; k--)
+                best[k] = best[k - 1];
+            best[at] = {importance, mapped};
+            count = Min(count + 1, ObjectLights::kMax);
+        }
+        ObjectLights out;
+        out.data[1] = f32(count);
+        for (u32 k = 0; k < count; k++)
+            out.indices[k] = f32(best[k].index);
+        return out;
+    }
+
+    const render::ObjectLights& render::ObjectLightsOf(const CullingData& culling, u32 renderIndex)
+    {
+        const RenderData& d = RendererManager::Get().Render();
+        if (renderIndex >= d.Count())
+        {
+            static const ObjectLights kNoLights;
+            return kNoLights;
+        }
+        if (culling.objectLightSlot.Size() < d.Count())
+        {
+            usize from = culling.objectLightSlot.Size();
+            culling.objectLightSlot.Resize(d.Count());
+            for (usize i = from; i < d.Count(); i++)
+                culling.objectLightSlot[i] = ~0u;
+        }
+        u32& slot = culling.objectLightSlot[renderIndex];
+        if (slot == ~0u)
+        {
+            slot = u32(culling.objectLights.Size());
+            Vector3 center(d.centerX[renderIndex], d.centerY[renderIndex], d.centerZ[renderIndex]);
+            Vector3 extent(d.extentX[renderIndex], d.extentY[renderIndex], d.extentZ[renderIndex]);
+            ObjectLights lights = LightsAt(culling, center, extent);
+            u64 texture = ProbeAt(culling, center, extent, lights);
+            culling.objectLights.Push(lights);
+            culling.objectProbeTextures.Push(texture);
+        }
+        return culling.objectLights[slot];
+    }
+
+    u64 render::ProbeAt(const CullingData& culling, const Vector3& center, const Vector3& extent, ObjectLights& lights)
+    {
+        f32* p = lights.probe;
+        const f32 none[16] = {culling.reflectionIntensity, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0};
+        std::memcpy(p, none, sizeof(none));
+        for (const VisibleReflectionProbe& v : culling.probes)
+        {
+            Vector3 lo = v.bounds.min(), hi = v.bounds.max();
+            if (center.x + extent.x < lo.x || center.x - extent.x > hi.x || center.y + extent.y < lo.y || center.y - extent.y > hi.y ||
+                center.z + extent.z < lo.z || center.z - extent.z > hi.z || !v.textureId)
+                continue;
+            Vector3 position = v.localToWorldMatrix.GetPosition();
+            const f32 found[16] = {v.hdrData.x, v.hdrData.y, v.hdrData.z, v.hdrData.w, hi.x, hi.y, hi.z, v.blendDistance, lo.x, lo.y, lo.z, 1,
+                                   position.x, position.y, position.z, v.isBoxProjection() ? 1.0f : 0.0f};
+            std::memcpy(p, found, sizeof(found));
+            return v.textureId;
+        }
+        return 0;
+    }
+
+    u64 render::ObjectProbeTextureOf(const CullingData& culling, u32 renderIndex)
+    {
+        if (renderIndex >= culling.objectLightSlot.Size())
+            return 0;
+        u32 slot = culling.objectLightSlot[renderIndex];
+        return slot < culling.objectProbeTextures.Size() ? culling.objectProbeTextures[slot] : 0;
+    }
+
+    Array<i32> CullingResults::GetLightIndexMap() const
+    {
+        Array<i32> map;
+        if (!IsValid())
+            return map;
+        map.Resize(data->lights.Size());
+        for (u32 l = 0; l < map.Size(); l++)
+            map[l] = data->lightIndexMap.Empty() ? i32(l) : l < data->lightIndexMap.Size() ? data->lightIndexMap[l] : -1;
+        return map;
+    }
+
+    void CullingResults::SetLightIndexMap(Span<const i32> lightIndexMap)
+    {
+        if (!IsValid())
+            return;
+        if (lightIndexMap.Size() != data->lights.Size())
+        {
+            HX_LOG_ERROR(ContextLog, "CullingResults.SetLightIndexMap: the map has {} entries, there are {} visible lights.", lightIndexMap.Size(),
+                         data->lights.Size());
+            return;
+        }
+        data->lightIndexMap.Clear();
+        data->lightIndexMap.Append(lightIndexMap.Data(), lightIndexMap.Size());
+        data->objectLightSlot.Clear();
+        data->objectLights.Clear();
+    }
+
+    i32 CullingResults::lightIndexCount() const
+    {
+        if (!IsValid())
+            return 0;
+        i32 total = 0;
+        for (u32 i : data->renderers)
+            total += i32(render::ObjectLightsOf(*data, i).data[1]);
+        return total;
+    }
+
     Light* VisibleLight::light() const { return EntityIdToObject<Light>(EntityId::FromULong(lightId)); }
+
+    Texture* VisibleReflectionProbe::texture() const { return EntityIdToObject<Texture>(EntityId::FromULong(textureId)); }
+
+    ReflectionProbe* VisibleReflectionProbe::reflectionProbe() const { return EntityIdToObject<ReflectionProbe>(EntityId::FromULong(probeId)); }
+
+    Span<const VisibleReflectionProbe> CullingResults::visibleReflectionProbes() const
+    {
+        if (!IsValid())
+            return {};
+        return Span<const VisibleReflectionProbe>(data->probes.Data(), data->probes.Size());
+    }
+
+    i32 CullingResults::lightAndReflectionProbeIndexCount() const
+    {
+        if (!IsValid())
+            return 0;
+        Array<ReflectionProbe*> visible;
+        for (const VisibleReflectionProbe& v : data->probes)
+            if (ReflectionProbe* p = v.reflectionProbe())
+                visible.Push(p);
+        const RenderData& d = RendererManager::Get().Render();
+        i32 total = lightIndexCount();
+        for (u32 i : data->renderers)
+        {
+            Renderer* r = EntityIdToObject<Renderer>(d.renderer[i]);
+            if (!r || visible.Empty())
+                continue;
+            Bounds b(Vector3(d.centerX[i], d.centerY[i], d.centerZ[i]), Vector3(d.extentX[i], d.extentY[i], d.extentZ[i]) * 2.0f);
+            ReflectionProbeBlendInfo found[2];
+            total += i32(ReflectionProbe::ClosestProbes(b, r->reflectionProbeUsage(), visible, found));
+        }
+        return total;
+    }
+
+    void Renderer::GetClosestReflectionProbes(Array<ReflectionProbeBlendInfo>& result) const
+    {
+        result.Clear();
+        ReflectionProbeBlendInfo found[2];
+        u32 n = ReflectionProbe::ClosestProbes(bounds(), reflectionProbeUsage_, ReflectionProbe::EnabledProbes(), found);
+        for (u32 k = 0; k < n; k++)
+            result.Push(found[k]);
+    }
 
     Span<const VisibleLight> CullingResults::visibleLights() const
     {
@@ -3014,6 +3509,200 @@ namespace helix::engine
             return {};
         u32 begin = data->casterStart[u32(visibleLightIndex)], end = data->casterStart[u32(visibleLightIndex) + 1];
         return Span<const u32>(data->casters.Data() + begin, end - begin);
+    }
+
+    bool CullingResults::GetShadowCasterBounds(i32 lightIndex, Bounds& outBounds) const
+    {
+        Span<const u32> casters = ShadowCasters(lightIndex);
+        if (casters.Empty())
+            return false;
+        const RenderData& d = RendererManager::Get().Render();
+        Vector3 lo(3.4e38f, 3.4e38f, 3.4e38f), hi(-3.4e38f, -3.4e38f, -3.4e38f);
+        for (u32 i : casters)
+        {
+            Vector3 c(d.centerX[i], d.centerY[i], d.centerZ[i]), e(d.extentX[i], d.extentY[i], d.extentZ[i]);
+            lo = Vector3::Min(lo, c - e);
+            hi = Vector3::Max(hi, c + e);
+        }
+        outBounds = Bounds((lo + hi) * 0.5f, hi - lo);
+        return true;
+    }
+
+    bool CullingResults::ComputeDirectionalShadowMatricesAndCullingPrimitives(i32 activeLightIndex, i32 splitIndex, i32 splitCount, Vector3 splitRatio,
+                                                                              i32 shadowResolution, f32 shadowNearPlaneOffset, Matrix4x4& viewMatrix,
+                                                                              Matrix4x4& projMatrix, ShadowSplitData& shadowSplitData) const
+    {
+        if (!IsValid() || activeLightIndex < 0 || usize(activeLightIndex) >= data->lights.Size() || splitCount < 1 || splitCount > 4 || splitIndex < 0 ||
+            splitIndex >= splitCount || shadowResolution <= 0)
+            return false;
+        const VisibleLight& light = data->lights[usize(activeLightIndex)];
+        Camera* camera = EntityIdToObject<Camera>(data->camera);
+        if (light.lightType != LightType::Directional || !camera)
+            return false;
+        // The split of the camera's view between the near plane and the shadow distance.
+        f32 n = camera->nearClipPlane();
+        f32 far = data->shadowDistance > 0 ? Min(data->shadowDistance, camera->farClipPlane()) : camera->farClipPlane();
+        const f32 ratios[3] = {splitRatio.x, splitRatio.y, splitRatio.z};
+        f32 from = splitIndex == 0 ? n : Max(n, ratios[splitIndex - 1] * far);
+        f32 to = splitIndex == splitCount - 1 ? far : Max(from, ratios[splitIndex] * far);
+        Matrix4x4 cameraToWorld = camera->cameraToWorldMatrix();
+        Vector3 corners[8];
+        for (u32 k = 0; k < 2; k++)
+        {
+            f32 z = k == 0 ? from : to;
+            f32 h = camera->orthographic() ? camera->orthographicSize() : z * std::tan(camera->fieldOfView() * 0.5f * 0.017453293f);
+            f32 w = h * camera->aspect();
+            for (u32 c = 0; c < 4; c++)
+                corners[k * 4 + c] = cameraToWorld.MultiplyPoint3x4(Vector3((c & 1) ? w : -w, (c & 2) ? h : -h, -z));
+        }
+        // Its bounding sphere: the center on the view axis between the ends (the same for every rotation of the camera),
+        // or, conservative, the smallest found by stepping 1 / (i + 2) toward the farthest corner (Badoiu and Clarkson).
+        Vector3 nearCenter = cameraToWorld.MultiplyPoint3x4(Vector3(0, 0, -from)), farCenter = cameraToWorld.MultiplyPoint3x4(Vector3(0, 0, -to));
+        Vector3 center = (nearCenter + farCenter) * 0.5f;
+        auto reach = [&](const Vector3& c) {
+            f32 r = 0;
+            for (const Vector3& p : corners)
+                r = Max(r, Vector3::Distance(c, p));
+            return r;
+        };
+        f32 radius = reach(center);
+        if (data->conservativeEnclosingSphere)
+        {
+            Vector3 at = center;
+            for (i32 i = 0; i < data->numIterationsEnclosingSphere; i++)
+            {
+                Vector3 farthest = corners[0];
+                for (const Vector3& p : corners)
+                    if (Vector3::Distance(at, p) > Vector3::Distance(at, farthest))
+                        farthest = p;
+                at = at + (farthest - at) * (1.0f / f32(i + 2));
+                f32 r = reach(at);
+                if (r < radius)
+                    center = at, radius = r;
+            }
+        }
+        radius = std::ceil(radius * 16.0f) / 16.0f;
+        // The light's frame: its z axis is the light's direction.
+        Vector3 forward = Vector3::Normalize(Vector3(light.localToWorldMatrix.GetColumn(2)));
+        Vector3 up = std::abs(forward.y) > 0.99f ? Vector3(0, 0, 1) : Vector3(0, 1, 0);
+        Vector3 right = Vector3::Normalize(Vector3::Cross(up, forward));
+        up = Vector3::Cross(forward, right);
+        // Snapped to whole texels of the map in the light's plane, so the shadow does not crawl when the camera moves.
+        f32 texel = 2.0f * radius / f32(shadowResolution);
+        f32 cx = std::floor(Vector3::Dot(center, right) / texel) * texel, cy = std::floor(Vector3::Dot(center, up) / texel) * texel;
+        f32 cz = Vector3::Dot(center, forward);
+        Vector3 snapped = right * cx + up * cy + forward * cz;
+        f32 back = radius + shadowNearPlaneOffset;
+        Vector3 eye = snapped - forward * back;
+        viewMatrix = render::LightView(eye, right, up, forward);
+        projMatrix = Matrix4x4::Ortho(-radius, radius, -radius, radius, 0.0f, back + radius);
+        shadowSplitData = ShadowSplitData();
+        shadowSplitData.cullingSphere = Vector4(snapped.x, snapped.y, snapped.z, radius);
+        shadowSplitData.cullingMatrix = projMatrix * viewMatrix;
+        shadowSplitData.cullingNearPlane = shadowNearPlaneOffset;
+        // The sides and the far end of the light's box (the near side open: casters toward the light still cast).
+        shadowSplitData.SetCullingPlane(0, Plane(right, snapped - right * radius));
+        shadowSplitData.SetCullingPlane(1, Plane(-right, snapped + right * radius));
+        shadowSplitData.SetCullingPlane(2, Plane(up, snapped - up * radius));
+        shadowSplitData.SetCullingPlane(3, Plane(-up, snapped + up * radius));
+        shadowSplitData.SetCullingPlane(4, Plane(-forward, snapped + forward * radius));
+        shadowSplitData.cullingPlaneCount = 5;
+        return true;
+    }
+
+    namespace
+    {
+        // The light's frame around an axis: right and up across it.
+        void LightAxes(const Vector3& forward, const Vector3& upHint, Vector3& right, Vector3& up)
+        {
+            right = Vector3::Normalize(Vector3::Cross(upHint, forward));
+            up = Vector3::Cross(forward, right);
+        }
+
+        // A split's culling from its world to projection matrix: the sides and the far end (the near side open: casters
+        // between the light and the near plane still cast).
+        void SidePlanes(const Matrix4x4& cullingMatrix, ShadowSplitData& split)
+        {
+            Plane planes[6];
+            CalculateFrustumPlanes(cullingMatrix, planes);
+            const u32 used[5] = {0, 1, 2, 3, 5};
+            for (u32 i = 0; i < 5; i++)
+                split.SetCullingPlane(i32(i), planes[used[i]]);
+            split.cullingPlaneCount = 5;
+        }
+
+        bool PerspectiveShadow(const VisibleLight& light, const Vector3& forward, const Vector3& upHint, f32 fov, Matrix4x4& viewMatrix,
+                               Matrix4x4& projMatrix, ShadowSplitData& split)
+        {
+            Light* l = light.light();
+            f32 nearPlane = Max(l ? l->shadowNearPlane() : 0.2f, 0.01f);
+            f32 range = Max(light.range, nearPlane * 2.0f);
+            Vector3 position = light.localToWorldMatrix.GetPosition();
+            Vector3 right, up;
+            LightAxes(forward, upHint, right, up);
+            viewMatrix = render::LightView(position, right, up, forward);
+            projMatrix = Matrix4x4::Perspective(fov, 1.0f, nearPlane, range);
+            split = ShadowSplitData();
+            split.cullingMatrix = projMatrix * viewMatrix;
+            split.cullingNearPlane = nearPlane;
+            SidePlanes(split.cullingMatrix, split);
+            return true;
+        }
+    }
+
+    Matrix4x4 render::LightView(const Vector3& eye, const Vector3& right, const Vector3& up, const Vector3& forward)
+    {
+        // The view along -z (as the camera's): rows right, up and -forward.
+        Matrix4x4 view = Matrix4x4::identity;
+        const Vector3 rows[3] = {right, up, -forward};
+        for (i32 r = 0; r < 3; r++)
+        {
+            view(r, 0) = rows[r].x;
+            view(r, 1) = rows[r].y;
+            view(r, 2) = rows[r].z;
+            view(r, 3) = -Vector3::Dot(rows[r], eye);
+        }
+        return view;
+    }
+
+    bool CullingResults::ComputeSpotShadowMatricesAndCullingPrimitives(i32 activeLightIndex, Matrix4x4& viewMatrix, Matrix4x4& projMatrix,
+                                                                       ShadowSplitData& shadowSplitData) const
+    {
+        if (!IsValid() || activeLightIndex < 0 || usize(activeLightIndex) >= data->lights.Size())
+            return false;
+        const VisibleLight& light = data->lights[usize(activeLightIndex)];
+        if (light.lightType != LightType::Spot)
+            return false;
+        Vector3 forward = Vector3::Normalize(Vector3(light.localToWorldMatrix.GetColumn(2)));
+        Vector3 upHint = std::abs(forward.y) > 0.99f ? Vector3(0, 0, 1) : Vector3(0, 1, 0);
+        f32 angle = mathf::Clamp(light.spotAngle, 1.0f, 179.0f);
+        if (!PerspectiveShadow(light, forward, upHint, angle, viewMatrix, projMatrix, shadowSplitData))
+            return false;
+        // The cone's sphere: around the middle of its axis, through the rim at the far end.
+        f32 range = light.range;
+        f32 rim = range * std::tan(angle * 0.5f * mathf::Deg2Rad);
+        Vector3 center = light.localToWorldMatrix.GetPosition() + forward * (range * 0.5f);
+        shadowSplitData.cullingSphere = Vector4(center.x, center.y, center.z, std::sqrt(range * range * 0.25f + rim * rim));
+        return true;
+    }
+
+    bool CullingResults::ComputePointShadowMatricesAndCullingPrimitives(i32 activeLightIndex, CubemapFace cubemapFace, f32 fovBias, Matrix4x4& viewMatrix,
+                                                                        Matrix4x4& projMatrix, ShadowSplitData& shadowSplitData) const
+    {
+        if (!IsValid() || activeLightIndex < 0 || usize(activeLightIndex) >= data->lights.Size() || i32(cubemapFace) < 0 || i32(cubemapFace) > 5)
+            return false;
+        const VisibleLight& light = data->lights[usize(activeLightIndex)];
+        if (light.lightType != LightType::Point)
+            return false;
+        // The faces' axes and the cube map's up vectors (+X, -X, +Y, -Y, +Z, -Z).
+        static const Vector3 kAxes[6] = {Vector3(1, 0, 0), Vector3(-1, 0, 0), Vector3(0, 1, 0), Vector3(0, -1, 0), Vector3(0, 0, 1), Vector3(0, 0, -1)};
+        static const Vector3 kUps[6] = {Vector3(0, -1, 0), Vector3(0, -1, 0), Vector3(0, 0, 1), Vector3(0, 0, -1), Vector3(0, -1, 0), Vector3(0, -1, 0)};
+        u32 f = u32(cubemapFace);
+        if (!PerspectiveShadow(light, kAxes[f], kUps[f], mathf::Clamp(90.0f + fovBias, 1.0f, 179.0f), viewMatrix, projMatrix, shadowSplitData))
+            return false;
+        Vector3 position = light.localToWorldMatrix.GetPosition();
+        shadowSplitData.cullingSphere = Vector4(position.x, position.y, position.z, light.range);
+        return true;
     }
 
     bool Camera::TryGetCullingParameters(ScriptableCullingParameters& out) const
@@ -3035,6 +3724,7 @@ namespace helix::engine
         out.cullingOptions = CullingOptions(i32(CullingOptions::NeedsLighting) | i32(CullingOptions::NeedsReflectionProbes) |
                                             i32(CullingOptions::ShadowCasters) | (useOcclusionCulling() ? i32(CullingOptions::OcclusionCull) : 0));
         out.lodParameters = {orthographic(), out.origin, fieldOfView(), orthographicSize(), i32(pr.height)};
+        out.shadowDistance = farClipPlane();
         Span<const f32> distances = layerCullDistances();
         for (u32 i = 0; i < 32; i++)
             out.layerCullDistances[i] = distances[i];

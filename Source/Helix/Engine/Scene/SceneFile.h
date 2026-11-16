@@ -11,6 +11,9 @@ namespace helix::engine
 {
     inline constexpr i32 kSceneRootsClassId = 1660057539;
     inline constexpr i64 kSceneRootsFileId = 9223372036854775807;
+    // The scene's RenderSettings document: the reference's class ID and fileID.
+    inline constexpr i32 kRenderSettingsClassId = 104;
+    inline constexpr i64 kRenderSettingsFileId = 2;
 
     bool WriteSceneYaml(Scene scene, String& out, String& error);
     // Player files leave the type trees out.

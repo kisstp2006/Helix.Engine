@@ -17,6 +17,9 @@ namespace helix::engine
             EntityId defaultAsset, qualityAsset;
             u32 renderingLayerMask = 1;
             RenderPipeline* pipeline = nullptr;
+            // The C# pipeline of a C++ pipeline's asset (its C# class's CreatePipeline): RenderPipelineManager's
+            // currentPipeline while the C++ one renders (a GC handle, 0 without one).
+            u64 view = 0;
             // The asset the pipeline was made of (none: the fallback), its script class's index (what the pipeline's type follows).
             EntityId asset;
             u32 script = ~0u;
@@ -165,6 +168,11 @@ namespace helix::engine
             // there too): whether the pipeline takes it, and the request processed in a context.
             u8 (*supports)(u64 pipeline, u64 request) = nullptr;
             void (*process)(u64 pipeline, u64 context, u64 request) = nullptr;
+            // Before any asset makes its pipeline: its C# EnsureGlobalSettings; after a C++ pipeline is made: the C#
+            // pipeline of the asset's C# class, as its view (a GC handle, 0 for none). The asset by its object id and
+            // type (the C# side wraps a C++ asset C# did not see yet).
+            void (*ensure)(u64 asset, u32 type) = nullptr;
+            u64 (*view)(u64 asset, u32 type) = nullptr;
         };
 
         Managed& M()
@@ -211,6 +219,13 @@ namespace helix::engine
 
         void Release(RenderPipeline* p)
         {
+            PipelineState& s = P();
+            if (s.view)
+            {
+                if (M().dispose)
+                    M().dispose(s.view);
+                s.view = 0;
+            }
             if (!p)
                 return;
             p->Dispose();
@@ -242,7 +257,13 @@ namespace helix::engine
                     HX_LOG_ERROR(PipelineLog, "Pipeline asset '{}' has no script.", asset->Name());
                 else if (!factory)
                     HX_LOG_ERROR(PipelineLog, "Pipeline asset '{}': its language's pipelines are not available.", asset->Name());
+                u64 objectId = scripting::ObjectHandles<Object>::ToId(asset);
+                u32 objectType = scripting::ObjectHandles<Object>::TypeOf(asset).value;
+                if (factory && M().ensure)
+                    M().ensure(objectId, objectType);
                 s.pipeline = factory ? factory(*asset) : nullptr;
+                if (s.pipeline && script->language == ScriptLanguage::Cpp && M().view)
+                    s.view = M().view(objectId, objectType);
             }
             s.isFallback = s.pipeline == nullptr;
             if (s.isFallback)
@@ -333,6 +354,11 @@ namespace helix::engine
             {
                 M().supports = std::bit_cast<u8 (*)(u64, u64)>(table[4]);
                 M().process = std::bit_cast<void (*)(u64, u64, u64)>(table[5]);
+            }
+            if (count >= 8)
+            {
+                M().ensure = std::bit_cast<void (*)(u64, u32)>(table[6]);
+                M().view = std::bit_cast<u64 (*)(u64, u32)>(table[7]);
             }
             Managed& m = M();
             bool first = m.create == nullptr;

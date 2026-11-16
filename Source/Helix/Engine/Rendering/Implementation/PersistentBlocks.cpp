@@ -36,6 +36,7 @@ namespace helix::engine::render
         {
             u32 version = 0;
             UniformPart part;
+            ObjectLights lights;
         };
 
         struct Blocks
@@ -162,7 +163,7 @@ namespace helix::engine::render
         return m->parts;
     }
 
-    UniformPart ObjectBlockPart(rhi::CommandList& cl, u32 renderIndex)
+    UniformPart ObjectBlockPart(rhi::CommandList& cl, u32 renderIndex, const ObjectLights& lights)
     {
         Blocks& b = B();
         const RenderData& d = RendererManager::Get().Render();
@@ -171,14 +172,20 @@ namespace helix::engine::render
         while (b.objects.Size() <= renderIndex)
             b.objects.Emplace();
         ObjectSlot& slot = b.objects[renderIndex];
-        if (slot.part.size == 0 || slot.version != d.version[renderIndex])
+        if (slot.part.size == 0 || slot.version != d.version[renderIndex] || !(slot.lights == lights))
         {
             Free(slot.part);
-            slot.part = Allocate(sizeof(Matrix4x4) * 2);
+            slot.part = Allocate(kDrawBlockBytes);
             const Matrix4x4& world = d.world[renderIndex];
-            Matrix4x4 m[2] = {world, world.inverse()};
-            Write(cl, slot.part, m, sizeof(m));
+            struct
+            {
+                Matrix4x4 m[2];
+                ObjectLights lights;
+            } block{{world, world.inverse()}, lights};
+            static_assert(sizeof(block) == kDrawBlockBytes);
+            Write(cl, slot.part, &block, sizeof(block));
             slot.version = d.version[renderIndex];
+            slot.lights = lights;
         }
         return slot.part;
     }

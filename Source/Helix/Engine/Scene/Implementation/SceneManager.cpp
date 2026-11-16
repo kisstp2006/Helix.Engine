@@ -40,6 +40,9 @@ namespace helix::engine
             LoadableSceneId loadableId;
             HashMap<EntityId, i64> fileIds;
             u64 fileIdCounter = 0;
+            // The render settings its file gave.
+            bool hasRenderSettings = false;
+            RenderSettingsData renderSettings;
         };
 
         struct Request
@@ -173,6 +176,7 @@ namespace helix::engine
             s.loadableId = LoadableSceneId();
             s.fileIds.Clear();
             s.fileIdCounter = 0;
+            s.hasRenderSettings = false;
             gState.order.Push(index);
             return index;
         }
@@ -182,6 +186,7 @@ namespace helix::engine
             SceneSlot& s = gState.slots[slot];
             s.used = false;
             s.fileIds.Clear();
+            s.hasRenderSettings = false;
             for (usize i = 0; i < gState.order.Size(); i++)
                 if (gState.order[i] == slot)
                 {
@@ -202,6 +207,12 @@ namespace helix::engine
         {
             Scene previous = MakeScene(gState.active);
             bool wasValid = gState.slots[gState.active].used;
+            // RenderSettings are the active scene's: the one going keeps what they became, the one coming applies its
+            // file's (scenes without a file's settings leave them as they are).
+            if (wasValid && gState.slots[gState.active].hasRenderSettings)
+                gState.slots[gState.active].renderSettings = RenderSettings::Capture();
+            if (gState.slots[slot].hasRenderSettings && slot != gState.active)
+                RenderSettings::Apply(gState.slots[slot].renderSettings);
             gState.active = slot;
             TransformAccess::NewRootScene() = slot;
             gState.activeSceneChanged.Invoke(wasValid ? previous : Scene(), MakeScene(slot));
@@ -429,6 +440,20 @@ namespace helix::engine
         return slot < gState.slots.Size() && gState.slots[slot].used ? &gState.slots[slot].fileIds : nullptr;
     }
 
+    void SceneAccess::SetRenderSettings(u32 slot, const RenderSettingsData& data)
+    {
+        SceneSlot& s = gState.slots[slot];
+        s.hasRenderSettings = true;
+        s.renderSettings = data;
+        if (slot == gState.active)
+            RenderSettings::Apply(data);
+    }
+
+    const RenderSettingsData* SceneAccess::RenderSettingsOf(u32 slot)
+    {
+        return slot < gState.slots.Size() && gState.slots[slot].hasRenderSettings ? &gState.slots[slot].renderSettings : nullptr;
+    }
+
     i64 SceneAccess::NewFileId(u32 slot, const HashMap<i64, EntityId>& used)
     {
         u64& counter = gState.slots[slot].fileIdCounter;
@@ -440,7 +465,7 @@ namespace helix::engine
             z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
             z ^= z >> 31;
             i64 id = i64(z >> 1);
-            if (id != 0 && id != kSceneRootsFileId && !used.Find(id))
+            if (id != 0 && id != kSceneRootsFileId && id != kRenderSettingsFileId && !used.Find(id))
                 return id;
         }
     }

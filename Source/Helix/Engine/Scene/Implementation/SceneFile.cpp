@@ -232,6 +232,8 @@ namespace helix::engine
             }
             void SetRoots(SceneRoots& roots) override { roots_ = Move(roots.m_Roots); }
 
+            void SetRenderSettings(const RenderSettingsData& data) override { SceneAccess::SetRenderSettings(slot_, data); }
+
             void AddStripped(i64 fileId, const AssetReference& source, i64 instanceFileId) override
             {
                 stripped_.Push({fileId, source, instanceFileId});
@@ -787,12 +789,17 @@ namespace helix::engine
                 Array<Made> made;
                 made.Reserve(tree.documents.Size());
                 builder.Reserve(u32(tree.documents.Size()));
-                u32 rootsDocument = yaml::kNoNode;
+                u32 rootsDocument = yaml::kNoNode, settingsDocument = yaml::kNoNode;
                 for (const yaml::Document& d : tree.documents)
                 {
                     if (d.classID == kSceneRootsClassId)
                     {
                         rootsDocument = d.root;
+                        continue;
+                    }
+                    if (d.classID == kRenderSettingsClassId)
+                    {
+                        settingsDocument = d.root;
                         continue;
                     }
                     if (d.stripped)
@@ -836,6 +843,12 @@ namespace helix::engine
                 Array<String> errors;
                 for (const Made& m : made)
                     m.object->Class().readYaml(*m.object, tree, m.root, errors, &builder.References());
+                if (settingsDocument != yaml::kNoNode)
+                {
+                    RenderSettingsData settings;
+                    if (ReadYaml(tree, settingsDocument, settings, errors, &builder.References()))
+                        builder.SetRenderSettings(settings);
+                }
                 if (rootsDocument != yaml::kNoNode)
                 {
                     SceneRoots roots;
@@ -898,7 +911,7 @@ namespace helix::engine
                 made.Reserve(f.Objects().Size());
                 at.Reserve(f.Objects().Size());
                 builder.Reserve(u32(f.Objects().Size()));
-                u32 rootsObject = kNoObject;
+                u32 rootsObject = kNoObject, settingsObject = kNoObject;
                 for (u32 i = 0; i < f.Objects().Size(); i++)
                 {
                     const SerializedObject& o = f.Objects()[i];
@@ -906,6 +919,11 @@ namespace helix::engine
                     if (classId == kSceneRootsClassId)
                     {
                         rootsObject = i;
+                        continue;
+                    }
+                    if (classId == kRenderSettingsClassId)
+                    {
+                        settingsObject = i;
                         continue;
                     }
                     // The class the object decides (a script's C++ class), else the one of its class ID.
@@ -928,6 +946,15 @@ namespace helix::engine
                     String error;
                     if (!made[k]->Class().readBinary(*made[k], f, at[k], error, &builder.References()))
                         builder.Error(Format("fileID {}: {}", f.Objects()[at[k]].fileID, error));
+                }
+                if (settingsObject != kNoObject)
+                {
+                    RenderSettingsData settings;
+                    String error;
+                    if (f.Read(settingsObject, settings, error, &builder.References()))
+                        builder.SetRenderSettings(settings);
+                    else
+                        builder.Error(Format("RenderSettings: {}", error));
                 }
                 if (rootsObject != kNoObject)
                 {
@@ -1049,6 +1076,19 @@ namespace helix::engine
         return ok;
     }
 
+    namespace
+    {
+        // A scene's render settings as its file keeps them: RenderSettings' values for the active scene, else those
+        // its file gave, else the defaults.
+        RenderSettingsData SettingsOf(Scene scene)
+        {
+            if (scene == SceneManager::GetActiveScene())
+                return RenderSettings::Capture();
+            const RenderSettingsData* kept = SceneAccess::RenderSettingsOf(scene.Slot());
+            return kept ? *kept : RenderSettingsData();
+        }
+    }
+
     bool WriteSceneYaml(Scene scene, String& out, String& error)
     {
         if (!scene.IsValid())
@@ -1069,6 +1109,9 @@ namespace helix::engine
             e.BeginDocument(info.classId, fileIds[i]);
             info.writeYaml(o, e, &table);
         }
+        RenderSettingsData settings = SettingsOf(scene);
+        e.BeginDocument(kRenderSettingsClassId, kRenderSettingsFileId);
+        WriteYaml(e, settings, &table);
         SceneRoots roots = RootsOf(c);
         e.BeginDocument(kSceneRootsClassId, kSceneRootsFileId);
         WriteYaml(e, roots, &table);
@@ -1091,6 +1134,8 @@ namespace helix::engine
             Object& o = *c.objects[i];
             o.Class().writeBinary(o, w, fileIds[i], &table);
         }
+        RenderSettingsData settings = SettingsOf(scene);
+        w.Add(kRenderSettingsFileId, kRenderSettingsClassId, settings, &table);
         SceneRoots roots = RootsOf(c);
         w.Add(kSceneRootsFileId, kSceneRootsClassId, roots, &table);
         AddExternals(table, w);

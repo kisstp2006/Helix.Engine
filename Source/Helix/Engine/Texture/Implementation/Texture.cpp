@@ -162,7 +162,7 @@ namespace helix::engine
         }
 
         // Pixels of one mip as floats, decoding block formats.
-        bool MipFloats(const image::TextureData& data, u32 mip, Array<f32>& out, String& error)
+        bool MipFloats(const image::TextureData& data, u32 mip, Array<f32>& out, String& error, u32 face = 0)
         {
             const image::TextureData* src = &data;
             image::TextureData decoded;
@@ -174,7 +174,7 @@ namespace helix::engine
             }
             if (!image::CanConvert(src->format))
                 return error = Format("pixels of {} cannot be read", image::FormatInfo(src->format).name), false;
-            const image::Subresource& s = src->At(0, 0, mip);
+            const image::Subresource& s = src->At(0, face, mip);
             out.Resize(usize(s.width) * s.height * 4);
             image::ToFloat(src->format, src->data.Data() + s.offset, out.Data(), usize(s.width) * s.height);
             return true;
@@ -348,7 +348,7 @@ namespace helix::engine
 
     // ------------------------------------------------------------------------------------------------- pixels
 
-    bool Texture2D::Readable(StringView what) const
+    bool Texture::Readable(StringView what) const
     {
         if (readable_)
             return true;
@@ -356,36 +356,55 @@ namespace helix::engine
         return false;
     }
 
-    bool Texture2D::Writable(StringView what) const
+    bool Texture::Writable(StringView what) const
     {
         if (!Readable(what))
             return false;
         if (image::IsBlockFormat(data_.format) || !image::CanConvert(data_.format))
         {
-            HX_LOG_ERROR(TextureLog, "{}: texture '{}' has the compressed format {}, its pixels can not be written.", what, name_, i32(format_));
+            HX_LOG_ERROR(TextureLog, "{}: texture '{}' has the compressed format {}, its pixels can not be written.", what, name_,
+                         image::FormatInfo(data_.format).name);
             return false;
         }
         return true;
     }
 
-    Span<u8> Texture2D::MipBytes(i32 mip) const
+    void Texture::UpdateMips(StringView what)
     {
-        if (mip < 0 || u32(mip) >= data_.mips || data_.data.Empty() || !Readable("GetPixelData"))
+        if (data_.mips <= 1 || image::IsBlockFormat(data_.format))
+            return;
+        image::MipmapSettings settings;
+        settings.srgb = !linear_;
+        image::TextureData chain;
+        String error;
+        if (!image::GenerateMipmaps(data_, settings, chain, error))
+        {
+            HX_LOG_ERROR(TextureLog, "{} on texture '{}': the mips could not be made: {}.", what, name_, error);
+            return;
+        }
+        for (u32 f = 0; f < data_.faces && f < chain.faces; f++)
+            for (u32 m = 1; m < data_.mips && m < chain.mips; m++)
+                std::memcpy(data_.Pixels(0, f, m), chain.Pixels(0, f, m), usize(data_.At(0, f, m).size));
+    }
+
+    Span<u8> Texture::MipBytes(i32 mip, u32 face) const
+    {
+        if (mip < 0 || u32(mip) >= data_.mips || face >= data_.faces || data_.data.Empty() || !Readable("GetPixelData"))
             return {};
-        const image::Subresource& s = data_.At(0, 0, u32(mip));
+        const image::Subresource& s = data_.At(0, face, u32(mip));
         return Span<u8>(const_cast<u8*>(data_.data.Data()) + s.offset, usize(s.size));
     }
 
-    bool Texture2D::SetPixelBytes(const u8* data, usize size, i32 mip)
+    bool Texture::SetPixelBytes(const u8* data, usize size, i32 mip, u32 face)
     {
         if (!Readable("SetPixelData"))
             return false;
-        if (mip < 0 || u32(mip) >= data_.mips)
+        if (mip < 0 || u32(mip) >= data_.mips || face >= data_.faces)
         {
             HX_LOG_ERROR(TextureLog, "SetPixelData: mip {} of texture '{}' does not exist.", mip, name_);
             return false;
         }
-        const image::Subresource& s = data_.At(0, 0, u32(mip));
+        const image::Subresource& s = data_.At(0, face, u32(mip));
         if (!data || size < s.size)
         {
             HX_LOG_ERROR(TextureLog, "SetPixelData: texture '{}' needs {} bytes for mip {}.", name_, s.size, mip);
@@ -396,16 +415,16 @@ namespace helix::engine
         return true;
     }
 
-    bool Texture2D::ReadRect(i32 x, i32 y, i32 w, i32 h, i32 mip, f32* rgba, StringView what) const
+    bool Texture::ReadRect(i32 x, i32 y, i32 w, i32 h, i32 mip, f32* rgba, StringView what, u32 face) const
     {
         if (!Readable(what))
             return false;
-        if (mip < 0 || u32(mip) >= data_.mips)
+        if (mip < 0 || u32(mip) >= data_.mips || face >= data_.faces)
         {
             HX_LOG_ERROR(TextureLog, "{}: mip {} of texture '{}' does not exist.", what, mip, name_);
             return false;
         }
-        const image::Subresource& s = data_.At(0, 0, u32(mip));
+        const image::Subresource& s = data_.At(0, face, u32(mip));
         if (x < 0 || y < 0 || w < 0 || h < 0 || u32(x + w) > s.width || u32(y + h) > s.height)
         {
             HX_LOG_ERROR(TextureLog, "{}: the rectangle {}, {}, {} x {} is outside mip {} of texture '{}'.", what, x, y, w, h, mip, name_);
@@ -421,7 +440,7 @@ namespace helix::engine
         }
         Array<f32> all;
         String error;
-        if (!MipFloats(data_, u32(mip), all, error))
+        if (!MipFloats(data_, u32(mip), all, error, face))
         {
             HX_LOG_ERROR(TextureLog, "{}: texture '{}': {}.", what, name_, error);
             return false;
@@ -431,16 +450,16 @@ namespace helix::engine
         return true;
     }
 
-    bool Texture2D::WriteRect(i32 x, i32 y, i32 w, i32 h, i32 mip, const f32* rgba, StringView what)
+    bool Texture::WriteRect(i32 x, i32 y, i32 w, i32 h, i32 mip, const f32* rgba, StringView what, u32 face)
     {
         if (!Writable(what))
             return false;
-        if (mip < 0 || u32(mip) >= data_.mips)
+        if (mip < 0 || u32(mip) >= data_.mips || face >= data_.faces)
         {
             HX_LOG_ERROR(TextureLog, "{}: mip {} of texture '{}' does not exist.", what, mip, name_);
             return false;
         }
-        const image::Subresource& s = data_.At(0, 0, u32(mip));
+        const image::Subresource& s = data_.At(0, face, u32(mip));
         if (x < 0 || y < 0 || w < 0 || h < 0 || u32(x + w) > s.width || u32(y + h) > s.height)
         {
             HX_LOG_ERROR(TextureLog, "{}: the rectangle {}, {}, {} x {} is outside mip {} of texture '{}'.", what, x, y, w, h, mip, name_);
@@ -609,18 +628,8 @@ namespace helix::engine
     {
         if (!Readable("Apply"))
             return;
-        if (updateMipmaps && data_.mips > 1 && !image::IsBlockFormat(data_.format))
-        {
-            image::MipmapSettings settings;
-            settings.srgb = !linear_;
-            image::TextureData chain;
-            String error;
-            if (!image::GenerateMipmaps(data_, settings, chain, error))
-                HX_LOG_ERROR(TextureLog, "Apply on texture '{}': the mips could not be made: {}.", name_, error);
-            else
-                for (u32 m = 1; m < data_.mips && m < chain.mips; m++)
-                    std::memcpy(data_.Pixels(0, 0, m), chain.Pixels(0, 0, m), usize(data_.At(0, 0, m).size));
-        }
+        if (updateMipmaps)
+            UpdateMips("Apply");
         updateCount_++;
         version_++;
         if (makeNoLongerReadable)
@@ -795,5 +804,268 @@ namespace helix::engine
         data_ = Move(table);
         format_ = format;
         version_++;
+    }
+
+    // ------------------------------------------------------------------------------------------------ Cubemap
+
+    bool Cubemap::Init(i32 width, TextureFormat format, i32 mipCount, bool linear, bool clear)
+    {
+        PixelFormat pf = ToPixelFormat(format);
+        if (pf == PixelFormat::Unknown)
+        {
+            HX_LOG_ERROR(TextureLog, "Cubemap: the format {} is not supported.", i32(format));
+            return false;
+        }
+        if (width <= 0)
+        {
+            HX_LOG_ERROR(TextureLog, "Cubemap: the width {} is not positive.", width);
+            return false;
+        }
+        u32 full = 1;
+        for (u32 w = u32(width); w > 1; w >>= 1)
+            full++;
+        u32 mips = mipCount < 0 ? full : Clamp<u32>(u32(mipCount == 0 ? 1 : mipCount), 1u, full);
+        image::TextureData data;
+        if (!data.Allocate(pf, u32(width), u32(width), 1, 1, 6, mips))
+        {
+            HX_LOG_ERROR(TextureLog, "Cubemap: {} pixels wide is too large.", width);
+            return false;
+        }
+        data.dimension = image::TextureDimension::Cube;
+        if (clear && !data.data.Empty())
+            std::memset(data.data.Data(), 0, data.data.Size());
+        data_ = Move(data);
+        format_ = format;
+        linear_ = linear;
+        version_++;
+        return true;
+    }
+
+    Cubemap* Cubemap::Create(i32 width, TextureFormat format, bool mipChain, bool linear, bool createUninitialized)
+    {
+        return Create(width, format, mipChain ? -1 : 1, linear, createUninitialized);
+    }
+
+    Cubemap* Cubemap::Create(i32 width, TextureFormat format, i32 mipCount, bool linear, bool createUninitialized)
+    {
+        auto* c = NewObject<Cubemap>();
+        if (!c->Init(width, format, mipCount, linear, !createUninitialized))
+        {
+            DestroyImmediate(c);
+            return nullptr;
+        }
+        return c;
+    }
+
+    void Cubemap::Loaded(i32 width, TextureFormat format, i32 mips)
+    {
+        Array<u8> bytes = Move(data_.data);
+        if (!Init(width, format, mips, linear_, false))
+            return;
+        if (bytes.Size() == data_.data.Size())
+            data_.data = Move(bytes);
+        else
+            HX_LOG_ERROR(TextureLog, "Cubemap '{}': its image data has {} bytes, {} expected.", name_, bytes.Size(), data_.data.Size());
+    }
+
+    Color Cubemap::GetPixel(CubemapFace face, i32 x, i32 y, i32 mip) const
+    {
+        Color c;
+        u32 f = FaceIndex(face);
+        if (f >= 6 || mip < 0 || u32(mip) >= data_.mips || data_.data.Empty())
+            return c;
+        const image::Subresource& s = data_.At(0, f, u32(mip));
+        x = Clamp(x, 0, i32(s.width) - 1);
+        y = Clamp(y, 0, i32(s.height) - 1);
+        ReadRect(x, y, 1, 1, mip, &c.r, "GetPixel", f);
+        return c;
+    }
+
+    bool Cubemap::SetPixel(CubemapFace face, i32 x, i32 y, Color color, i32 mip)
+    {
+        u32 f = FaceIndex(face);
+        if (f >= 6 || mip < 0 || u32(mip) >= data_.mips)
+            return false;
+        const image::Subresource& s = data_.At(0, f, u32(mip));
+        // Writes outside the face are dropped.
+        if (x < 0 || y < 0 || u32(x) >= s.width || u32(y) >= s.height)
+            return true;
+        return WriteRect(x, y, 1, 1, mip, &color.r, "SetPixel", f);
+    }
+
+    Array<Color> Cubemap::GetPixels(CubemapFace face, i32 miplevel) const
+    {
+        u32 f = FaceIndex(face);
+        Array<Color> out;
+        if (f >= 6 || miplevel < 0 || u32(miplevel) >= data_.mips)
+            return out;
+        const image::Subresource& s = data_.At(0, f, u32(miplevel));
+        out.Resize(usize(s.width) * s.height);
+        if (!ReadRect(0, 0, i32(s.width), i32(s.height), miplevel, &out.Data()->r, "GetPixels", f))
+            out.Clear();
+        return out;
+    }
+
+    bool Cubemap::SetPixels(Span<const Color> colors, CubemapFace face, i32 miplevel)
+    {
+        u32 f = FaceIndex(face);
+        if (f >= 6 || miplevel < 0 || u32(miplevel) >= data_.mips)
+        {
+            HX_LOG_ERROR(TextureLog, "SetPixels: face {} mip {} of cubemap '{}' does not exist.", i32(face), miplevel, name_);
+            return false;
+        }
+        const image::Subresource& s = data_.At(0, f, u32(miplevel));
+        if (colors.Size() < usize(s.width) * s.height)
+        {
+            HX_LOG_ERROR(TextureLog, "SetPixels: cubemap '{}' needs {} colors for mip {}.", name_, usize(s.width) * s.height, miplevel);
+            return false;
+        }
+        return WriteRect(0, 0, i32(s.width), i32(s.height), miplevel, &colors.Data()->r, "SetPixels", f);
+    }
+
+    bool Cubemap::CopyPixels(Texture* src, i32 srcElement, i32 srcMip, i32 dstFace, i32 dstMip)
+    {
+        auto* from = src && src->Is<Cubemap>() ? static_cast<Cubemap*>(src) : nullptr;
+        if (!from || from->format_ != format_ || srcElement < 0 || srcElement >= 6 || dstFace < 0 || dstFace >= 6)
+        {
+            HX_LOG_ERROR(TextureLog, "CopyPixels: cubemap '{}' copies faces of readable cubemaps of its format.", name_);
+            return false;
+        }
+        Span<u8> bytes = from->MipBytes(srcMip, u32(srcElement));
+        if (bytes.Empty())
+            return false;
+        return SetPixelBytes(bytes.Data(), bytes.Size(), dstMip, u32(dstFace));
+    }
+
+    void Cubemap::Apply(bool updateMipmaps, bool makeNoLongerReadable)
+    {
+        if (!Readable("Apply"))
+            return;
+        if (updateMipmaps)
+            UpdateMips("Apply");
+        updateCount_++;
+        version_++;
+        if (makeNoLongerReadable)
+            readable_ = false;
+    }
+
+    namespace
+    {
+        // The texel of a face nearest to a direction (faces as the GPU samples them: +X, -X, +Y, -Y, +Z, -Z).
+        void FaceTexel(f32 x, f32 y, f32 z, u32 size, u32& face, i32& u, i32& v)
+        {
+            f32 ax = x < 0 ? -x : x, ay = y < 0 ? -y : y, az = z < 0 ? -z : z, sc, tc, ma;
+            if (ax >= ay && ax >= az)
+                face = x > 0 ? 0 : 1, sc = x > 0 ? -z : z, tc = -y, ma = ax;
+            else if (ay >= az)
+                face = y > 0 ? 2 : 3, sc = x, tc = y > 0 ? z : -z, ma = ay;
+            else
+                face = z > 0 ? 4 : 5, sc = z > 0 ? x : -x, tc = -y, ma = az;
+            f32 s = (sc / ma + 1) * 0.5f, t = (tc / ma + 1) * 0.5f;
+            u = Clamp(i32(s * f32(size)), 0, i32(size) - 1);
+            v = Clamp(i32(t * f32(size)), 0, i32(size) - 1);
+        }
+
+        // The direction through the middle of a texel of a face.
+        void TexelDirection(u32 face, f32 s, f32 t, f32& x, f32& y, f32& z)
+        {
+            f32 sc = s * 2 - 1, tc = t * 2 - 1;
+            switch (face)
+            {
+            case 0: x = 1, y = -tc, z = -sc; break;
+            case 1: x = -1, y = -tc, z = sc; break;
+            case 2: x = sc, y = 1, z = tc; break;
+            case 3: x = sc, y = -1, z = -tc; break;
+            case 4: x = sc, y = -tc, z = 1; break;
+            default: x = -sc, y = -tc, z = -1; break;
+            }
+        }
+    }
+
+    void Cubemap::SmoothEdges(i32 smoothRegionWidthInPixels)
+    {
+        if (!Writable("SmoothEdges") || smoothRegionWidthInPixels <= 0 || data_.data.Empty())
+            return;
+        u32 size = data_.width;
+        i32 band = Min(smoothRegionWidthInPixels, i32(size / 2));
+        Array<Color> faces[6];
+        for (u32 f = 0; f < 6; f++)
+            faces[f] = GetPixels(CubemapFace(f), 0);
+        Array<Color> out[6];
+        for (u32 f = 0; f < 6; f++)
+            out[f] = faces[f];
+        // A texel within the band of an edge takes the mean of itself and the texel the adjacent face has just over
+        // the edge in its direction, weighted toward the edge.
+        for (u32 f = 0; f < 6; f++)
+            for (u32 v = 0; v < size; v++)
+                for (u32 u = 0; u < size; u++)
+                {
+                    i32 edge = Min(Min(i32(u), i32(size - 1 - u)), Min(i32(v), i32(size - 1 - v)));
+                    if (edge >= band)
+                        continue;
+                    f32 x, y, z;
+                    f32 s = (f32(u) + 0.5f) / f32(size), t = (f32(v) + 0.5f) / f32(size);
+                    // Pushed over the nearest edge by one texel, then the texel there.
+                    f32 ds = u < size - 1 - u ? -1.0f : 1.0f, dt = v < size - 1 - v ? -1.0f : 1.0f;
+                    bool horizontal = Min(u, size - 1 - u) <= Min(v, size - 1 - v);
+                    f32 s2 = horizontal ? (ds < 0 ? -0.5f / f32(size) : 1 + 0.5f / f32(size)) : s;
+                    f32 t2 = horizontal ? t : (dt < 0 ? -0.5f / f32(size) : 1 + 0.5f / f32(size));
+                    TexelDirection(f, s2, t2, x, y, z);
+                    u32 nf;
+                    i32 nu, nv;
+                    FaceTexel(x, y, z, size, nf, nu, nv);
+                    f32 w = 0.5f * (1 - f32(edge) / f32(band));
+                    const Color& a = faces[f][usize(v) * size + u];
+                    const Color& b = faces[nf][usize(nv) * size + usize(nu)];
+                    out[f][usize(v) * size + u] = Color(a.r + (b.r - a.r) * w, a.g + (b.g - a.g) * w, a.b + (b.b - a.b) * w, a.a + (b.a - a.a) * w);
+                    (void)s;
+                }
+        for (u32 f = 0; f < 6; f++)
+            SetPixels(Span<const Color>(out[f].Data(), out[f].Size()), CubemapFace(f), 0);
+    }
+
+    namespace
+    {
+        Cubemap* OneColorCube(const char* name, Color color)
+        {
+            Cubemap* c = Cubemap::Create(1, TextureFormat::RGBA32, false, false, false);
+            c->SetName(name);
+            c->SetPersistent(true);
+            c->hideFlags = HideFlags::HideAndDontSave;
+            for (u32 f = 0; f < 6; f++)
+                c->SetPixel(CubemapFace(f), 0, 0, color);
+            c->Apply(false);
+            return c;
+        }
+    }
+
+    Cubemap* Cubemap::white()
+    {
+        static EntityId id;
+        if (auto* c = EntityIdToObject<Cubemap>(id))
+            return c;
+        Cubemap* c = OneColorCube("WhiteCube", Color(1, 1, 1, 1));
+        id = c->GetEntityId();
+        return c;
+    }
+
+    Cubemap* Cubemap::black()
+    {
+        static EntityId id;
+        if (auto* c = EntityIdToObject<Cubemap>(id))
+            return c;
+        Cubemap* c = OneColorCube("BlackCube", Color(0, 0, 0, 1));
+        id = c->GetEntityId();
+        return c;
+    }
+
+    Cubemap* Cubemap::gray()
+    {
+        static EntityId id;
+        if (auto* c = EntityIdToObject<Cubemap>(id))
+            return c;
+        Cubemap* c = OneColorCube("GrayCube", Color(0.5f, 0.5f, 0.5f, 0.5f));
+        id = c->GetEntityId();
+        return c;
     }
 }

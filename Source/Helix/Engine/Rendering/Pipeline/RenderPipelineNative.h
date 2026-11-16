@@ -147,6 +147,8 @@ namespace helix::engine
         // ---------------------------------------------------------------------------------------------- context
         // False for a context that no longer renders (its calls do nothing).
         HX_FUNCTION() static bool IsContextLive(u64 context) { return ScriptableRenderContext::Find(context) != nullptr; }
+        // The size of the engine's ScriptableCullingParameters (C# reads and writes it at native addresses).
+        HX_FUNCTION() static i32 CullingParametersSize() { return i32(sizeof(ScriptableCullingParameters)); }
         HX_FUNCTION() static Array<Camera*> ContextCameras(u64 context)
         {
             Array<Camera*> out;
@@ -156,10 +158,71 @@ namespace helix::engine
             return out;
         }
         // The culling results' address (0 when invalid).
-        // `lod`: field of view, orthographic size, pixel height, orthographic (0 or 1); `lodPosition`: the camera's.
+        // `lod`: field of view, orthographic size, pixel height, orthographic (0 or 1); `lodPosition`: the camera's;
+        // `shadows`: the shadow distance, near plane offset, conservative enclosing sphere (0 or 1) and its iterations.
         HX_FUNCTION() static u64 Cull(u64 context, Camera* camera, i32 cullingMask, Matrix4x4 cullingMatrix, Span<const Plane> planes, i32 options,
                                       Vector3 origin, bool orthographic, Vector4 lod, Vector3 lodPosition, Span<const f32> layerCullDistances,
-                                      bool layerCullSpherical, i32 maximumVisibleLights);
+                                      bool layerCullSpherical, i32 maximumVisibleLights, Vector4 shadows, i32 probeSorting);
+        // Shadows (the split data, culling infos and splits as their memory: C# lays them out as C++ does).
+        HX_FUNCTION() static bool ShadowCasterBounds(u64 culling, i32 lightIndex, Bounds& bounds)
+        {
+            return CullingResults{reinterpret_cast<render::CullingData*>(uintptr_t(culling))}.GetShadowCasterBounds(lightIndex, bounds);
+        }
+        // The light index map (as many as the visible lights) into `out`, and from `map`; the per object light indices.
+        HX_FUNCTION() static void GetLightIndexMap(u64 culling, u64 out, i32 count)
+        {
+            Array<i32> map = CullingResults{reinterpret_cast<render::CullingData*>(uintptr_t(culling))}.GetLightIndexMap();
+            for (u32 i = 0; i < map.Size() && i32(i) < count; i++)
+                reinterpret_cast<i32*>(uintptr_t(out))[i] = map[i];
+        }
+        HX_FUNCTION() static void SetLightIndexMap(u64 culling, u64 map, i32 count)
+        {
+            CullingResults{reinterpret_cast<render::CullingData*>(uintptr_t(culling))}.SetLightIndexMap(
+                Span<const i32>(reinterpret_cast<const i32*>(uintptr_t(map)), usize(count > 0 ? count : 0)));
+        }
+        HX_FUNCTION() static i32 LightIndexCount(u64 culling)
+        {
+            return CullingResults{reinterpret_cast<render::CullingData*>(uintptr_t(culling))}.lightIndexCount();
+        }
+        HX_FUNCTION() static bool DirectionalShadowMatrices(u64 culling, i32 lightIndex, i32 splitIndex, i32 splitCount, Vector3 splitRatio, i32 resolution,
+                                                            f32 nearPlaneOffset, Matrix4x4& view, Matrix4x4& projection, u64 splitData)
+        {
+            return CullingResults{reinterpret_cast<render::CullingData*>(uintptr_t(culling))}.ComputeDirectionalShadowMatricesAndCullingPrimitives(
+                lightIndex, splitIndex, splitCount, splitRatio, resolution, nearPlaneOffset, view, projection,
+                *reinterpret_cast<ShadowSplitData*>(uintptr_t(splitData)));
+        }
+        HX_FUNCTION() static bool SpotShadowMatrices(u64 culling, i32 lightIndex, Matrix4x4& view, Matrix4x4& projection, u64 splitData)
+        {
+            return CullingResults{reinterpret_cast<render::CullingData*>(uintptr_t(culling))}.ComputeSpotShadowMatricesAndCullingPrimitives(
+                lightIndex, view, projection, *reinterpret_cast<ShadowSplitData*>(uintptr_t(splitData)));
+        }
+        HX_FUNCTION() static bool PointShadowMatrices(u64 culling, i32 lightIndex, i32 face, f32 fovBias, Matrix4x4& view, Matrix4x4& projection, u64 splitData)
+        {
+            return CullingResults{reinterpret_cast<render::CullingData*>(uintptr_t(culling))}.ComputePointShadowMatricesAndCullingPrimitives(
+                lightIndex, CubemapFace(face), fovBias, view, projection, *reinterpret_cast<ShadowSplitData*>(uintptr_t(splitData)));
+        }
+        HX_FUNCTION() static void CullShadowCasters(u64 context, u64 culling, u64 lightInfos, i32 lightCount, u64 splits, i32 splitCount)
+        {
+            if (ScriptableRenderContext* c = ScriptableRenderContext::Find(context))
+                c->CullShadowCasters(CullingResults{reinterpret_cast<render::CullingData*>(uintptr_t(culling))},
+                                     ShadowCastersCullingInfos{
+                                         Span<const LightShadowCasterCullingInfo>(reinterpret_cast<const LightShadowCasterCullingInfo*>(uintptr_t(lightInfos)),
+                                                                                  usize(lightCount > 0 ? lightCount : 0)),
+                                         Span<const ShadowSplitData>(reinterpret_cast<const ShadowSplitData*>(uintptr_t(splits)), usize(splitCount > 0 ? splitCount : 0))});
+        }
+        HX_FUNCTION() static u64 CreateShadowRendererList(u64 context, u64 culling, i32 lightIndex, i32 splitIndex, i32 objectsFilter, u32 batchLayerMask,
+                                                          i32 projectionType)
+        {
+            ScriptableRenderContext* c = ScriptableRenderContext::Find(context);
+            if (!c)
+                return 0;
+            ShadowDrawingSettings s(CullingResults{reinterpret_cast<render::CullingData*>(uintptr_t(culling))}, lightIndex,
+                                    BatchCullingProjectionType(projectionType));
+            s.splitIndex = splitIndex;
+            s.objectsFilter = ShadowObjectsFilter(objectsFilter);
+            s.batchLayerMask = batchLayerMask;
+            return c->CreateShadowRendererList(s).id;
+        }
         // `blends`: seven values per target after the first (write mask, the four factors, the two operations).
         HX_FUNCTION() static void DrawRenderers(u64 context, u64 culling, const DrawRendererData& data, Span<const ShaderTagId> passNames,
                                                 Material* overrideMaterial, Shader* overrideShader, Material* fallbackMaterial, Span<const i32> blends);
@@ -167,6 +230,16 @@ namespace helix::engine
         HX_FUNCTION() static u64 CreateRendererList(u64 context, u64 culling, const DrawRendererData& data, Span<const ShaderTagId> passNames,
                                                     Material* overrideMaterial, Shader* overrideShader, Material* fallbackMaterial, Span<const i32> blends,
                                                     ShaderTagId tagName, bool isPassTagName);
+        HX_FUNCTION() static u64 CreateSkyboxRendererList(u64 context, Camera* camera)
+        {
+            ScriptableRenderContext* c = ScriptableRenderContext::Find(context);
+            return c ? c->CreateSkyboxRendererList(camera).id : 0;
+        }
+        HX_FUNCTION() static void DrawSkybox(u64 context, Camera* camera)
+        {
+            if (ScriptableRenderContext* c = ScriptableRenderContext::Find(context))
+                c->DrawSkybox(camera);
+        }
         HX_FUNCTION() static void AddRendererListState(u64 context, u64 list, ShaderTagId tagValue, const DrawRendererData& data, Span<const i32> blends);
         HX_FUNCTION() static bool RendererListValid(u64 list) { return RendererUtils::RendererList{list}.isValid(); }
         HX_FUNCTION() static void DrawRendererList(u64 buffer, u64 list) { With(buffer, [&](CommandBuffer& b) { b.DrawRendererList(RendererUtils::RendererList{list}); }); }
@@ -221,6 +294,41 @@ namespace helix::engine
         HX_FUNCTION() static bool IsCullingLive(u64 culling) { return ScriptableRenderContext::IsLive(reinterpret_cast<const render::CullingData*>(uintptr_t(culling))); }
         HX_FUNCTION() static Light* LightOf(u64 id) { return EntityIdToObject<Light>(EntityId::FromULong(id)); }
         HX_FUNCTION() static i32 VisibleLightSize() { return i32(sizeof(VisibleLight)); }
+        // The visible reflection probes' memory and their count; the objects of their ids.
+        HX_FUNCTION(Out = "count") static u64 VisibleReflectionProbes(u64 culling, i32& count)
+        {
+            Span<const VisibleReflectionProbe> probes = CullingResults{reinterpret_cast<render::CullingData*>(uintptr_t(culling))}.visibleReflectionProbes();
+            count = i32(probes.Size());
+            return u64(reinterpret_cast<uintptr_t>(probes.Data()));
+        }
+        HX_FUNCTION() static i32 VisibleReflectionProbeSize() { return i32(sizeof(VisibleReflectionProbe)); }
+        HX_FUNCTION() static ReflectionProbe* ReflectionProbeOf(u64 id) { return EntityIdToObject<ReflectionProbe>(EntityId::FromULong(id)); }
+        HX_FUNCTION() static Texture* TextureOf(u64 id) { return EntityIdToObject<Texture>(EntityId::FromULong(id)); }
+        HX_FUNCTION() static i32 LightAndReflectionProbeIndexCount(u64 culling)
+        {
+            return CullingResults{reinterpret_cast<render::CullingData*>(uintptr_t(culling))}.lightAndReflectionProbeIndexCount();
+        }
+        // Renderer.GetClosestReflectionProbes: the probes, and their weights in the same order.
+        HX_FUNCTION() static Array<ReflectionProbe*> ClosestReflectionProbes(Renderer* renderer)
+        {
+            Array<ReflectionProbe*> out;
+            Array<ReflectionProbeBlendInfo> found;
+            if (renderer)
+                renderer->GetClosestReflectionProbes(found);
+            for (const ReflectionProbeBlendInfo& f : found)
+                out.Push(f.probe);
+            return out;
+        }
+        HX_FUNCTION() static Array<f32> ClosestReflectionProbeWeights(Renderer* renderer)
+        {
+            Array<f32> out;
+            Array<ReflectionProbeBlendInfo> found;
+            if (renderer)
+                renderer->GetClosestReflectionProbes(found);
+            for (const ReflectionProbeBlendInfo& f : found)
+                out.Push(f.weight);
+            return out;
+        }
 
         // ---------------------------------------------------------------------------------------------- command buffers
         // A buffer owned by the caller (Destroy frees it).
@@ -258,6 +366,10 @@ namespace helix::engine
         HX_FUNCTION() static void SetGlobalVectorArray(u64 buffer, i32 nameID, Span<const Vector4> values) { With(buffer, [&](CommandBuffer& b) { b.SetGlobalVectorArray(nameID, values); }); }
         HX_FUNCTION() static void SetGlobalMatrixArray(u64 buffer, i32 nameID, Span<const Matrix4x4> values) { With(buffer, [&](CommandBuffer& b) { b.SetGlobalMatrixArray(nameID, values); }); }
         HX_FUNCTION() static void SetInvertCulling(u64 buffer, bool value) { With(buffer, [&](CommandBuffer& b) { b.SetInvertCulling(value); }); }
+        HX_FUNCTION() static void SetGlobalDepthBias(u64 buffer, f32 bias, f32 slopeBias)
+        {
+            With(buffer, [&](CommandBuffer& b) { b.SetGlobalDepthBias(bias, slopeBias); });
+        }
         HX_FUNCTION() static void SetKeyword(u64 buffer, StringView keyword, bool value)
         {
             With(buffer, [&](CommandBuffer& b) { b.SetKeyword(GlobalKeyword(keyword), value); });

@@ -22,6 +22,9 @@ namespace helix::engine
         static HashMap<EntityId, i64>* FileIds(u32 slot);
         // A fileID the scene has not used: deterministic per scene, never 0 or the SceneRoots fileID.
         static i64 NewFileId(u32 slot, const HashMap<i64, EntityId>& used);
+        // The render settings a scene's file gave (null: none; the active scene's are RenderSettings' values).
+        static void SetRenderSettings(u32 slot, const RenderSettingsData& data);
+        static const RenderSettingsData* RenderSettingsOf(u32 slot);
 
         // Creates, reads, checks, links and enables the objects of a parsed file in the scene; false when something in
         // it was wrong (`errors` say what).

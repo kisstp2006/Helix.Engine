@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Helix/Engine/Object/Object.h>
+#include <Helix/Engine/Rendering/RenderSettings.h>
 
 // Scene file formats (extensible): a format recognizes its bytes, parses them (on any thread) and builds the objects
 // through a SceneBuilder (on the main thread). The builder owns what every format shares: objects created by class ID
@@ -127,6 +128,8 @@ namespace helix::engine
         virtual void AddPrefabInstance(i64 fileId, PrefabInstanceData& instance, u32 line) = 0;
         // Makes the copies of the prefab instances (after every object was created, before their fields are read).
         virtual void ResolvePrefabInstances() = 0;
+        // The scene's RenderSettings document (they apply while the scene is the active one).
+        virtual void SetRenderSettings(const RenderSettingsData& data) { (void)data; }
         virtual void Error(StringView message) = 0;
         virtual void Warning(StringView message) = 0;
     };

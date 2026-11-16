@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Helix/Engine/Rendering/Pipeline/CommandBuffer.h>
+#include <Helix/Engine/Rendering/Pipeline/Shadows.h>
 
 // ScriptableRenderContext: what a pipeline renders through. Cull runs at once; the other calls record commands that
 // Submit runs on the device in order (draws go to the target the engine renders the cameras into). A context lives
@@ -31,6 +32,16 @@ namespace helix::engine
         // What DrawRenderers would draw, as a list command buffers draw (valid while the context renders).
         RendererUtils::RendererList CreateRendererList(const RendererListParams& parameters);
         RendererUtils::RendererList CreateRendererList(const RendererUtils::RendererListDesc& desc);
+        // The skybox of RenderSettings around the camera (an empty list without one): drawn where the camera clears to
+        // the skybox, after the opaques (the skybox shaders draw at the far plane).
+        RendererUtils::RendererList CreateSkyboxRendererList(Camera* camera);
+        // The camera's skybox list drawn where the commands before it ran.
+        void DrawSkybox(Camera* camera);
+        // The shadow casters of each split of each light: those inside the split's culling planes (the lists made
+        // from these culling results after this draw only them).
+        void CullShadowCasters(CullingResults cullingResults, const ShadowCastersCullingInfos& infos);
+        // The ShadowCaster passes of a visible light's shadow casters (of the split, after CullShadowCasters).
+        RendererUtils::RendererList CreateShadowRendererList(const ShadowDrawingSettings& settings);
         // One more state of a tag value for a list of this context.
         void AddRendererListState(RendererUtils::RendererList list, const TaggedState& state);
         // Native render passes: the attachments of the pass, each subpass's colors (and the depth) as the target. The

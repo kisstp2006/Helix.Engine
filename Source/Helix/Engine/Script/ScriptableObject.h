@@ -48,6 +48,9 @@ namespace helix::engine
             v.Field("m_GameObject", gameObject);
             u8 enabled = 1;
             v.Field("m_Enabled", enabled);
+            // An object made in code names its class's script asset (when one is loaded).
+            if constexpr (!V::kReading)
+                FindScriptAsset();
             v.Field("m_Script", scriptAsset_);
             if constexpr (V::kReading)
                 AttachScriptAsset();
@@ -71,6 +74,8 @@ namespace helix::engine
     private:
         friend struct ScriptableAccess;
         void AttachScriptAsset();
+        // Without a script asset: the loaded one of its script class, if any.
+        void FindScriptAsset();
 
         PPtr<MonoScript> scriptAsset_;
         const ScriptClass* script_ = nullptr;

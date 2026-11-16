@@ -39,6 +39,16 @@ namespace helix::engine
             {"normal", &Texture2D::normalTexture}, {"linearGray", &Texture2D::linearGrayTexture},
         };
 
+        // A cube slot's default: black for "black", gray for "gray" and "grey", else white.
+        Cubemap* CubeDefault(StringView name)
+        {
+            if (name == StringView("black"))
+                return Cubemap::black();
+            if (name == StringView("gray") || name == StringView("grey"))
+                return Cubemap::gray();
+            return Cubemap::white();
+        }
+
         Texture2D* Default(StringView name)
         {
             for (const DefaultTexture& d : kDefaultTextures)
@@ -544,7 +554,7 @@ namespace helix::engine
                 {
                     if (overlay)
                         break;
-                    texture = Default(p.defaultTexture)->GetEntityId();
+                    texture = binding.cube ? CubeDefault(p.defaultTexture)->GetEntityId() : Default(p.defaultTexture)->GetEntityId();
                 }
                 bool replaced = false;
                 for (MaterialPassData::TextureSlot& t : textures)
@@ -568,7 +578,9 @@ namespace helix::engine
                 if (overlay)
                     continue;
             }
-            EntityId texture = value && value->kind == PropertyKind::Texture && EntityIdToObject(value->texture) ? value->texture : Texture2D::whiteTexture()->GetEntityId();
+            EntityId texture = value && value->kind == PropertyKind::Texture && EntityIdToObject(value->texture) ? value->texture
+                               : layout.namedTextures[k].cube                                                   ? Cubemap::white()->GetEntityId()
+                                                                                                                : Texture2D::whiteTexture()->GetEntityId();
             u32 slot = layout.namedTextures[k].slot;
             bool replaced = false;
             for (MaterialPassData::TextureSlot& t : textures)
@@ -592,10 +604,89 @@ namespace helix::engine
         }
     }
 
+    namespace
+    {
+        // The reference's enum values (the material properties' values) as the compiler's.
+        shadercompiler::CompareFunction CompareOf(f32 value)
+        {
+            i32 v = i32(value);
+            return v <= 0 || v > 8 ? shadercompiler::CompareFunction::Always : shadercompiler::CompareFunction(v - 1);
+        }
+
+        shadercompiler::BlendFactor BlendOf(f32 value)
+        {
+            using F = shadercompiler::BlendFactor;
+            // BlendMode: Zero, One, DstColor, SrcColor, OneMinusDstColor, SrcAlpha, OneMinusSrcColor, DstAlpha,
+            // OneMinusDstAlpha, SrcAlphaSaturate, OneMinusSrcAlpha.
+            static constexpr F kFactors[] = {F::Zero,     F::One,      F::DstColor,         F::SrcColor,         F::OneMinusDstColor, F::SrcAlpha,
+                                             F::OneMinusSrcColor, F::DstAlpha, F::OneMinusDstAlpha, F::SrcAlphaSaturate, F::OneMinusSrcAlpha};
+            i32 v = i32(value);
+            return v >= 0 && v < i32(sizeof(kFactors) / sizeof(kFactors[0])) ? kFactors[v] : F::One;
+        }
+
+        // ColorWriteMask: alpha 1, blue 2, green 4, red 8; the compiler's: red 1, green 2, blue 4, alpha 8.
+        u8 ColorMaskOf(f32 value)
+        {
+            u32 v = u32(i32(value)) & 15;
+            return u8((v & 8 ? 1 : 0) | (v & 4 ? 2 : 0) | (v & 2 ? 4 : 0) | (v & 1 ? 8 : 0));
+        }
+
+        // The variant's render state with what the material's properties give.
+        void ResolveState(MaterialPassData& data, const PropertySheet& values)
+        {
+            const shadercompiler::RenderState& in = *data.variant->state;
+            if (!in.HasProperties())
+            {
+                data.state = &in;
+                data.stateKey = 0;
+                return;
+            }
+            shadercompiler::RenderState& s = data.ownState;
+            s = in;
+            const shadercompiler::StateProperties& p = in.properties;
+            u64 key = 0x51A7E;
+            auto take = [&](const String& name, auto&& apply) {
+                if (name.Empty())
+                    return;
+                f32 v = values.GetFloat(Shader::PropertyToID(name));
+                apply(v);
+                u32 bits;
+                std::memcpy(&bits, &v, 4);
+                key = CombineHash(key, MixHash(u64(bits) + 1));
+            };
+            take(p.cull, [&](f32 v) { s.cull = shadercompiler::CullMode(Clamp(i32(v), 0, 2)); });
+            take(p.zWrite, [&](f32 v) { s.zWrite = v != 0; });
+            take(p.zTest, [&](f32 v) { s.zTest = CompareOf(v); });
+            take(p.offsetFactor, [&](f32 v) { s.offsetFactor = v; });
+            take(p.offsetUnits, [&](f32 v) { s.offsetUnits = v; });
+            take(p.colorMask, [&](f32 v) { s.colorMask = ColorMaskOf(v); });
+            take(p.alphaToMask, [&](f32 v) { s.alphaToMask = v != 0; });
+            take(p.stencilReference, [&](f32 v) { s.stencilReference = u8(Clamp(i32(v), 0, 255)); });
+            take(p.stencilReadMask, [&](f32 v) { s.stencilReadMask = u8(Clamp(i32(v), 0, 255)); });
+            take(p.stencilWriteMask, [&](f32 v) { s.stencilWriteMask = u8(Clamp(i32(v), 0, 255)); });
+            take(p.stencilCompare, [&](f32 v) { s.stencilFront.compare = s.stencilBack.compare = CompareOf(v); });
+            take(p.stencilPass, [&](f32 v) { s.stencilFront.pass = s.stencilBack.pass = shadercompiler::StencilOperation(Clamp(i32(v), 0, 7)); });
+            take(p.stencilFail, [&](f32 v) { s.stencilFront.fail = s.stencilBack.fail = shadercompiler::StencilOperation(Clamp(i32(v), 0, 7)); });
+            take(p.stencilZFail, [&](f32 v) { s.stencilFront.zFail = s.stencilBack.zFail = shadercompiler::StencilOperation(Clamp(i32(v), 0, 7)); });
+            for (shadercompiler::BlendState& b : s.blend)
+            {
+                take(b.sourceProperty, [&](f32 v) { b.source = BlendOf(v); });
+                take(b.destinationProperty, [&](f32 v) { b.destination = BlendOf(v); });
+                take(b.sourceAlphaProperty, [&](f32 v) { b.sourceAlpha = BlendOf(v); });
+                take(b.destinationAlphaProperty, [&](f32 v) { b.destinationAlpha = BlendOf(v); });
+                take(b.operationProperty, [&](f32 v) { b.operation = shadercompiler::BlendOperation(Clamp(i32(v), 0, 4)); });
+                take(b.operationAlphaProperty, [&](f32 v) { b.operationAlpha = shadercompiler::BlendOperation(Clamp(i32(v), 0, 4)); });
+            }
+            data.state = &s;
+            data.stateKey = key;
+        }
+    }
+
     void Material::Write(MaterialPassData& data) const
     {
         data.writes++;
         WriteValues(*data.variant, values_, &Shader::Globals(), false, data.blocks, data.textures);
+        ResolveState(data, values_);
     }
 
     u64 Material::KeywordStamp() const

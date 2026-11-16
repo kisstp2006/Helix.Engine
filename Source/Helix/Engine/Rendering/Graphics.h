@@ -1,5 +1,6 @@
 #pragma once
 
+#include <Helix/Engine/Event/Event.h>
 #include <Helix/Engine/Rendering/Camera.h>
 #include <Helix/Engine/Rendering/Renderer.h>
 #include <Helix/RHI/Device/Device.h>
@@ -103,6 +104,9 @@ namespace helix::engine
         static u32 QueuedMeshCount();
         // Runs a command buffer's commands now, into the target with the whole target as the viewport.
         static void ExecuteCommandBuffer(const CommandBuffer& buffer);
+        // The screen overlay: after the cameras of a frame (and of a screenshot) drew, with any pipeline or none, its
+        // listeners record into one command buffer that runs into the screen's target (screen space UI).
+        static Event<CommandBuffer&>& screenOverlayRendering();
         // The devices have one queue: the commands run now, in order.
         static void ExecuteCommandBufferAsync(const CommandBuffer& buffer, ComputeQueueType) { ExecuteCommandBuffer(buffer); }
         // The source over the whole destination (null: the screen) with Hidden/BlitCopy or a material's pass (-1: every

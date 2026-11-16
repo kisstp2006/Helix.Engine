@@ -2432,3 +2432,49 @@ HX_TEST(Rendering, DirectionalShadowCascadesCullAndDrawTheirCasters)
         device.Destroy(depth);
     });
 }
+
+HX_TEST(Rendering, TheScreenOverlayDrawsAfterTheCamerasOnEveryDevice)
+{
+    constexpr u32 size = 16;
+    u32 devices = 0;
+    ForEachDevice([&](rhi::Device& device) {
+        devices++;
+        TestShaderFolder shaders;
+        rhi::TextureHandle color =
+            device.CreateTexture({.format = rhi::Format::RGBA8Unorm, .width = size, .height = size, .usage = rhi::TextureRenderTarget | rhi::TextureSampled});
+        rhi::TextureHandle depth = device.CreateTexture({.format = rhi::Format::D32Float, .width = size, .height = size, .usage = rhi::TextureDepthStencil});
+        Graphics::SetDevice(&device);
+        Graphics::SetTarget({color, depth, size, size, rhi::Format::RGBA8Unorm, rhi::Format::D32Float});
+        MakeCamera(Vector3(0, 0, -10), 4);
+        // The fallback pipeline: the camera clears to black, the overlay over it to green.
+        static u32 calls = 0;
+        calls = 0;
+        u32 id = Graphics::screenOverlayRendering().Add([](void*, CommandBuffer& cmd) {
+            calls++;
+            cmd.ClearRenderTarget(false, true, Color(0, 1, 0, 1));
+        });
+        Graphics::RenderFrame();
+        Array<u32> pixels;
+        pixels.Resize(size * size);
+        HX_REQUIRE(device.ReadTexture(color, 0, pixels.Data(), pixels.Size() * 4));
+        HX_CHECK(calls == 1 && NearColor(Pixel(pixels, size, 8, 8), Rgba(0, 255, 0)));
+        // A screenshot draws the frame again: the overlay with it.
+        String shot = platform::JoinPath(platform::TempDirectory(), Format("helix-overlay-{}.png", Guid::Generate().ToString()));
+        ScreenCapture::CaptureScreenshot(shot);
+        Graphics::RenderFrame();
+        HX_CHECK(calls == 3);
+        Array<u8> png;
+        image::Image img;
+        HX_REQUIRE(platform::ReadFile(shot, png) && image::DecodePng(Span<const u8>(png.Data(), png.Size()), img));
+        HX_CHECK(img.pixels[(8 * size + 8) * 4 + 1] == 255 && img.pixels[(8 * size + 8) * 4] == 0);
+        platform::RemoveFile(shot);
+        // Without listeners nothing more runs.
+        Graphics::screenOverlayRendering().Remove(id);
+        Graphics::RenderFrame();
+        HX_CHECK(calls == 3);
+        Graphics::SetTarget({});
+        device.Destroy(color);
+        device.Destroy(depth);
+    });
+    std::printf("    %u devices\n", devices);
+}

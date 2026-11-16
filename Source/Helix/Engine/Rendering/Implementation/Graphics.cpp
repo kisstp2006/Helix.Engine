@@ -1044,6 +1044,16 @@ namespace helix::engine
             R().clearFirst = true;
             render::RenderWithPipeline(Span<Camera* const>(cameras.Data(), cameras.Size()), true);
             R().clearFirst = false;
+            // The screen overlay over what the cameras drew.
+            Event<CommandBuffer&>& overlay = Graphics::screenOverlayRendering();
+            if (!overlay.Empty())
+            {
+                CommandBuffer cmd;
+                cmd.SetName("ScreenOverlay");
+                cmd.SetRenderTarget(RenderTargetIdentifier(BuiltinRenderTextureType::CameraTarget));
+                overlay.Invoke(cmd);
+                render::ExecuteNow(cmd.List(), false);
+            }
         }
 
         // Draws the frame again into textures of the target's formats (so the pipelines are shared) and writes a PNG.
@@ -1112,6 +1122,12 @@ namespace helix::engine
     }
 
     u32 ScreenCapture::PendingCaptures() { return u32(R().captures.Size()); }
+
+    Event<CommandBuffer&>& Graphics::screenOverlayRendering()
+    {
+        static Event<CommandBuffer&>* e = new Event<CommandBuffer&>();
+        return *e;
+    }
 
     void Graphics::RenderFrame()
     {

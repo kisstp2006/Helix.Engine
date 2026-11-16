@@ -34,6 +34,7 @@ of C++ and C# scripts, a fallback pipeline without an asset), and the screen as 
 | `Source/Helix/Engine/Time/Time.h` | `Time`, `TimeClock` |
 | `KeyCode` (C# API) | Helix.Platform's key codes, bound as the script API's `HelixEngine.KeyCode` |
 | `Source/Helix/Engine/Input/InputFeed.h` | `InputFeed`: the window's input of a frame from the host, read by the UI and the game without taking it away; the text input a focused text element asks for |
+| `Source/Helix/Engine/Input/Cursor.h` | `Cursor.SetCursor` (a texture's pixels and a hotspot, `CursorMode`) and the UI's system shapes: the pointer the host shows at the end of the frame |
 | `Source/Helix/Engine/PlayerLoop/PlayerLoop.h` | `PlayerLoop`, `PlayerLoopSystem` |
 | `Source/Helix/Engine/Application/Application.h` | `Application`, `RuntimePlatform`, `NetworkReachability`, `LogType` |
 | `Source/Helix/Engine/Settings/Settings.h` | `TimeManager`, `TagManager`, `PlayerSettings`, `BuildSettings`, `RegisterSettings`, `LoadSettingsFile` |

@@ -37,7 +37,7 @@ helix_bindgen(helix_engine MODULE HelixEngine NAMESPACE HelixEngine KIND Engine 
                       "${engine_source}/Helix/Engine/GameObject/GameObject.h" "${engine_source}/Helix/Engine/Transform/Transform.h"
                       "${engine_source}/Helix/Engine/Script/GameBehaviour.h" "${engine_source}/Helix/Engine/Debug/Debug.h"
                       "${engine_source}/Helix/Engine/Time/Time.h" "${engine_source}/Helix/Engine/Application/Application.h"
-                      "${engine_source}/Helix/Engine/Screen/Screen.h" "${engine_source}/Helix/Engine/Scene/Scene.h"
+                      "${engine_source}/Helix/Engine/Screen/Screen.h" "${engine_source}/Helix/Engine/Input/Cursor.h" "${engine_source}/Helix/Engine/Scene/Scene.h"
                       "${engine_source}/Helix/Engine/Scene/SceneManager.h" "${engine_source}/Helix/Engine/Asset/Resources.h"
                       "${engine_source}/Helix/Engine/Scene/SceneNative.h" "${engine_source}/Helix/Engine/Texture/Texture.h"
                       "${engine_source}/Helix/Engine/Texture/RenderTexture.h"

@@ -1,4 +1,6 @@
 #include <Helix/Engine/Input/Cursor.h>
+#include <Helix/Engine/Input/GUIUtility.h>
+#include <Helix/Engine/Math/Hash128.h>
 #include <Helix/Engine/Object/Object.h>
 #include <Helix/Engine/Texture/Texture.h>
 #include <Helix/Testing/Test.h>
@@ -43,4 +45,33 @@ HX_TEST(Cursor, SystemShapesCountAsChangesOnlyWhenTheyChange)
     HX_CHECK(Cursor::Current().version == before + 1 && Cursor::Current().shape == platform::SystemCursor::Hand);
     Cursor::Reset();
     HX_CHECK(Cursor::Current().shape == platform::SystemCursor::Arrow);
+}
+
+HX_TEST(GUIUtility, TheCopyBufferIsTheHostsClipboardOrTheProcesss)
+{
+    GUIUtility::SetClipboardHost({});
+    GUIUtility::SetSystemCopyBuffer("own");
+    HX_CHECK(GUIUtility::systemCopyBuffer() == StringView("own"));
+    static String hosted;
+    GUIUtility::SetClipboardHost({[](void*) { return hosted; },
+                                  [](void*, StringView t) {
+                                      hosted = String(t);
+                                      return true;
+                                  },
+                                  nullptr});
+    GUIUtility::SetSystemCopyBuffer("to the host");
+    HX_CHECK(hosted == StringView("to the host") && GUIUtility::systemCopyBuffer() == StringView("to the host"));
+    hosted = String("changed elsewhere");
+    HX_CHECK(GUIUtility::systemCopyBuffer() == StringView("changed elsewhere"));
+    GUIUtility::SetClipboardHost({});
+}
+
+HX_TEST(Hash128, ItsTextIsThirtyTwoHexDigitsFromTheLowestByte)
+{
+    Hash128 h(0x0123456789abcdefull, 0xfedcba9876543210ull);
+    HX_CHECK(h.ToString() == StringView("efcdab89674523011032547698badcfe"));
+    Hash128 back;
+    HX_CHECK(Hash128::TryParse("EFCDAB89674523011032547698BADCFE", back) && back == h && back.isValid());
+    HX_CHECK(!Hash128::TryParse("efcd", back) && !back.isValid());
+    HX_CHECK(!Hash128::TryParse("zzcdab89674523011032547698badcfe", back));
 }

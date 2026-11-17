@@ -1,4 +1,4 @@
-#include <Helix/Engine/Input/GUIUtility.h>
+#include <Helix/Engine/Input/SystemClipboard.h>
 
 namespace helix::engine
 {
@@ -6,7 +6,7 @@ namespace helix::engine
     {
         struct Clipboard
         {
-            GUIUtility::ClipboardHost host;
+            SystemClipboard::Host host;
             String own;
         };
 
@@ -17,13 +17,13 @@ namespace helix::engine
         }
     }
 
-    String GUIUtility::systemCopyBuffer()
+    String SystemClipboard::Text()
     {
         Clipboard& c = C();
         return c.host.get ? c.host.get(c.host.user) : c.own;
     }
 
-    void GUIUtility::SetSystemCopyBuffer(StringView value)
+    void SystemClipboard::SetText(StringView value)
     {
         Clipboard& c = C();
         c.own = String(value);
@@ -31,5 +31,5 @@ namespace helix::engine
             c.host.set(c.host.user, value);
     }
 
-    void GUIUtility::SetClipboardHost(const ClipboardHost& host) { C().host = host; }
+    void SystemClipboard::SetHost(const Host& host) { C().host = host; }
 }

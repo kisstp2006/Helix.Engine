@@ -35,6 +35,9 @@ namespace helix::engine
         static bool InsertSystem(StringView parent, const PlayerLoopSystem& system, StringView before = StringView());
         // Removes the first system of that name; false when there is none.
         static bool RemoveSystem(StringView type);
+        // A module's function for a system the engine only names (IMGUISendQueuedEvents and the others): the default
+        // loop has it from then on, and so does the current one (null: back to a placeholder).
+        static void SetSystemFunction(StringView type, void (*function)(void* user), void* user = nullptr);
 
         // One frame of the current loop.
         static void RunFrame();

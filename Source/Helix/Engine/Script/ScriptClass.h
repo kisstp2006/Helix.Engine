@@ -37,6 +37,8 @@ namespace helix::engine
         OnPostRender,
         OnWillRenderObject,
         OnRenderObject,
+        // The immediate GUI: once a pass (Layout, each input event, Repaint) with the GUI's current event set.
+        OnGui,
         Count,
     };
 

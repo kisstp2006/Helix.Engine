@@ -186,6 +186,26 @@ HX_TEST(PlayerLoop, PhasesInOrderAndSystemsByName)
     HX_CHECK(lateGone && PlayerLoop::RemoveSystem("changer") && !PlayerLoop::RemoveSystem("changer"));
 }
 
+HX_TEST(PlayerLoop, ModulesFillTheNamedSystems)
+{
+    Fresh f;
+    static i32 calls = 0, two = 2;
+    calls = 0;
+    // The current loop and every default loop after it call the module's function.
+    PlayerLoop::SetSystemFunction("IMGUISendQueuedEvents", [](void* user) { calls += *static_cast<i32*>(user); }, &two);
+    PlayerLoop::RunFrame();
+    HX_CHECK(calls == 2);
+    PlayerLoop::SetPlayerLoop(PlayerLoop::GetDefaultPlayerLoop());
+    PlayerLoop::RunFrame();
+    HX_CHECK(calls == 4);
+    // Null takes it back to a placeholder.
+    PlayerLoop::SetSystemFunction("IMGUISendQueuedEvents", nullptr);
+    PlayerLoop::RunFrame();
+    PlayerLoop::SetPlayerLoop(PlayerLoop::GetDefaultPlayerLoop());
+    PlayerLoop::RunFrame();
+    HX_CHECK(calls == 4);
+}
+
 HX_TEST(Application, SettingsFilesApplyToTimeTagsAndProduct)
 {
     Fresh f;

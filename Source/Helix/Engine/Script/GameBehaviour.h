@@ -26,6 +26,9 @@ namespace helix::engine
         // The script class (null for a GameBehaviour without one).
         const ScriptClass* script() const { return script_; }
         MonoScript* scriptAsset() const { return scriptAsset_.Get(); }
+        // Whether its OnGui takes part in the GUI's layout pass (GuiLayout); off, it gets no Layout event.
+        HX_PROPERTY() bool useGuiLayout() const { return useGuiLayout_; }
+        void SetUseGuiLayout(bool value) { useGuiLayout_ = value; }
 
         // Native hooks (the class registry calls them).
         void OnActivateNative();
@@ -94,6 +97,7 @@ namespace helix::engine
         // The order of creation (the last key of the order scripts run in).
         u64 sequence_ = 0;
         i32 order_ = 0;
+        bool useGuiLayout_ = true;
         bool awoken_ = false;
         bool started_ = false;
         bool pendingStart_ = false;

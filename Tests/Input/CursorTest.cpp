@@ -1,5 +1,5 @@
 #include <Helix/Engine/Input/Cursor.h>
-#include <Helix/Engine/Input/GUIUtility.h>
+#include <Helix/Engine/Input/SystemClipboard.h>
 #include <Helix/Engine/Math/Hash128.h>
 #include <Helix/Engine/Object/Object.h>
 #include <Helix/Engine/Texture/Texture.h>
@@ -47,23 +47,23 @@ HX_TEST(Cursor, SystemShapesCountAsChangesOnlyWhenTheyChange)
     HX_CHECK(Cursor::Current().shape == platform::SystemCursor::Arrow);
 }
 
-HX_TEST(GUIUtility, TheCopyBufferIsTheHostsClipboardOrTheProcesss)
+HX_TEST(SystemClipboard, TheTextIsTheHostsClipboardOrTheProcesss)
 {
-    GUIUtility::SetClipboardHost({});
-    GUIUtility::SetSystemCopyBuffer("own");
-    HX_CHECK(GUIUtility::systemCopyBuffer() == StringView("own"));
+    SystemClipboard::SetHost({});
+    SystemClipboard::SetText("own");
+    HX_CHECK(SystemClipboard::Text() == StringView("own"));
     static String hosted;
-    GUIUtility::SetClipboardHost({[](void*) { return hosted; },
+    SystemClipboard::SetHost({[](void*) { return hosted; },
                                   [](void*, StringView t) {
                                       hosted = String(t);
                                       return true;
                                   },
                                   nullptr});
-    GUIUtility::SetSystemCopyBuffer("to the host");
-    HX_CHECK(hosted == StringView("to the host") && GUIUtility::systemCopyBuffer() == StringView("to the host"));
+    SystemClipboard::SetText("to the host");
+    HX_CHECK(hosted == StringView("to the host") && SystemClipboard::Text() == StringView("to the host"));
     hosted = String("changed elsewhere");
-    HX_CHECK(GUIUtility::systemCopyBuffer() == StringView("changed elsewhere"));
-    GUIUtility::SetClipboardHost({});
+    HX_CHECK(SystemClipboard::Text() == StringView("changed elsewhere"));
+    SystemClipboard::SetHost({});
 }
 
 HX_TEST(Hash128, ItsTextIsThirtyTwoHexDigitsFromTheLowestByte)

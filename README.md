@@ -35,7 +35,7 @@ of C++ and C# scripts, a fallback pipeline without an asset), and the screen as 
 | `KeyCode` (C# API) | Helix.Platform's key codes, bound as the script API's `HelixEngine.KeyCode` |
 | `Source/Helix/Engine/Input/InputFeed.h` | `InputFeed`: the window's input of a frame from the host, read by the UI and the game without taking it away; the text input a focused text element asks for |
 | `Source/Helix/Engine/Input/Cursor.h` | `Cursor.SetCursor` (a texture's pixels and a hotspot, `CursorMode`) and the UI's system shapes: the pointer the host shows at the end of the frame |
-| `Source/Helix/Engine/Input/GUIUtility.h` | `GUIUtility.systemCopyBuffer`: the clipboard of the host's window (the process's own without a host) |
+| `Source/Helix/Engine/Input/SystemClipboard.h` | The system clipboard for the engine's modules (the UI's `GuiUtility.systemCopyBuffer`): the host's window's (the process's own without a host) |
 | `Source/Helix/Engine/Math/Hash128.h` | `Hash128`: its halves, its text of 32 hex digits (C#: SpookyHash V2 computing, comparing, parsing) |
 | `Source/Helix/Engine/PlayerLoop/PlayerLoop.h` | `PlayerLoop`, `PlayerLoopSystem` |
 | `Source/Helix/Engine/Application/Application.h` | `Application`, `RuntimePlatform`, `NetworkReachability`, `LogType` |
@@ -136,7 +136,9 @@ of C++ and C# scripts, a fallback pipeline without an asset), and the screen as 
   the frame's time allows), PreUpdate, Update, PreLateUpdate and PostLateUpdate, each a list of named systems. The
   engine's own work is registered there by name (Time, scene loads and async instantiations in EarlyUpdate, the
   destroy queue and the world matrices in PostLateUpdate before rendering); systems of others go in with
-  `InsertSystem`. `SetPlayerLoop` compiles the tree into a flat list, so a frame does not walk a tree.
+  `InsertSystem`; a module fills a system the engine only names (the UI's immediate GUI in IMGUISendQueuedEvents)
+  with `SetSystemFunction`, which the default loop keeps. `SetPlayerLoop` compiles the tree into a flat list, so a
+  frame does not walk a tree.
 - Time takes real time from a replaceable clock, caps it by maximumDeltaTime, scales it by timeScale (0 stops game
   time, frames go on) and steps fixed time in fixedDeltaTime steps; inside a step deltaTime and time are the fixed
   ones. Settings files set it up (TimeManager), with tags and layers (TagManager) and the product (PlayerSettings);

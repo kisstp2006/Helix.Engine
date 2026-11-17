@@ -40,6 +40,14 @@ namespace helix::engine
             // A loop set while a frame runs takes over after it.
             bool pending = false;
             PlayerLoopSystem next;
+            // The modules' functions of the named systems.
+            struct Filled
+            {
+                String type;
+                void (*function)(void*) = nullptr;
+                void* user = nullptr;
+            };
+            Array<Filled> filled;
         };
 
         LoopState& Loop()
@@ -112,6 +120,17 @@ namespace helix::engine
                     return true;
             }
             return false;
+        }
+
+        void Fill(PlayerLoopSystem& s, const LoopState::Filled& f)
+        {
+            if (s.type == f.type.View())
+            {
+                s.updateFunction = f.function;
+                s.updateUser = f.user;
+            }
+            for (PlayerLoopSystem& sub : s.subSystemList)
+                Fill(sub, f);
         }
 
         PlayerLoopSystem System(StringView type, void (*function)(void*) = nullptr)
@@ -210,6 +229,8 @@ namespace helix::engine
             System("VFXUpdate"), System("BeforeRender", &BeforeRender), System("FinishFrameRendering", &FinishRendering), System("BatchModeUpdate"),
             System("PresentAfterDraw", &EndOfFrame), System("ProfilerEndFrame"), System("ObjectDispatcherPostLateUpdate"),
         }));
+        for (const LoopState::Filled& f : Loop().filled)
+            Fill(root, f);
         return root;
     }
 
@@ -258,6 +279,26 @@ namespace helix::engine
             return false;
         SetPlayerLoop(loop);
         return true;
+    }
+
+    void PlayerLoop::SetSystemFunction(StringView type, void (*function)(void*), void* user)
+    {
+        LoopState& s = Loop();
+        LoopState::Filled f;
+        f.type = String(type);
+        f.function = function;
+        f.user = user;
+        bool found = false;
+        for (LoopState::Filled& e : s.filled)
+            if (e.type == type)
+                e = f, found = true;
+        if (!found)
+            s.filled.Push(f);
+        if (!s.compiled)
+            return;
+        PlayerLoopSystem loop = GetCurrentPlayerLoop();
+        Fill(loop, f);
+        SetPlayerLoop(loop);
     }
 
     void PlayerLoop::RunFrame()

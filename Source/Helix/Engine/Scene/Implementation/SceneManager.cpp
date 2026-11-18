@@ -504,6 +504,21 @@ namespace helix::engine
         return s && s->state == SceneState::Loaded;
     }
 
+    void SceneManager::SetSceneDirty(Scene scene, bool dirty)
+    {
+        if (SceneSlot* s = SlotOf(scene.handle))
+            s->dirty = dirty;
+    }
+
+    void SceneManager::SetScenePath(Scene scene, StringView path)
+    {
+        if (SceneSlot* s = SlotOf(scene.handle))
+        {
+            s->path = String(path);
+            s->name = String(Stem(path));
+        }
+    }
+
     bool Scene::isDirty() const
     {
         const SceneSlot* s = SlotOf(handle);

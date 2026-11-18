@@ -13,6 +13,14 @@ namespace helix::engine
 
     namespace
     {
+        u64 gHierarchyVersion = 1;
+    }
+
+    u64 HierarchyVersion() { return gHierarchyVersion; }
+    void TouchHierarchy() { gHierarchyVersion++; }
+
+    namespace
+    {
         LogChannel TransformLog{"Engine"};
 
         bool BeingDestroyed(const Transform* t)

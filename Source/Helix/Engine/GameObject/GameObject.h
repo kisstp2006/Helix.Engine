@@ -47,6 +47,8 @@ namespace helix::engine
         StringView TagString() const { return TagName(tag_); }
         // False (tag unchanged) when the tag is not defined.
         bool SetTag(StringView tag);
+        // Renamed: the hierarchy's version moves on.
+        void SetName(StringView name) override;
         bool CompareTag(StringView tag) const;
         bool CompareTag(TagHandle tag) const { return tag_ == tag; }
         u32 staticEditorFlags = 0;
@@ -61,6 +63,7 @@ namespace helix::engine
         TransformHandle transformHandle() const;
         // The scene of its root.
         Scene scene() const;
+        HX_PROPERTY(Name = "scene", ReadOnly) Scene SceneApi() const;
         u64 sceneCullingMask() const { return kDefaultSceneCullingMask; }
         static Scene GetScene(EntityId id);
 
@@ -95,6 +98,8 @@ namespace helix::engine
         void GetComponents(u32 klass, Array<Component*>& out) const;
         u32 GetComponentCount() const { return u32(components_.Size()); }
         Component* GetComponentAtIndex(u32 index) const;
+        // A component moved to another place in the list (an editor's Move Up and Down); the Transform stays first.
+        bool MoveComponent(const Component* component, u32 index);
         // -1 when the component is not on this GameObject.
         i32 GetComponentIndex(const Component* component) const;
 
@@ -117,7 +122,9 @@ namespace helix::engine
         void SetLayerApi(i32 value) { SetLayer(u32(value)); }
         HX_PROPERTY(Name = "tag", Setter = "SetTagApi") StringView TagApi() const { return TagString(); }
         void SetTagApi(StringView value) { SetTag(value); }
-        HX_PROPERTY(Name = "isStatic", ReadOnly) bool IsStaticApi() const { return isStatic(); }
+        // Set, every static flag on (or off).
+        HX_PROPERTY(Name = "isStatic", Setter = "SetIsStaticApi") bool IsStaticApi() const { return isStatic(); }
+        void SetIsStaticApi(bool value) { staticEditorFlags = value ? ~0u : 0u; }
         HX_PROPERTY(Name = "transform", ReadOnly) Transform* TransformApi() const { return transform(); }
         HX_FUNCTION(Name = "CompareTag") bool CompareTagApi(StringView tag) const { return CompareTag(tag); }
         HX_FUNCTION(Name = "GetComponent") Component* GetComponentByName(StringView type) const { return GetComponent(type); }

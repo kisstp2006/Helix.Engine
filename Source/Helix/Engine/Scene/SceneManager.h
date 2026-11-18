@@ -108,6 +108,11 @@ namespace helix::engine
         // Null for files on disk.
         static void SetSceneSource(SceneSource* source);
 
+        // For an editor: a scene's changed flag (set by its edits, cleared as it is saved), and its path (a scene saved
+        // under another one: its name becomes the path's file name).
+        static void SetSceneDirty(Scene scene, bool dirty);
+        static void SetScenePath(Scene scene, StringView path);
+
         // Runs the loads and unloads that are due; the player loop calls it after the update loop.
         static void ProcessSceneLoads();
         // Back to the state at startup: loads dropped, every scene unloaded (the DontDestroyOnLoad scene emptied), one

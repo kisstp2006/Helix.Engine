@@ -36,6 +36,11 @@ namespace helix::engine
         extern HX_IMPORT_DATA void (*gBeforeHierarchyChange)(Transform* moving);
     }
 
+    // A count of the scenes' hierarchy changes (objects made, destroyed, moved in it, renamed, activated; scenes loaded
+    // and unloaded): an editor compares it to know when to show its hierarchy again.
+    u64 HierarchyVersion();
+    void TouchHierarchy();
+
     HX_CLASS()
     class Transform : public Component
     {

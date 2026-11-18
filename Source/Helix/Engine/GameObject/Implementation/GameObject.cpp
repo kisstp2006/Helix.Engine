@@ -177,6 +177,17 @@ namespace helix::engine
             return;
         activeSelf_ = value;
         GameObjectAccess::UpdateActive(this);
+        TouchHierarchy();
+    }
+
+    Scene GameObject::SceneApi() const { return scene(); }
+
+    void GameObject::SetName(StringView name)
+    {
+        if (Name() == name)
+            return;
+        Object::SetName(name);
+        TouchHierarchy();
     }
 
     Transform* GameObject::transform() const
@@ -305,6 +316,26 @@ namespace helix::engine
     }
 
     Component* GameObject::GetComponentAtIndex(u32 index) const { return index < components_.Size() ? components_[index].component.Get() : nullptr; }
+
+    bool GameObject::MoveComponent(const Component* component, u32 index)
+    {
+        i32 at = component ? GetComponentIndex(component) : -1;
+        if (at <= 0 || index == 0 || index >= components_.Size())
+            return false;
+        if (u32(at) == index)
+            return true;
+        ComponentEntry e = components_[u32(at)];
+        // Shift the ones between by one toward the old place.
+        if (u32(at) < index)
+            for (u32 i = u32(at); i < index; i++)
+                components_[i] = components_[i + 1];
+        else
+            for (u32 i = u32(at); i > index; i--)
+                components_[i] = components_[i - 1];
+        components_[index] = e;
+        TouchHierarchy();
+        return true;
+    }
 
     i32 GameObject::GetComponentIndex(const Component* component) const
     {

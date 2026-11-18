@@ -14,7 +14,7 @@ of C++ and C# scripts, a fallback pipeline without an asset), and the screen as 
 | `Source/Helix/Engine/Object/Class.h` | `ClassInfo`, the class registry, `ClassOf<T>()`, `IsDerivedFrom`; every class is also a type of the scripting core (Helix.Scripting, module HelixEngine, with its ClassId as an attribute and its serialized fields by property path through `Object.ReadSerializedProperty` and `ApplySerializedProperty`) |
 | `Source/Helix/Engine/Object/Object.h` | `Object`, `HideFlags`, `HX_ENGINE_CLASS`, `EntityIdToObject`, `FindObjectsByType`, `FindAnyObjectByType`, `PPtr<T>`, `ReferenceRemap` |
 | `Source/Helix/Engine/Object/SmallArray.h` | `SmallArray<T, N>`: inline storage for small lists |
-| `Source/Helix/Engine/GameObject/GameObject.h` | `GameObject`, `Component`, `Behaviour` |
+| `Source/Helix/Engine/GameObject/GameObject.h` | `GameObject` (its components moved among themselves, the Transform first; `isStatic` set as every static flag), `Component`, `Behaviour`; the hierarchy's version (any object made, moved, renamed, activated or destroyed counts: the editor's views follow it) |
 | `Source/Helix/Engine/GameObject/Tags.h` | `TagHandle`, tags and the 32 layers, `LayerMask` |
 | `Source/Helix/Engine/GameObject/Lifecycle.h` | `Instantiate`, `InstantiateParameters`, `InstantiateGameObjects`, `Destroy`, `DestroyImmediate`, `DontDestroyOnLoad` |
 | `Source/Helix/Engine/Script/Coroutines.h` | The coroutine scheduler of both languages: wait lists per point of the frame, the stop rules, `AddDelayedTaskRunner` |
@@ -31,7 +31,7 @@ of C++ and C# scripts, a fallback pipeline without an asset), and the screen as 
 | `Source/Helix/Engine/Input/Touch.h` | `Touch`, `TouchPhase`, `TouchType` |
 | `Source/Helix/Engine/Scene/Scene.h` | `Scene`, `SceneHandle`, `LoadSceneMode`, `LoadSceneParameters`, `UnloadSceneOptions` |
 | `Source/Helix/Engine/Scene/LoadableSceneId.h` | `LoadableSceneId`: a scene asset by its guid |
-| `Source/Helix/Engine/Scene/SceneManager.h` | `SceneManager`, `SceneEvent`, `SceneSource` (`FileSceneSource`, `MemorySceneSource`, `AssetSceneSource`) |
+| `Source/Helix/Engine/Scene/SceneManager.h` | `SceneManager`, `SceneEvent`, `SceneSource` (`FileSceneSource`, `MemorySceneSource`, `AssetSceneSource`), a scene's dirty flag and path set by the editor |
 | `Source/Helix/Engine/Async/AsyncOperation.h` | `AsyncOperation`, `ResourceRequest` |
 | `Source/Helix/Engine/Scene/SceneFile.h` | `WriteSceneYaml`, `WriteSceneBinary`, `ReadSceneFile` |
 | `Source/Helix/Engine/Scene/SceneFormat.h` | `SceneFormat`, `SceneBuilder`, `RegisterSceneFormat`: scene file formats as plug ins |

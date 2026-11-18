@@ -420,6 +420,7 @@ namespace helix::engine
 
     void TransformAccess::CreateRoot(Transform* t)
     {
+        TouchHierarchy();
         TransformHierarchy* h = NewHierarchy(1);
         h->count = 1;
         // Identity local values: the world values are known, the node starts clean.
@@ -441,6 +442,7 @@ namespace helix::engine
 
     void TransformAccess::Release(Transform* t)
     {
+        TouchHierarchy();
         TransformHierarchy* hp = t->hierarchy_;
         if (!hp)
             return;
@@ -482,6 +484,7 @@ namespace helix::engine
 
     void TransformAccess::Place(Transform* t, Transform* parent, u32 sibling)
     {
+        TouchHierarchy();
         TransformHierarchy* cut = Cut(*t->hierarchy_, t->index_);
         if (!parent)
         {
@@ -642,6 +645,7 @@ namespace helix::engine
 
     void TransformAccess::MoveToScene(TransformHierarchy& h, u32 scene)
     {
+        TouchHierarchy();
         UnlinkRoot(h);
         h.scene = scene;
         LinkRoot(h, nullptr);

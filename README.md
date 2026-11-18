@@ -49,8 +49,8 @@ of C++ and C# scripts, a fallback pipeline without an asset), and the screen as 
 | `Source/Helix/Engine/Screen/Screen.h` | `Screen`, `FullScreenMode`, `ScreenOrientation`, `Resolution`, `RefreshRate`, `DisplayInfo`, the host's `ScreenReport` and `ScreenRequests` |
 | `Source/Helix/Engine/Screen/Display.h` | `Displays`: the displays a frame draws to (0 the main window, then windows the host opens on `Activate` and windows of tools), each a swap chain with its size and desktop place; cameras, canvases and UI panels draw to their `targetDisplay`, input events tell their display; `DisplayNative` under C#'s `Display` |
 | `Source/Helix/Engine/Event/Event.h` | `Event<Args...>`, `Query<Args...>` |
-| `Source/Helix/Engine/Asset/Asset.h` | The asset runtime: `AssetSource` (`FolderAssetSource`, `PlayerDataSource` with a `DataFileReader`), the catalog, `LoadAsset`, `LoadAssetAsync`, `UnloadUnusedAssets`, `WriteAssetFile` |
-| `Source/Helix/Engine/Asset/AssetLoader.h` | `AssetLoader`, `RegisterAssetLoader`: loaders by file extension, decode and integrate halves |
+| `Source/Helix/Engine/Asset/Asset.h` | The asset runtime: `AssetSource` (`FolderAssetSource`, `PlayerDataSource` with a `DataFileReader`), the catalog (an entry's `loadAs`: the loader of another format, for a source that serves an asset converted), `LoadAsset`, `LoadAssetAsync`, `UnloadUnusedAssets`, `RegisterAssetObject` and `UnregisterAssetObject`, `WriteAssetFile` |
+| `Source/Helix/Engine/Asset/AssetLoader.h` | `AssetLoader`, `RegisterAssetLoader`, `FindAssetLoader`: loaders by file extension, decode and integrate halves; `WriteAssetObjects` (what an integrate made, under its fileIDs) |
 | `Source/Helix/Engine/Asset/Resources.h` | `Resources`: `Load`, `LoadAll`, `LoadAsync`, `UnloadAsset`, `UnloadUnusedAssets` |
 | `Source/Helix/Engine/Mesh/Mesh.h` | `Mesh`, `VertexAttributeDescriptor`, `SubMeshDescriptor`, `VertexAttribute`, `VertexAttributeFormat`, `IndexFormat`, `MeshTopology` |
 | `Source/Helix/Engine/Mesh/MeshData.h` | `MeshDataNative`: the meshes of C#'s `Mesh.MeshData` for jobs (hidden copies and new meshes, applied with `SetMeshData`) |
@@ -164,7 +164,9 @@ of C++ and C# scripts, a fallback pipeline without an asset), and the screen as 
   settings of a .meta (mips, sRGB, readable, max size, filter, wrap); glTF, GLB, FBX and OBJ through Helix.Model with
   the importer's axis and unit conversion, triangle lists, normals and tangents where the file has none and the vertex
   cache and fetch order, into a Mesh per model mesh (a submesh per primitive), Texture2Ds for its images (sRGB for
-  color maps) and a prefab of Transforms; the engine's .asset and .prefab files through the scene formats.
+  color maps) and a prefab of Transforms; the engine's .asset and .prefab files through the scene formats. A source
+  may serve an asset in another format than its path's (an editor's import artifact, the engine's binary file): its
+  entry's `loadAs` names the extension whose loader reads it.
 - A load reads on one IO thread (highest priority first), decodes on Helix.Jobs and integrates in UpdatePreloading
   within the main thread time of `Application::backgroundLoadingPriority` (2 to 50 ms); loads of one asset share one
   request, and a synchronous load runs the steps at once and finishes a request in flight. Without threads (the Web)

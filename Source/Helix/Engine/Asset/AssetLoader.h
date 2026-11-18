@@ -57,6 +57,10 @@ namespace helix::engine
         void (*release)(void* decoded) = nullptr;
     };
 
+    // Writes what an integrate made as an asset file under its fileIDs (the main object first): an editor's import
+    // artifact, written before a renderer drops the CPU copies of objects that are not readable.
+    bool WriteAssetObjects(const AssetObjects& objects, Array<u8>& out, String& error, bool binary = false);
+
     // Adds a loader, or replaces the one with the same name; the catalog picks loaders again.
     void RegisterAssetLoader(const AssetLoader& loader);
     // A copy of the loader of an extension (lower case, without the dot).

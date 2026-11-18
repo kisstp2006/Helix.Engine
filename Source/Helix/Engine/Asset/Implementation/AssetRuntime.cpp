@@ -227,7 +227,7 @@ namespace helix::engine
                     if (!e.guid.IsValid() || s.byGuid.Find(e.guid))
                         continue;
                     e.source = source;
-                    e.loader = LoaderOf(e.path);
+                    e.loader = e.loadAs.Empty() ? LoaderOf(e.path) : LoaderOf(Format("x.{}", e.loadAs).View());
                     if (e.loader == kNoAssetLoader && !IsListed(e.path))
                         continue;
                     e.resourcePath = ResourcePathOf(e.path);
@@ -909,6 +909,30 @@ namespace helix::engine
         s.objects.Set(object->GetEntityId(), ObjectInfo{r, fileID, false});
     }
 
+    bool UnregisterAssetObject(Object* object)
+    {
+        if (!object)
+            return false;
+        State& s = S();
+        ObjectInfo* info = s.objects.Find(object->GetEntityId());
+        if (!info)
+            return false;
+        Record* r = info->record;
+        i64 fileID = info->fileID;
+        s.objects.Remove(object->GetEntityId());
+        r->objects.Remove(fileID);
+        for (usize i = 0; i < r->order.Size(); i++)
+            if (r->order[i] == fileID)
+            {
+                r->order.RemoveAt(i);
+                break;
+            }
+        if (r->mainFileID == fileID)
+            r->mainFileID = r->order.Empty() ? 0 : r->order[0];
+        object->SetPersistent(false);
+        return true;
+    }
+
     bool UnloadAssetData(Object* object)
     {
         if (!object)
@@ -1103,6 +1127,28 @@ namespace helix::engine
             fileIds.Push(f);
         }
         return SceneAccess::WriteObjects(objects, Span<const i64>(fileIds.Data(), fileIds.Size()), binary, out, error);
+    }
+
+    bool WriteAssetObjects(const AssetObjects& made, Array<u8>& out, String& error, bool binary)
+    {
+        Array<Object*> objects;
+        Array<i64> fileIds;
+        for (int pass = 0; pass < 2; pass++)
+            for (const AssetObjects::Entry& e : made.objects)
+            {
+                bool main = e.fileID == made.mainFileID || (made.mainFileID == 0 && &e == &made.objects[0]);
+                if ((pass == 0) != main)
+                    continue;
+                Object* o = EntityIdToObject(e.id);
+                if (!o)
+                    return error = "an object of the import is gone", false;
+                objects.Push(o);
+                fileIds.Push(e.fileID);
+            }
+        if (objects.Empty())
+            return error = "no objects", false;
+        return SceneAccess::WriteObjects(Span<Object* const>(objects.Data(), objects.Size()), Span<const i64>(fileIds.Data(), fileIds.Size()), binary,
+                                         out, error);
     }
 
     // ---------------------------------------------------------------------------------------------- sources

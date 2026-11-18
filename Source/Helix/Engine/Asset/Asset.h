@@ -35,6 +35,9 @@ namespace helix::engine
         String resourcePath;
         AssetSource* source = nullptr;
         u32 loader = kNoAssetLoader;
+        // The extension (lower case, no dot) whose loader reads the entry in place of its path's: a source that
+        // serves an asset in another format (an editor's import artifact) names it.
+        String loadAs;
     };
 
     // Where assets come from (extensible: packed player data, the editor's asset database).
@@ -122,6 +125,9 @@ namespace helix::engine
     bool GetAssetReference(const Object* object, Guid& guid, i64& fileID, i32& type);
     // Makes an object made by code an object of an asset (tools, SaveAsset).
     void RegisterAssetObject(const Guid& guid, i64 fileID, Object* object, bool main = false, i32 type = kAssetTypeSerialized);
+    // The object is no longer an object of its asset (it stays, not persistent); its asset's next main object is the
+    // first of the rest. False for objects of no asset.
+    bool UnregisterAssetObject(Object* object);
 
     // Resources.UnloadAsset: the object's data goes (for classes that can drop it); the object stays and loads again
     // when its asset is loaded. False for objects that cannot be unloaded (GameObjects, components, objects of no asset).

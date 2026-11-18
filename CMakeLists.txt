@@ -159,4 +159,11 @@ if(TARGET helix_engine_tests AND (HELIX_PLATFORM STREQUAL "windows" OR HELIX_PLA
     set_tests_properties(helix_engine_tests_batching PROPERTIES ENVIRONMENT "HELIX_RENDER_BATCHING=1")
     add_test(NAME helix_engine_tests_render_thread COMMAND helix_engine_tests)
     set_tests_properties(helix_engine_tests_render_thread PROPERTIES ENVIRONMENT "HELIX_RENDER_BATCHING=1;HELIX_RENDER_THREAD=1")
+    # Tests open windows (displays): LeakSanitizer is told about the X input method's modules.
+    if(HELIX_ENABLE_ASAN AND HELIX_PLATFORM STREQUAL "linux")
+        set(engine_lsan "LSAN_OPTIONS=suppressions=${CMAKE_CURRENT_SOURCE_DIR}/Tests/Support/LeakSuppressions.txt")
+        set_tests_properties(helix_engine_tests PROPERTIES ENVIRONMENT "${engine_lsan}")
+        set_tests_properties(helix_engine_tests_batching PROPERTIES ENVIRONMENT "HELIX_RENDER_BATCHING=1;${engine_lsan}")
+        set_tests_properties(helix_engine_tests_render_thread PROPERTIES ENVIRONMENT "HELIX_RENDER_BATCHING=1;HELIX_RENDER_THREAD=1;${engine_lsan}")
+    endif()
 endif()

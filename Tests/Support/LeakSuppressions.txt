@@ -1,0 +1,3 @@
+# LeakSanitizer (Linux ASan runs): the X input method's modules, which libX11 loads for a window's text input, keep
+# memory to the end of the process.
+leak:OpenInputMethod

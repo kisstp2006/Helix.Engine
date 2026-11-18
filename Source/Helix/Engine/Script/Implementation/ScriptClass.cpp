@@ -8,6 +8,8 @@ namespace helix::engine
             "Awake", "OnEnable", "Start", "FixedUpdate", "Update", "LateUpdate", "OnDisable", "OnDestroy", "OnApplicationFocus", "OnApplicationPause",
             "OnApplicationQuit", "OnTransformParentChanged", "OnTransformChildrenChanged", "OnBecameVisible", "OnBecameInvisible", "OnValidate", "Reset",
             "OnPreCull", "OnPreRender", "OnPostRender", "OnWillRenderObject", "OnRenderObject", "OnGui",
+            "OnRectTransformDimensionsChange", "OnBeforeTransformParentChanged", "OnCanvasGroupChanged", "OnCanvasHierarchyChanged",
+            "OnDidApplyAnimationProperties",
         };
         static_assert(sizeof(kNames) / sizeof(kNames[0]) == usize(ScriptMessage::Count));
 

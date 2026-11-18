@@ -35,5 +35,7 @@ namespace helix::engine
 
         // No events, nothing composed or asked for (the host's shutdown, tests).
         static void Reset();
+        // Counts the resets (a reader keeping keys or buttons held lets them go when it changes).
+        static u64 ResetNumber();
     };
 }

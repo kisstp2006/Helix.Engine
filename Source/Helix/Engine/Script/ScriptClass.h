@@ -39,6 +39,13 @@ namespace helix::engine
         OnRenderObject,
         // The immediate GUI: once a pass (Layout, each input event, Repaint) with the GUI's current event set.
         OnGui,
+        // The canvas UI's: a RectTransform's rectangle changed, before a parent change, a CanvasGroup above changed,
+        // the canvas above changed, an animation set the component's properties.
+        OnRectTransformDimensionsChange,
+        OnBeforeTransformParentChanged,
+        OnCanvasGroupChanged,
+        OnCanvasHierarchyChanged,
+        OnDidApplyAnimationProperties,
         Count,
     };
 
@@ -76,6 +83,8 @@ namespace helix::engine
         u32 messages = 0;
         // DefaultExecutionOrder.
         i32 defaultOrder = 0;
+        // RequireComponent: the component types AddComponent adds first when the GameObject has none of them.
+        Array<scripting::TypeId> required = Array<scripting::TypeId>();
         // C++ scripts: the message functions (the object as its root class's address).
         void (*call[u32(ScriptMessage::Count)])(void* instance) = {};
         void (*callBool[u32(ScriptMessage::Count)])(void* instance, bool value) = {};

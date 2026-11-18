@@ -11,7 +11,7 @@ namespace helix::engine
             Array<InputEvent> events;
             Array<u32> composition;
             bool asked = false;
-            u64 frame = 0;
+            u64 frame = 0, resets = 0;
             i32 caretX = 0, caretY = 0, caretHeight = 0;
         };
 
@@ -74,5 +74,8 @@ namespace helix::engine
         f.events.Clear();
         f.composition.Clear();
         f.asked = false;
+        f.resets++;
     }
+
+    u64 InputFeed::ResetNumber() { return State().resets; }
 }

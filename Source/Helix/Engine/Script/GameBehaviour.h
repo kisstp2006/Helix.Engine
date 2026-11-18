@@ -84,6 +84,9 @@ namespace helix::engine
         void PrepareBinaryRead(const serialization::SerializedFile& file, u32 index, serialization::ReferenceTable* refs);
         // A copy: a C# script's fields through their binary form (references stay the original's until the remap).
         void OnCloneNative(const GameBehaviour& original);
+        // After a copy: a C++ script class's own runtime state again (its copy constructor shared the original's owned
+        // resources and registrations); the serialized fields stay copied.
+        virtual void OnAfterCloneNative() {}
 
     private:
         friend struct ScriptAccess;

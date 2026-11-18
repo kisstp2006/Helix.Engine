@@ -4,6 +4,7 @@
 #include <Helix/Engine/Prefab/Prefab.h>
 #include <Helix/Engine/GameObject/Lifecycle.h>
 #include <Helix/Engine/Object/Implementation/ObjectAccess.h>
+#include <Helix/Engine/Transform/RectTransform.h>
 #include <Helix/Engine/Scene/Implementation/SceneAccess.h>
 #include <Helix/Engine/Scene/SceneFile.h>
 #include <Helix/Engine/Transform/Implementation/TransformAccess.h>
@@ -344,6 +345,10 @@ namespace helix::engine
                 AttachAddedComponents();
                 CheckGameObjects();
                 Link();
+                // RectTransforms place themselves by their anchored positions once their parents are known.
+                for (const TransformLinks& l : links_)
+                    if (l.transform && l.transform->Is<RectTransform>())
+                        static_cast<RectTransform*>(l.transform)->ApplyLoaded();
                 PlaceInstances();
                 OrderRoots();
                 Remember();

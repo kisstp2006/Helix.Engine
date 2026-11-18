@@ -15,6 +15,10 @@
 #include <Helix/Engine/Shader/Shader.h>
 #include <Helix/Engine/Texture/RenderTexture.h>
 #include <Helix/Engine/Texture/Texture.h>
+#include <Helix/Engine/Canvas/Canvas.h>
+#include <Helix/Engine/Canvas/CanvasRenderer.h>
+#include <Helix/Engine/Sprite/Sprite.h>
+#include <Helix/Engine/Transform/RectTransform.h>
 #include <Helix/Engine/Transform/Transform.h>
 
 namespace helix::engine
@@ -30,7 +34,8 @@ namespace helix::engine
             &Shader::StaticClass,       &Texture::StaticClass,     &Texture2D::StaticClass,      &TimeManager::StaticClass,
             &TagManager::StaticClass,   &PlayerSettings::StaticClass, &BuildSettings::StaticClass, &GameBehaviour::StaticClass,
             &MonoScript::StaticClass,   &ScriptableObject::StaticClass, &RenderTexture::StaticClass, &LODGroup::StaticClass,
-            &ReflectionProbe::StaticClass, &ComputeShader::StaticClass,
+            &ReflectionProbe::StaticClass, &ComputeShader::StaticClass, &RectTransform::StaticClass,
+            &Sprite::StaticClass, &Canvas::StaticClass, &CanvasGroup::StaticClass, &CanvasRenderer::StaticClass,
         };
     }
 

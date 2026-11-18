@@ -10,6 +10,7 @@
 #include <Helix/Engine/Scene/SceneFile.h>
 #include <Helix/Engine/Scene/SceneManager.h>
 #include <Helix/Engine/Settings/Settings.h>
+#include <Helix/Engine/Sprite/Sprite.h>
 #include <Helix/Engine/Texture/Texture.h>
 #include <Helix/Jobs/Jobs.h>
 #include <Helix/Platform/IO/FileSystem.h>
@@ -611,4 +612,55 @@ MeshRenderer:
     HX_CHECK(renderer && renderer->sharedMaterial() && renderer->sharedMaterial()->Name() == StringView("Plain"));
     SceneManager::UnloadSceneAsync(loaded);
     SceneManager::ProcessSceneLoads();
+}
+
+HX_TEST(Sprite, CreateGivesARectanglePivotMeshAndUVs)
+{
+    Texture2D* t = Texture2D::Create(64, 32, TextureFormat::RGBA32, false);
+    Sprite* s = Sprite::Create(t, Rect(16, 8, 32, 16), Vector2(0.5f, 0), 16, 0, SpriteMeshType::FullRect, Vector4(4, 2, 6, 3));
+    HX_REQUIRE(s != nullptr);
+    HX_CHECK(s->texture() == t && s->rect() == Rect(16, 8, 32, 16) && s->pivot() == Vector2(16, 0) && s->pixelsPerUnit() == 16);
+    HX_CHECK(s->border() == Vector4(4, 2, 6, 3) && !s->packed() && s->packingMode() == SpritePackingMode::Rectangle);
+    // The mesh: a quad in world units around the pivot, its uvs in the texture.
+    HX_CHECK(s->vertices().Size() == 4u && s->triangles().Size() == 6u && s->vertices()[0] == Vector2(-1, 0) && s->vertices()[2] == Vector2(1, 1));
+    HX_CHECK(s->uv()[0] == Vector2(0.25f, 0.25f) && s->uv()[2] == Vector2(0.75f, 0.75f));
+    Bounds b = s->bounds();
+    HX_CHECK(b.center == Vector3(0, 0.5f, 0) && b.size() == Vector3(2, 1, 0));
+    // The canvas UI's UVs and minimum size.
+    HX_CHECK(DataUtility::GetOuterUV(s) == Vector4(0.25f, 0.25f, 0.75f, 0.75f));
+    HX_CHECK(DataUtility::GetInnerUV(s) == Vector4(20.0f / 64, 10.0f / 32, 42.0f / 64, 21.0f / 32));
+    HX_CHECK(DataUtility::GetMinSize(s) == Vector2(10, 5) && DataUtility::GetPadding(s) == Vector4(0, 0, 0, 0));
+    HX_CHECK(Sprite::Create(nullptr, Rect(0, 0, 1, 1), Vector2(0, 0)) == nullptr);
+    DestroyImmediate(s);
+    DestroyImmediate(t);
+}
+
+HX_TEST(Sprite, TexturesImportedAsSpritesCarryThem)
+{
+    Folder f;
+    Array<u8> png = Png(8, 4, Color32(255, 0, 0, 255));
+    f.Write("Resources/single.png", Span<const u8>(png.Data(), png.Size()));
+    f.Write("Resources/single.png.meta", StringView("guid: 11111111111111111111111111111111\nTextureImporter:\n  textureType: 8\n  spriteMode: 1\n"
+                                                    "  spritePixelsToUnits: 4\n  spriteMeshType: 0\n  alignment: 6\n  spriteBorder: {x: 1, y: 1, z: 2, w: 1}\n"));
+    f.Write("Resources/sheet.png", Span<const u8>(png.Data(), png.Size()));
+    f.Write("Resources/sheet.png.meta", StringView("guid: 22222222222222222222222222222222\nTextureImporter:\n  textureType: 8\n  spriteMode: 2\n"
+                                                   "  spriteSheet:\n    sprites:\n    - name: left\n      rect: {x: 0, y: 0, width: 4, height: 4}\n"
+                                                   "      alignment: 9\n      pivot: {x: 0.25, y: 0.75}\n    - name: right\n"
+                                                   "      rect: {x: 4, y: 0, width: 4, height: 4}\n      alignment: 0\n"));
+    f.Open();
+    Guid single, sheet;
+    HX_REQUIRE(Guid::TryParse("11111111111111111111111111111111", single) && Guid::TryParse("22222222222222222222222222222222", sheet));
+    // Single: the whole texture, its pivot by the alignment (bottom left), the border and pixels per unit.
+    auto* s = static_cast<Sprite*>(LoadAsset(single, 21300000));
+    HX_REQUIRE(s != nullptr && s->Is<Sprite>());
+    HX_CHECK(s->rect() == Rect(0, 0, 8, 4) && s->pivot() == Vector2(0, 0) && s->pixelsPerUnit() == 4 && s->border() == Vector4(1, 1, 2, 1));
+    HX_CHECK(s->texture() == LoadAsset(single, 2800000) && s->Name() == StringView("single"));
+    // Multiple: one sprite a rectangle of the sheet, by name.
+    auto* left = static_cast<Sprite*>(LoadAsset(sheet, 21300000));
+    auto* right = static_cast<Sprite*>(LoadAsset(sheet, 21300002));
+    HX_REQUIRE(left && right);
+    HX_CHECK(left->Name() == StringView("left") && left->rect() == Rect(0, 0, 4, 4) && left->pivot() == Vector2(1, 3));
+    HX_CHECK(right->Name() == StringView("right") && right->rect() == Rect(4, 0, 4, 4) && right->pivot() == Vector2(2, 2));
+    // A plain texture has none.
+    HX_CHECK(LoadAsset(single, 21300002) == nullptr);
 }

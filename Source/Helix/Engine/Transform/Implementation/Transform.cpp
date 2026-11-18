@@ -9,6 +9,7 @@ namespace helix::engine
 {
     Array<TransformLinks>* detail::gTransformLinks = nullptr;
     void (*detail::gHierarchyChanged)(Transform*, Transform*, Transform*) = nullptr;
+    void (*detail::gBeforeHierarchyChange)(Transform*) = nullptr;
 
     namespace
     {
@@ -57,6 +58,8 @@ namespace helix::engine
             HX_LOG_ERROR(TransformLog, "SetParent: {} cannot become a child of its own child {}.", Name(), newParent->Name());
             return false;
         }
+        if (detail::gBeforeHierarchyChange)
+            detail::gBeforeHierarchyChange(this);
         if (worldPositionStays)
         {
             Matrix4x4 world = localToWorldMatrix();

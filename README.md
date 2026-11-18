@@ -23,6 +23,12 @@ of C++ and C# scripts, a fallback pipeline without an asset), and the screen as 
 | `Source/Helix/Engine/Transform/Transform.h` | `Transform`: local and world values, hierarchy, sibling order, movement, single and span conversions, `Space` |
 | `Source/Helix/Engine/Transform/Hierarchy.h` | `TransformHierarchy` blocks, `UpdateWorldMatrices`, `RegisterTransformSystem`, `SetTransformInterest`, `DispatchTransformChanges` |
 | `Source/Helix/Engine/Transform/TransformHandle.h` | `TransformHandle` and its child enumerator |
+| `Source/Helix/Engine/Transform/RectTransform.h` | `RectTransform` (anchors, pivot, size delta, offsets, the rect, driven properties and `DrivenRectTransformTracker`, `ForceUpdateRectTransforms`, `reapplyDrivenProperties`) and `RectTransformUtility` (screen points in rectangles, pixel adjustment, `FlipLayoutOnAxis`, `FlipLayoutAxes`) |
+| `Source/Helix/Engine/Canvas/Canvas.h` | `Canvas` (the render modes, scale factor, sorting, nested canvases, `willRenderCanvases`), `CanvasGroup`, the batcher: every canvas's renderers batched by depth, material and texture into draws, queued over the cameras or in the world |
+| `Source/Helix/Engine/Canvas/CanvasRenderer.h` | `CanvasRenderer`: a UI element's mesh, materials, color and alpha, rect clipping with softness, culling |
+| `Source/Helix/Engine/Sprite/Sprite.h` | `Sprite` (rect, pivot, border, pixels per unit, its mesh), `SpriteMeshType`, sprites of imported textures |
+| `Source/Helix/Engine/Events/HelixEvent.h` | `HelixEvent<Args...>`: persistent calls (a target's method with a constant argument) and listeners; the events of native components reached by C#'s `HelixEvent` classes |
+| `Source/Helix/Engine/Input/Touch.h` | `Touch`, `TouchPhase`, `TouchType` |
 | `Source/Helix/Engine/Scene/Scene.h` | `Scene`, `SceneHandle`, `LoadSceneMode`, `LoadSceneParameters`, `UnloadSceneOptions` |
 | `Source/Helix/Engine/Scene/LoadableSceneId.h` | `LoadableSceneId`: a scene asset by its guid |
 | `Source/Helix/Engine/Scene/SceneManager.h` | `SceneManager`, `SceneEvent`, `SceneSource` (`FileSceneSource`, `MemorySceneSource`, `AssetSceneSource`) |
@@ -33,7 +39,7 @@ of C++ and C# scripts, a fallback pipeline without an asset), and the screen as 
 | `Source/Helix/Engine/Pool/ObjectPool.h` | `ObjectPool<T>`, `LinkedPool<T>`, `PoolCallbacks<T>` |
 | `Source/Helix/Engine/Time/Time.h` | `Time`, `TimeClock` |
 | `KeyCode` (C# API) | Helix.Platform's key codes, bound as the script API's `HelixEngine.KeyCode` |
-| `Source/Helix/Engine/Input/InputFeed.h` | `InputFeed`: the window's input of a frame from the host, read by the UI and the game without taking it away; the text input a focused text element asks for |
+| `Source/Helix/Engine/Input/InputFeed.h` | `InputFeed`: the window's input of a frame from the host, read by the UI and the game without taking it away; the text input a focused text element asks for; its resets counted (a reader lets go of held keys) |
 | `Source/Helix/Engine/Input/Cursor.h` | `Cursor.SetCursor` (a texture's pixels and a hotspot, `CursorMode`) and the UI's system shapes: the pointer the host shows at the end of the frame |
 | `Source/Helix/Engine/Input/SystemClipboard.h` | The system clipboard for the engine's modules (the UI's `GuiUtility.systemCopyBuffer`): the host's window's (the process's own without a host) |
 | `Source/Helix/Engine/Math/Hash128.h` | `Hash128`: its halves, its text of 32 hex digits (C#: SpookyHash V2 computing, comparing, parsing) |

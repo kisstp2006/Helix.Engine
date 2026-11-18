@@ -1,7 +1,9 @@
 #include <Helix/Engine/Asset/AssetLoader.h>
 #include <Helix/Engine/Asset/Implementation/MetaFields.h>
 #include <Helix/Engine/Asset/Implementation/TextureImport.h>
+#include <Helix/Engine/Sprite/Sprite.h>
 #include <Helix/Engine/Texture/Texture.h>
+#include <Helix/Serialization/Yaml/Parser.h>
 
 #include <Helix/Image/Codecs/ImageDecoder.h>
 #include <Helix/Image/Texture/Mipmaps.h>
@@ -49,6 +51,11 @@ namespace helix::engine
                 return nullptr;
             DecodedTexture* out = new DecodedTexture();
             out->name = String(Stem(in.path));
+            ReadSpriteImports(in.meta, out->name.View(), out->sprites);
+            u32 width = data.width, height = data.height;
+            for (SpriteImport& s : out->sprites)
+                if (s.whole)
+                    s.rect = Rect(0, 0, f32(width), f32(height));
             if (!ImportTexture(Move(data), settings, *out, error))
             {
                 delete out;
@@ -67,12 +74,127 @@ namespace helix::engine
                 return false;
             }
             out.Add(MainAssetFileId(ClassId::Texture2D), t, true);
+            // Its sprites (sized in the texture as imported: a texture shrunk by max size scales them).
+            f32 kx = d.sourceWidth ? f32(t->width()) / f32(d.sourceWidth) : 1, ky = d.sourceHeight ? f32(t->height()) / f32(d.sourceHeight) : 1;
+            for (const SpriteImport& s : d.sprites)
+            {
+                auto* sprite = NewObject<Sprite>();
+                sprite->SetName(s.name.View());
+                Rect r(s.rect.x * kx, s.rect.y * ky, s.rect.width * kx, s.rect.height * ky);
+                sprite->Set(t, r, s.pivot, s.pixelsPerUnit, 0, SpriteMeshType(s.meshType), s.border);
+                out.Add(s.fileID, sprite, false);
+            }
             return true;
+        }
+    }
+
+    namespace
+    {
+        bool Float(const serialization::yaml::Tree& t, u32 mapping, StringView key, f32& out)
+        {
+            double v;
+            u32 n = t.Find(mapping, key);
+            if (!t.IsScalar(n) || !t.AsFloat(n, v))
+                return false;
+            out = f32(v);
+            return true;
+        }
+
+        Vector2 Vec2(const serialization::yaml::Tree& t, u32 node, Vector2 fallback)
+        {
+            if (!t.IsMapping(node))
+                return fallback;
+            Float(t, node, "x", fallback.x);
+            Float(t, node, "y", fallback.y);
+            return fallback;
+        }
+
+        // The reference's sprite alignments: center, the corners and edges' middles (custom: the pivot given).
+        Vector2 Alignment(i32 a, Vector2 custom)
+        {
+            static const Vector2 kPivots[] = {Vector2(0.5f, 0.5f), Vector2(0, 1), Vector2(0.5f, 1), Vector2(1, 1), Vector2(0, 0.5f),
+                                              Vector2(1, 0.5f), Vector2(0, 0), Vector2(0.5f, 0), Vector2(1, 0)};
+            return a >= 0 && a < 9 ? kPivots[a] : custom;
+        }
+    }
+
+    void ReadSpriteImports(Span<const u8> meta, StringView textureName, Array<SpriteImport>& out)
+    {
+        out.Clear();
+        if (meta.Empty())
+            return;
+        using namespace serialization::yaml;
+        String text("---\n");
+        text += StringView(reinterpret_cast<const char*>(meta.Data()), meta.Size());
+        Tree tree;
+        String error;
+        if (!Parse(text.View(), tree, error) || tree.documents.Empty())
+            return;
+        u32 importer = tree.Find(tree.documents[0].root, "TextureImporter");
+        if (!tree.IsMapping(importer))
+            return;
+        f32 type = 0, mode = 1, ppu = 100, meshType = 1, alignment = 0;
+        Float(tree, importer, "textureType", type);
+        if (i32(type) != 8)
+            return;
+        Float(tree, importer, "spriteMode", mode);
+        Float(tree, importer, "spritePixelsToUnits", ppu);
+        Float(tree, importer, "spriteMeshType", meshType);
+        Float(tree, importer, "alignment", alignment);
+        auto border = [&](u32 mapping) {
+            Vector4 b(0, 0, 0, 0);
+            u32 n = tree.Find(mapping, "spriteBorder");
+            if (!tree.IsMapping(n))
+                n = tree.Find(mapping, "border");
+            if (tree.IsMapping(n))
+                Float(tree, n, "x", b.x), Float(tree, n, "y", b.y), Float(tree, n, "z", b.z), Float(tree, n, "w", b.w);
+            return b;
+        };
+        if (i32(mode) == 1)
+        {
+            SpriteImport s;
+            s.name = String(textureName);
+            s.whole = true;
+            s.pivot = Alignment(i32(alignment), Vec2(tree, tree.Find(importer, "spritePivot"), Vector2(0.5f, 0.5f)));
+            s.border = border(importer);
+            s.pixelsPerUnit = ppu;
+            s.meshType = i32(meshType);
+            s.fileID = MainAssetFileId(ClassId::Sprite);
+            out.Push(Move(s));
+            return;
+        }
+        // Multiple: the sprite sheet's rectangles.
+        u32 sheet = tree.Find(importer, "spriteSheet");
+        u32 sprites = tree.IsMapping(sheet) ? tree.Find(sheet, "sprites") : kNoNode;
+        if (!tree.IsSequence(sprites))
+            return;
+        for (u32 i = 0; i < tree.Count(sprites); i++)
+        {
+            u32 e = tree.Item(sprites, i);
+            if (!tree.IsMapping(e))
+                continue;
+            SpriteImport s;
+            u32 name = tree.Find(e, "name");
+            s.name = tree.IsScalar(name) ? String(tree.Text(name)) : String(textureName);
+            u32 rect = tree.Find(e, "rect");
+            if (tree.IsMapping(rect))
+                Float(tree, rect, "x", s.rect.x), Float(tree, rect, "y", s.rect.y), Float(tree, rect, "width", s.rect.width), Float(tree, rect, "height", s.rect.height);
+            f32 a = 0;
+            Float(tree, e, "alignment", a);
+            s.pivot = Alignment(i32(a), Vec2(tree, tree.Find(e, "pivot"), Vector2(0.5f, 0.5f)));
+            s.border = border(e);
+            s.pixelsPerUnit = ppu;
+            s.meshType = i32(meshType);
+            f32 id = 0;
+            s.fileID = Float(tree, e, "internalID", id) && id != 0 ? i64(id) : MainAssetFileId(ClassId::Sprite) + 2 * i64(i);
+            out.Push(Move(s));
         }
     }
 
     bool ImportTexture(image::TextureData&& data, const TextureImportSettings& settings, DecodedTexture& out, String& error)
     {
+        out.sourceWidth = data.width;
+        out.sourceHeight = data.height;
         // Max Size: uncompressed images shrink to fit.
         u32 w = data.width, h = data.height;
         if (settings.maxSize > 0 && !image::IsBlockFormat(data.format) && data.mips == 1)

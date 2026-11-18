@@ -22,6 +22,8 @@ namespace helix::engine
     void CallScriptMessage(Object* object, const ScriptClass* script, ScriptMessage message, bool argument = false);
     // The script class of a GameBehaviour or a ScriptableObject; null for other objects and those without one.
     const ScriptClass* ScriptClassOfObject(const Object* object);
+    // A message to the active and enabled scripts of a GameObject (and its children's, depth first).
+    void SendHierarchyMessage(GameObject* gameObject, ScriptMessage message, bool children = false);
     // A message to every script that is active and enabled (OnApplicationFocus, Pause, Quit).
     void BroadcastScriptMessage(ScriptMessage message, bool argument = false);
     // How many scripts the phase calls now (enabled on active GameObjects, with the message).

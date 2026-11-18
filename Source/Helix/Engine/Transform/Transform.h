@@ -32,10 +32,12 @@ namespace helix::engine
         extern HX_IMPORT_DATA Array<TransformLinks>* gTransformLinks;
         // Called after SetParent moved a Transform (the script runtime's OnTransformParentChanged / ChildrenChanged).
         extern HX_IMPORT_DATA void (*gHierarchyChanged)(Transform* moved, Transform* oldParent, Transform* newParent);
+        // Called before SetParent moves it (OnBeforeTransformParentChanged).
+        extern HX_IMPORT_DATA void (*gBeforeHierarchyChange)(Transform* moving);
     }
 
     HX_CLASS()
-    class Transform final : public Component
+    class Transform : public Component
     {
         HX_ENGINE_CLASS(Transform, Component, ClassId::Transform, ClassDisallowMultiple)
 

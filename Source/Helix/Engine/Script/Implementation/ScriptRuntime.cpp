@@ -1,3 +1,4 @@
+#include <Helix/Engine/Events/HelixEvent.h>
 #include <Helix/Engine/Script/ScriptRuntime.h>
 #include <Helix/Engine/Rendering/Pipeline/RenderPipeline.h>
 
@@ -433,6 +434,8 @@ namespace helix::engine
                         ScriptsOf(t->GetChild(i)->gameObject(), m, true);
         }
 
+        void BeforeHierarchyChange(Transform* moving) { ScriptsOf(moving->gameObject(), ScriptMessage::OnBeforeTransformParentChanged, true); }
+
         void HierarchyChanged(Transform* moved, Transform* oldParent, Transform* newParent)
         {
             ScriptsOf(moved->gameObject(), ScriptMessage::OnTransformParentChanged, true);
@@ -473,6 +476,7 @@ namespace helix::engine
                 return;
             rt.hooked = true;
             detail::gHierarchyChanged = &HierarchyChanged;
+            detail::gBeforeHierarchyChange = &BeforeHierarchyChange;
             detail::gVisibilityChanged = &VisibilityChanged;
             detail::gRenderStage = &RenderStageReached;
             Application::focusChanged().Add([](void*, bool focus) { BroadcastScriptMessage(ScriptMessage::OnApplicationFocus, focus); });
@@ -592,7 +596,11 @@ namespace helix::engine
         }
     }
 
-    void GameBehaviour::OnCloneNative(const GameBehaviour& original) { CopyManagedFields(this, &original, script_); }
+    void GameBehaviour::OnCloneNative(const GameBehaviour& original)
+    {
+        CopyManagedFields(this, &original, script_);
+        OnAfterCloneNative();
+    }
 
     u32 GameBehaviour::ResolveBinary(const serialization::SerializedFile& file, u32 index, serialization::ReferenceTable* refs)
     {
@@ -652,6 +660,13 @@ namespace helix::engine
     {
         if (!gameObject || !script.alive)
             return nullptr;
+        // RequireComponent: what the GameObject lacks first.
+        for (scripting::TypeId t : script.required)
+            if (!gameObject->GetComponent(t) && !gameObject->AddComponent(t))
+            {
+                HX_LOG_ERROR(gScriptLog, "AddComponent: {} requires a component that could not be added.", script.name);
+                return nullptr;
+            }
         u32 klass = script.OwnClass() ? script.engineClass : ClassOf<GameBehaviour>();
         return static_cast<GameBehaviour*>(gameObject->AddComponent(klass, &Prepare, const_cast<ScriptClass*>(&script)));
     }
@@ -690,6 +705,35 @@ namespace helix::engine
         }
         if (gManaged.runOne && Handle(b))
             gManaged.runOne(Handle(b), u32(m), argument ? 1 : 0);
+    }
+
+    void SendHierarchyMessage(GameObject* gameObject, ScriptMessage message, bool children) { ScriptsOf(gameObject, message, children); }
+
+    namespace
+    {
+        bool Deliver(GameBehaviour* b, StringView name, const scripting::Variant& value);
+    }
+
+    bool InvokeObjectMethod(Object* target, StringView method, Span<const scripting::Variant> arguments)
+    {
+        using namespace scripting;
+        if (!target || (arguments.Size() > 1 && target->Is<GameBehaviour>()))
+            return false;
+        // A script's method (C# or C++) by its message delivery.
+        if (target->Is<GameBehaviour>())
+            return Deliver(static_cast<GameBehaviour*>(target), method, arguments.Empty() ? Variant() : arguments[0]);
+        // A bound class's method, or its property's setter.
+        TypeId type = ObjectHandles<Object>::TypeOf(target);
+        String error;
+        if (method.StartsWith("set_") && arguments.Size() == 1)
+            return SetMember(type, method.Substr(4), target, arguments[0], error);
+        const MethodInfo* m = FindMethod(type, method, arguments);
+        if (!m)
+            return false;
+        Variant result;
+        if (!Invoke(*m, target, arguments, result, error))
+            HX_LOG_ERROR(gScriptLog, "{}.{}: {}", target->Name(), method, error);
+        return true;
     }
 
     void BroadcastScriptMessage(ScriptMessage m, bool argument)
@@ -917,6 +961,8 @@ namespace helix::engine
             s.type = n.type;
             s.defaultOrder = n.executionOrder;
             s.transfer = n.transfer;
+            for (scripting::TypeId t : n.required)
+                s.required.Push(t);
             for (const scripting::NativeScriptMethod& m : n.methods)
             {
                 s.methods.Push(m);
@@ -1294,6 +1340,9 @@ namespace helix::engine
                 // Below a C++ script class: its objects are that class's; a message the C# class has none of runs the
                 // C++ class's method.
                 s.nativeBase = native->index;
+                // The C++ class's required components too (C#'s attributes add theirs after).
+                for (scripting::TypeId t : native->required)
+                    s.required.Push(t);
                 TakeBaseMessages(s, *native, messages);
                 s.transfer = &DerivedTransfer;
                 s.engineClass = RegisterDerivedClass(s, *native);
@@ -1304,6 +1353,22 @@ namespace helix::engine
             u32 scriptable = ClassOf<ScriptableObject>();
             s.engineClass = scripting::IsAssignableFrom(GetClass(scriptable).type, type) ? scriptable : ClassOf<GameBehaviour>();
             return RegisterScriptClass(s);
+        }
+
+        // A C# class's RequireComponent attributes (its C# bases' too): the types' ids.
+        void SetManagedRequired(u32 index, const u32* types, i32 count)
+        {
+            ScriptClass* s = MutableScriptClass(index);
+            if (!s)
+                return;
+            for (i32 i = 0; i < count; i++)
+            {
+                bool known = false;
+                for (scripting::TypeId t : s->required)
+                    known = known || t.value == types[i];
+                if (!known)
+                    s->required.Push(scripting::TypeId{types[i]});
+            }
         }
 
         void Log(i32 level, const char* text, i32 size)
@@ -1321,6 +1386,7 @@ namespace helix::engine
         started = true;
         scripting::RegisterNativeExport("HxEngineScripts_SetManaged", std::bit_cast<const void*>(&SetManaged));
         scripting::RegisterNativeExport("HxEngineScripts_RegisterClass", std::bit_cast<const void*>(&RegisterManagedClass));
+        scripting::RegisterNativeExport("HxEngineScripts_SetRequired", std::bit_cast<const void*>(&SetManagedRequired));
         scripting::RegisterNativeExport("HxEngine_Log", std::bit_cast<const void*>(&Log));
         scripting::RegisterNativeExport("HxEngineScripts_ValueType", std::bit_cast<const void*>(&FindManagedValueType));
         scripting::RegisterNativeExport("HxEngineScripts_ObjectType", std::bit_cast<const void*>(&ObjectTypeOf));

@@ -198,6 +198,22 @@ namespace helix::engine
             return nullptr;
         }
         bool isTransform = IsDerivedFrom(klass, ClassOf<Transform>());
+        // A RectTransform (any class below Transform) replaces a plain Transform: it takes its node, children and
+        // local values.
+        if (isTransform && !components_.Empty() && components_[0].klass == ClassOf<Transform>() && klass != ClassOf<Transform>())
+        {
+            Transform* old = transform();
+            auto* replacement = static_cast<Transform*>(NewObjectOfClass(klass));
+            TransformAccess::Swap(old, replacement);
+            GameObjectAccess::SetGameObject(*replacement, this);
+            components_[0] = {PPtr<Component>(replacement), klass};
+            GameObjectAccess::SetGameObject(*old, nullptr);
+            DeleteObject(old);
+            if (prepare)
+                prepare(*replacement, user);
+            GameObjectAccess::Notify(replacement);
+            return replacement;
+        }
         if (isTransform != components_.Empty())
         {
             HX_LOG_ERROR(EngineLog, "AddComponent: a GameObject has exactly one Transform, first ({}).", info.name);

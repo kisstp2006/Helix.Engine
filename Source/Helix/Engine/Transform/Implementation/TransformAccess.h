@@ -10,6 +10,20 @@ namespace helix::engine
         static TransformHierarchy*& Block(Transform& t) { return t.hierarchy_; }
         static u32& Index(Transform& t) { return t.index_; }
 
+        // a and b trade their nodes (a GameObject's Transform replaced by a RectTransform: the new one takes the node,
+        // the old one the new one's root of its own).
+        static void Swap(Transform* a, Transform* b)
+        {
+            TransformHierarchy* h = a->hierarchy_;
+            u32 i = a->index_;
+            a->hierarchy_ = b->hierarchy_;
+            a->index_ = b->index_;
+            b->hierarchy_ = h;
+            b->index_ = i;
+            a->hierarchy_->transforms[a->index_] = a;
+            b->hierarchy_->transforms[b->index_] = b;
+        }
+
         // A new root hierarchy holding only `t`, at the end of the roots of the scene new roots go into.
         static void CreateRoot(Transform* t);
         // The scene new roots go into (the active scene, or the scene being loaded).

@@ -1,3 +1,4 @@
+#include <Helix/Engine/Canvas/Canvas.h>
 #include <Helix/Engine/Script/ScriptRuntime.h>
 #include <Helix/Engine/Script/Coroutines.h>
 #include <Helix/Engine/Application/Application.h>
@@ -169,6 +170,12 @@ namespace helix::engine
         }
 
         void WorldMatrices(void*) { UpdateWorldMatrices(); }
+        // The canvases: their will render events, batching, and the draws of camera and world canvases queued.
+        void UpdateCanvases(void*)
+        {
+            canvas::Batch(true);
+            canvas::QueueDraws();
+        }
         // The scripts of both languages (pending Starts first).
         void ScriptsFixedUpdate(void*) { RunScriptPhase(ScriptMessage::FixedUpdate); }
         void ScriptsUpdate(void*) { RunScriptPhase(ScriptMessage::Update); }
@@ -225,7 +232,7 @@ namespace helix::engine
         root.subSystemList.Push(Phase("PostLateUpdate", {
             // After the update loop, before rendering.
             System("DestroyQueue", &DestroyQueue), System("PlayerSendFrameStarted"), System("DirectorLateUpdate"),
-            System("UpdateWorldMatrices", &WorldMatrices), System("PlayerUpdateCanvases"), System("UIElementsRepaintPanels"), System("UpdateAudio"),
+            System("UpdateWorldMatrices", &WorldMatrices), System("PlayerUpdateCanvases", &UpdateCanvases), System("UIElementsRepaintPanels"), System("UpdateAudio"),
             System("VFXUpdate"), System("BeforeRender", &BeforeRender), System("FinishFrameRendering", &FinishRendering), System("BatchModeUpdate"),
             System("PresentAfterDraw", &EndOfFrame), System("ProfilerEndFrame"), System("ObjectDispatcherPostLateUpdate"),
         }));

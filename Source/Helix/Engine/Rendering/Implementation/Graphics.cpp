@@ -1,3 +1,4 @@
+#include <Helix/Engine/Canvas/CanvasRenderer.h>
 #include <Helix/Engine/Material/Material.h>
 #include <Helix/Engine/Rendering/Graphics.h>
 #include <Helix/Engine/Rendering/Implementation/RenderCore.h>
@@ -1002,6 +1003,9 @@ namespace helix::engine
             return;
         ReleaseResources();
         s.device = device;
+        // What the canvases drew is gone with the device's resources: their graphics give it again.
+        if (device)
+            CanvasRenderer::onRequestRebuildInternal().Invoke();
     }
 
     rhi::Device* Graphics::Device() { return R().device; }

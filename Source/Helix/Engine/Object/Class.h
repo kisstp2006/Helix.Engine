@@ -32,7 +32,7 @@ namespace helix::engine
     {
         inline constexpr i32 Object = 0, GameObject = 1, Component = 2, Transform = 4, Behaviour = 8, Camera = 20, Material = 21,
                              MeshRenderer = 23, Renderer = 25, Texture = 27, Texture2D = 28, MeshFilter = 33, Cubemap = 89, Mesh = 43, Shader = 48, TextAsset = 49,
-                             Light = 108, MonoBehaviour = 114, MonoScript = 115, RectTransform = 224, PrefabInstance = 1001;
+                             Light = 108, MonoBehaviour = 114, MonoScript = 115, RectTransform = 224, Sprite = 213, CanvasRenderer = 222, Canvas = 223, CanvasGroup = 225, PrefabInstance = 1001;
     }
 
     enum ClassFlags : u32

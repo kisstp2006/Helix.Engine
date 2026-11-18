@@ -9,6 +9,8 @@
 #include <Helix/Engine/Rendering/Pipeline/CommandBuffer.h>
 #include <Helix/Engine/Application/Application.h>
 #include <Helix/Engine/Rendering/Light.h>
+#include <Helix/Engine/GameObject/GameObject.h>
+#include <Helix/Engine/Scene/SceneManager.h>
 #include <Helix/Engine/Rendering/RenderSettings.h>
 #include <Helix/Engine/Rendering/ScreenCapture.h>
 #include <Helix/Engine/Rendering/SystemInfo.h>
@@ -65,6 +67,20 @@ namespace helix::engine
             Array<EntityId> textureCaptures = Array<EntityId>();
             // RenderFrame's first camera clears the whole target.
             bool clearFirst = false;
+            // The editor's content apart from the game's; the pass drawing now.
+            bool separate = false;
+            DrawnContent content = DrawnContent::All;
+            // A display drawn into a texture: the texture, the target it is drawn into first (as a window, then
+            // copied: the screen's rows are the other way), its cameras of the last frame.
+            struct GameDisplay
+            {
+                EntityId texture;
+                rhi::TextureHandle color, depth;
+                u32 width = 0, height = 0;
+                i32 cameras = 0;
+                RenderStats stats;
+            };
+            Array<GameDisplay> gameDisplays = Array<GameDisplay>();
         };
 
         RenderState& R()
@@ -1037,19 +1053,112 @@ namespace helix::engine
     }
 
     const RenderTarget& Graphics::Target() { return R().target; }
+
+    // ------------------------------------------------------------------------------- the editor's and the game's
+
+    void Graphics::SetSeparateEditorContent(bool separate) { R().separate = separate; }
+    bool Graphics::SeparateEditorContent() { return R().separate; }
+
+    bool Graphics::IsEditorObject(const GameObject* go)
+    {
+        if (!R().separate)
+            return false;
+        if (!go)
+            return true;
+        Scene scene = go->scene();
+        return !scene.IsValid() || scene == DontDestroyOnLoadScene();
+    }
+
+    DrawnContent Graphics::DrawingContent() { return R().content; }
+
+    bool Graphics::DrawsNow(const GameObject* go, i32 display)
+    {
+        if (display != Displays::Current())
+            return false;
+        switch (R().content)
+        {
+        case DrawnContent::Editor:
+            return IsEditorObject(go);
+        case DrawnContent::Game:
+            return !IsEditorObject(go);
+        default:
+            return true;
+        }
+    }
+
+    void Graphics::SetDisplayTexture(i32 display, RenderTexture* texture)
+    {
+        RenderState& s = R();
+        if (display < 0 || display >= 8)
+            return;
+        while (s.gameDisplays.Size() <= usize(display))
+            s.gameDisplays.Push(RenderState::GameDisplay{});
+        s.gameDisplays[usize(display)].texture = texture ? texture->GetEntityId() : EntityId();
+    }
+
+    RenderTexture* Graphics::DisplayTexture(i32 display)
+    {
+        RenderState& s = R();
+        return display >= 0 && usize(display) < s.gameDisplays.Size() ? EntityIdToObject<RenderTexture>(s.gameDisplays[usize(display)].texture) : nullptr;
+    }
+
+    i32 Graphics::DisplayTextureCameraCount(i32 display)
+    {
+        RenderState& s = R();
+        return display >= 0 && usize(display) < s.gameDisplays.Size() ? s.gameDisplays[usize(display)].cameras : 0;
+    }
+
+    RenderStats Graphics::DisplayTextureStats(i32 display)
+    {
+        RenderState& s = R();
+        return display >= 0 && usize(display) < s.gameDisplays.Size() ? s.gameDisplays[usize(display)].stats : RenderStats{};
+    }
+
+    Vector2 Graphics::ContentDisplaySize(const GameObject* go, i32 display)
+    {
+        if (R().separate && !IsEditorObject(go))
+            if (RenderTexture* t = DisplayTexture(Max(display, 0)))
+                return Vector2(f32(t->width()), f32(t->height()));
+        if (display > 0 && Displays::Get(display).active)
+            return Vector2(f32(Displays::Get(display).systemWidth), f32(Displays::Get(display).systemHeight));
+        return Camera::DisplaySize();
+    }
     void Graphics::SetAmbientLight(Color color) { R().ambient = color; }
     const RenderStats& Graphics::LastStats() { return R().stats; }
 
     namespace
     {
         // One display: its cameras (display 0 also those that draw into textures), then the screen overlay over them.
-        void RenderDisplay(Span<Camera* const> all, i32 display)
+        // An editor pass leaves out the game's cameras that draw to the screen; a game pass (a display texture) takes
+        // only the game's cameras of that display.
+        i32 RenderDisplay(Span<Camera* const> all, i32 display)
         {
             Array<Camera*> cameras;
+            DrawnContent content = R().content;
             for (Camera* c : all)
-                if (display == 0 ? (c->targetTexture() || c->targetDisplay() <= 0 || !Displays::Get(c->targetDisplay()).active)
-                                 : (!c->targetTexture() && c->targetDisplay() == display))
+            {
+                bool editor = Graphics::IsEditorObject(c->gameObject());
+                bool take;
+                if (content == DrawnContent::Game)
+                    take = !editor && !c->targetTexture() && Max(c->targetDisplay(), 0) == display;
+                else
+                {
+                    take = display == 0 ? (c->targetTexture() || c->targetDisplay() <= 0 || !Displays::Get(c->targetDisplay()).active)
+                                        : (!c->targetTexture() && c->targetDisplay() == display);
+                    if (take && content == DrawnContent::Editor && !c->targetTexture() && !editor)
+                        take = false;
+                }
+                if (take)
                     cameras.Push(c);
+            }
+            if (cameras.Empty() && content == DrawnContent::Game)
+            {
+                // Nothing draws there: black.
+                CommandBuffer clear;
+                clear.SetRenderTarget(RenderTargetIdentifier(BuiltinRenderTextureType::CameraTarget));
+                clear.ClearRenderTarget(true, true, Color(0, 0, 0, 1));
+                render::ExecuteNow(clear.List(), false);
+            }
             R().clearFirst = true;
             render::RenderWithPipeline(Span<Camera* const>(cameras.Data(), cameras.Size()), true);
             R().clearFirst = false;
@@ -1062,17 +1171,81 @@ namespace helix::engine
                 overlay.Invoke(cmd);
                 render::ExecuteNow(cmd.List(), false);
             }
+            return i32(cameras.Size());
+        }
+
+        // The game's displays drawn into their textures: each into a target of the device window's formats as into
+        // a window, then copied into its texture (the screen's rows the other way).
+        void RenderGameDisplays(Span<Camera* const> cameras)
+        {
+            RenderState& s = R();
+            RenderTarget main = s.target;
+            for (i32 d = 0; d < i32(s.gameDisplays.Size()); d++)
+            {
+                RenderState::GameDisplay& g = s.gameDisplays[usize(d)];
+                auto* texture = EntityIdToObject<RenderTexture>(g.texture);
+                if (!texture || texture->width() <= 0 || texture->height() <= 0)
+                    continue;
+                u32 w = u32(texture->width()), h = u32(texture->height());
+                // RGBA8 (the copy into the texture reads the screen as ARGB32).
+                rhi::Format colorFormat = rhi::Format::RGBA8Unorm;
+                rhi::Format depthFormat = main.depthFormat == rhi::Format::Unknown ? s.device->Caps().swapChainDepthFormat : main.depthFormat;
+                if (!g.color.IsValid() || g.width != w || g.height != h)
+                {
+                    s.device->Destroy(g.color);
+                    s.device->Destroy(g.depth);
+                    g.color = s.device->CreateTexture({.format = colorFormat, .width = w, .height = h,
+                                                       .usage = rhi::TextureRenderTarget | rhi::TextureSampled, .debugName = "GameDisplay"});
+                    g.depth = depthFormat == rhi::Format::Unknown
+                                  ? rhi::TextureHandle()
+                                  : s.device->CreateTexture({.format = depthFormat, .width = w, .height = h, .usage = rhi::TextureDepthStencil,
+                                                             .debugName = "GameDisplayDepth"});
+                    g.width = w;
+                    g.height = h;
+                }
+                Graphics::SetTarget({g.color, g.depth, w, h, colorFormat, g.depth.IsValid() ? depthFormat : rhi::Format::Unknown});
+                Displays::SetCurrent(d);
+                s.content = DrawnContent::Game;
+                RenderStats before = s.stats;
+                g.cameras = RenderDisplay(cameras, d);
+                // What this display's drawing took (the frame's counts go on).
+                g.stats = RenderStats{};
+                g.stats.cameras = s.stats.cameras - before.cameras;
+                g.stats.visible = s.stats.visible - before.visible;
+                g.stats.drawCalls = s.stats.drawCalls - before.drawCalls;
+                g.stats.setPassCalls = s.stats.setPassCalls - before.setPassCalls;
+                g.stats.triangles = s.stats.triangles - before.triangles;
+                g.stats.instancedBatches = s.stats.instancedBatches - before.instancedBatches;
+                g.stats.instances = s.stats.instances - before.instances;
+                g.stats.drawListTime = s.stats.drawListTime - before.drawListTime;
+                g.stats.submitTime = s.stats.submitTime - before.submitTime;
+                CommandBuffer copy;
+                copy.SetName("GameDisplay");
+                copy.Blit(RenderTargetIdentifier(BuiltinRenderTextureType::CameraTarget), RenderTargetIdentifier(texture));
+                render::ExecuteNow(copy.List(), false);
+                s.content = DrawnContent::All;
+            }
+            Graphics::SetTarget(main);
+            Displays::SetCurrent(0);
         }
 
         // Every display (a screenshot: the main one only): the target is the display's swap chain while it draws.
+        // With the editor's content apart, the game's display textures first, then the windows with the editor's.
         void RenderCameras(bool allDisplays = true)
         {
             Array<Camera*> cameras;
             Camera::GetAllCameras(cameras);
+            RenderState& state = R();
+            if (state.separate && allDisplays)
+                RenderGameDisplays(Span<Camera* const>(cameras.Data(), cameras.Size()));
+            state.content = state.separate ? DrawnContent::Editor : DrawnContent::All;
             Displays::SetCurrent(0);
             RenderDisplay(Span<Camera* const>(cameras.Data(), cameras.Size()), 0);
             if (!allDisplays)
+            {
+                state.content = DrawnContent::All;
                 return;
+            }
             RenderTarget main = R().target;
             const rhi::DeviceCaps& caps = R().device->Caps();
             for (i32 d = 1; d < Displays::Count(); d++)
@@ -1093,6 +1266,7 @@ namespace helix::engine
             }
             Graphics::SetTarget(main);
             Displays::SetCurrent(0);
+            state.content = DrawnContent::All;
         }
 
         // Draws the frame again into textures of the target's formats (so the pipelines are shared) and writes a PNG.
@@ -1454,6 +1628,13 @@ namespace helix::engine
                 s.device->Destroy(e.value);
             for (auto e : s.renderTargets)
                 render::DestroyRenderTarget(e.value);
+            for (RenderState::GameDisplay& g : s.gameDisplays)
+            {
+                s.device->Destroy(g.color);
+                s.device->Destroy(g.depth);
+                g.color = g.depth = rhi::TextureHandle();
+                g.width = g.height = 0;
+            }
         }
         s.renderTargets = HashMap<EntityId, render::GpuRenderTarget>();
         s.meshes = HashMap<EntityId, GpuMesh>();

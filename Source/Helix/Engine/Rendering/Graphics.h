@@ -68,6 +68,15 @@ namespace helix::engine
         bool receiveShadows = false;
     };
 
+    // Whose content a pass draws: everything (the player), the editor's own (an editor's windows), or the game's (a
+    // display drawn into a texture for the editor's Game view).
+    enum class DrawnContent : u8
+    {
+        All = 0,
+        Editor = 1,
+        Game = 2,
+    };
+
     class Graphics
     {
     public:
@@ -126,6 +135,28 @@ namespace helix::engine
         static bool ConvertTexture(Texture* source, i32 sourceElement, Texture* dest, i32 destElement);
         // RenderTexture.active.
         static void SetRenderTarget(RenderTexture* rt);
+
+        // ------------------------------------------------------------------------- the editor's and the game's
+
+        // The editor turns it on: the DontDestroyOnLoad scene's objects (and those of no scene) are the editor's own;
+        // the displays' windows draw only those (and cameras into textures), the game's go to the display textures.
+        static void SetSeparateEditorContent(bool separate);
+        static bool SeparateEditorContent();
+        static bool IsEditorObject(const GameObject* go);
+        // The pass drawing now (All outside RenderFrame).
+        static DrawnContent DrawingContent();
+        // Whether an object's screen content of a display draws in the pass now (its display, whose it is).
+        static bool DrawsNow(const GameObject* go, i32 display);
+        // The game's cameras, canvases and screen panels of a display drawn into a texture each frame (null: none),
+        // as into a display's window; the texture's size is their display size.
+        static void SetDisplayTexture(i32 display, RenderTexture* texture);
+        static RenderTexture* DisplayTexture(i32 display);
+        // The game's cameras the display texture had in the last frame, and what drawing it took.
+        static i32 DisplayTextureCameraCount(i32 display);
+        static RenderStats DisplayTextureStats(i32 display);
+        // The display size an object's screen content lays out at: its display texture's for the game's content
+        // when the display has one, else the display's own.
+        static Vector2 ContentDisplaySize(const GameObject* go, i32 display);
     };
 
     // RenderMesh for the script API: RenderParams holds objects, which bound structs cannot (C# has the struct).

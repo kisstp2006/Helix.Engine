@@ -169,7 +169,8 @@ namespace helix::engine
             }
             else
             {
-                Vector2 screen = Camera::DisplaySize();
+                // The display's size (the game's display texture's in the editor).
+                Vector2 screen = Graphics::ContentDisplaySize(canvas.gameObject(), canvas.targetDisplay());
                 size = Vector2(screen.x / scale, screen.y / scale);
                 position = Vector3(screen.x * 0.5f, screen.y * 0.5f, 0);
                 worldScale = Vector3(scale, scale, scale);
@@ -498,8 +499,13 @@ namespace helix::engine
             State& s = S();
             const RenderTarget& screen = Graphics::Target();
             bool any = false;
+            // The canvases of the display and the content drawn now.
+            auto drawsNow = [](CanvasBatches* b) {
+                Canvas* c = b->owner.Get();
+                return !c || Graphics::DrawsNow(c->gameObject(), c->targetDisplay());
+            };
             for (CanvasBatches* b : s.drawing)
-                any = any || (b->mode == RenderMode::ScreenSpaceOverlay && !b->list.Empty());
+                any = any || (b->mode == RenderMode::ScreenSpaceOverlay && !b->list.Empty() && drawsNow(b));
             if (!any || screen.width == 0 || screen.height == 0)
                 return;
             cmd.SetViewport(Rect(0, 0, f32(screen.width), f32(screen.height)));
@@ -509,7 +515,7 @@ namespace helix::engine
             for (CanvasBatches* b : s.drawing)
             {
                 Mesh* mesh = b->mesh.Get();
-                if (b->mode != RenderMode::ScreenSpaceOverlay || !mesh)
+                if (b->mode != RenderMode::ScreenSpaceOverlay || !mesh || !drawsNow(b))
                     continue;
                 for (usize i = 0; i < b->list.Size(); i++)
                     if (Material* m = b->list[i].material.Get())

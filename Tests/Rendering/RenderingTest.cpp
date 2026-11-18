@@ -4,6 +4,7 @@
 
 #include <Helix/Core/Logging/Log.h>
 #include <Helix/Engine/Rendering/Graphics.h>
+#include <Helix/Engine/GameObject/Lifecycle.h>
 #include <Helix/Engine/Rendering/GL.h>
 #include <Helix/Engine/Rendering/Implementation/RenderCore.h>
 #include <Helix/Engine/Rendering/Pipeline/RenderPipeline.h>
@@ -815,6 +816,72 @@ namespace
         }
         return all;
     }
+}
+
+HX_TEST(Rendering, DisplayTexturesKeepTheEditorsContentApartOnEveryDevice)
+{
+    constexpr u32 size = 32;
+    ForEachDevice([&](rhi::Device& device) {
+        TestShaderFolder shaders;
+        rhi::TextureHandle color =
+            device.CreateTexture({.format = rhi::Format::RGBA8Unorm, .width = size, .height = size, .usage = rhi::TextureRenderTarget | rhi::TextureSampled});
+        rhi::TextureHandle depth = device.CreateTexture({.format = rhi::Format::D32Float, .width = size, .height = size, .usage = rhi::TextureDepthStencil});
+        Graphics::SetDevice(&device);
+        Graphics::SetTarget({color, depth, size, size, rhi::Format::RGBA8Unorm, rhi::Format::D32Float});
+        // The game's camera: green with a red quad in its top half; the editor's (DontDestroyOnLoad): blue, under it.
+        Mesh* quad = Quad();
+        Material* red = Material::Create(Shader::Find("Tests/Unlit"));
+        red->SetColor("color", Color(1, 0, 0, 1));
+        Thing("Top", quad, red, Vector3(0, 1, 0), 2);
+        Camera* game = MakeCamera(Vector3(0, 0, -10), 2);
+        game->SetBackgroundColor(Color(0, 1, 0, 1));
+        Camera* editor = MakeCamera(Vector3(0, 0, -10), 2);
+        editor->SetBackgroundColor(Color(0, 0, 1, 1));
+        editor->SetCullingMask(0);
+        editor->SetDepth(-5);
+        HX_REQUIRE(DontDestroyOnLoad(editor->gameObject()));
+        RenderTexture* view = RenderTexture::New(16, 16, 24);
+        view->SetFilterMode(FilterMode::Point);
+        auto screen = [&](u32 x, u32 y) {
+            Array<u32> pixels;
+            pixels.Resize(size * size);
+            return device.ReadTexture(color, 0, pixels.Data(), pixels.Size() * 4) ? Pixel(pixels, size, x, y) : 0xDEADBEEFu;
+        };
+
+        // Not apart: both on the screen, the game's last.
+        Graphics::RenderFrame();
+        HX_CHECK(NearColor(screen(2, 30), Rgba(0, 255, 0)));
+        HX_CHECK(Graphics::DrawingContent() == DrawnContent::All && !Graphics::IsEditorObject(game->gameObject()));
+
+        // Apart, display 0 into the texture: the window has the editor's camera only, the texture the game's (its
+        // rows a texture's: the red quad in the top rows).
+        Graphics::SetSeparateEditorContent(true);
+        Graphics::SetDisplayTexture(0, view);
+        HX_CHECK(Graphics::IsEditorObject(editor->gameObject()) && !Graphics::IsEditorObject(game->gameObject()));
+        Graphics::RenderFrame();
+        HX_CHECK(NearColor(screen(2, 30), Rgba(0, 0, 255)) && NearColor(screen(16, 10), Rgba(0, 0, 255)));
+        HX_CHECK(NearColor(RenderTextureTexel(device, view, 0, 8, 12), Rgba(255, 0, 0)) && NearColor(RenderTextureTexel(device, view, 0, 8, 3), Rgba(0, 255, 0)));
+        HX_CHECK(Graphics::DisplayTextureCameraCount(0) == 1 && Graphics::DisplayTextureStats(0).cameras == 1 && Graphics::DisplayTextureStats(0).drawCalls == 1);
+        HX_CHECK(Graphics::ContentDisplaySize(game->gameObject(), 0) == Vector2(16, 16));
+        HX_CHECK(Graphics::ContentDisplaySize(editor->gameObject(), 0) == Vector2(f32(size), f32(size)));
+
+        // The game's camera on display 1: display 0's texture black, display 1's has it.
+        RenderTexture* second = RenderTexture::New(8, 8, 24);
+        game->SetTargetDisplay(1);
+        Graphics::SetDisplayTexture(1, second);
+        Graphics::RenderFrame();
+        HX_CHECK(Graphics::DisplayTextureCameraCount(0) == 0 && Graphics::DisplayTextureCameraCount(1) == 1);
+        HX_CHECK(NearColor(RenderTextureTexel(device, view, 0, 8, 3), Rgba(0, 0, 0)));
+        HX_CHECK(NearColor(RenderTextureTexel(device, second, 0, 4, 1), Rgba(0, 255, 0)));
+        HX_CHECK(Graphics::DisplayTexture(1) == second && Graphics::DisplayTexture(2) == nullptr);
+
+        Graphics::SetDisplayTexture(0, nullptr);
+        Graphics::SetDisplayTexture(1, nullptr);
+        Graphics::SetSeparateEditorContent(false);
+        Graphics::ReleaseResources();
+        device.Destroy(color);
+        device.Destroy(depth);
+    });
 }
 
 HX_TEST(Culling, LODsLayerDistancesLightsAndShadowCasters)

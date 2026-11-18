@@ -3,6 +3,7 @@
 #include <Helix/Engine/Canvas/CanvasRenderer.h>
 #include <Helix/Engine/Material/Material.h>
 #include <Helix/Engine/Rendering/Camera.h>
+#include <Helix/Engine/Rendering/Graphics.h>
 #include <Helix/Engine/Script/ScriptRuntime.h>
 #include <Helix/Engine/Shader/Shader.h>
 #include <Helix/Engine/Transform/RectTransform.h>
@@ -138,7 +139,7 @@ namespace helix::engine
             return camera->pixelRect();
         if (mode == RenderMode::WorldSpace && camera)
             return camera->pixelRect();
-        Vector2 size = Camera::DisplaySize();
+        Vector2 size = Graphics::ContentDisplaySize(gameObject(), targetDisplay());
         return Rect(0, 0, size.x, size.y);
     }
 
@@ -147,7 +148,7 @@ namespace helix::engine
         Camera* camera = worldCamera();
         if (renderMode() == RenderMode::ScreenSpaceCamera && camera)
             return Vector2(f32(camera->pixelWidth()), f32(camera->pixelHeight()));
-        return Camera::DisplaySize();
+        return Graphics::ContentDisplaySize(gameObject(), targetDisplay());
     }
 
     StringView Canvas::sortingLayerName() const { return sortingLayerID_ == 0 ? StringView("Default") : StringView(); }

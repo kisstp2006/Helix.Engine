@@ -47,6 +47,7 @@ of C++ and C# scripts, a fallback pipeline without an asset), and the screen as 
 | `Source/Helix/Engine/Application/Application.h` | `Application`, `RuntimePlatform`, `NetworkReachability`, `LogType` |
 | `Source/Helix/Engine/Settings/Settings.h` | `TimeManager`, `TagManager`, `PlayerSettings`, `BuildSettings`, `RegisterSettings`, `LoadSettingsFile` |
 | `Source/Helix/Engine/Screen/Screen.h` | `Screen`, `FullScreenMode`, `ScreenOrientation`, `Resolution`, `RefreshRate`, `DisplayInfo`, the host's `ScreenReport` and `ScreenRequests` |
+| `Source/Helix/Engine/Screen/Display.h` | `Displays`: the displays a frame draws to (0 the main window, then windows the host opens on `Activate` and windows of tools), each a swap chain with its size and desktop place; cameras, canvases and UI panels draw to their `targetDisplay`, input events tell their display; `DisplayNative` under C#'s `Display` |
 | `Source/Helix/Engine/Event/Event.h` | `Event<Args...>`, `Query<Args...>` |
 | `Source/Helix/Engine/Asset/Asset.h` | The asset runtime: `AssetSource` (`FolderAssetSource`, `PlayerDataSource` with a `DataFileReader`), the catalog, `LoadAsset`, `LoadAssetAsync`, `UnloadUnusedAssets`, `WriteAssetFile` |
 | `Source/Helix/Engine/Asset/AssetLoader.h` | `AssetLoader`, `RegisterAssetLoader`: loaders by file extension, decode and integrate halves |

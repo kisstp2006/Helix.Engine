@@ -906,6 +906,9 @@ namespace helix::engine
             pass.depth.layer = b.depthLayer;
             pass.depth.load = depth;
             pass.depth.clearDepth = clearDepth;
+            // The screen: the back buffer of the display drawn now.
+            if (!b.colors[0].IsValid() && !b.depth.IsValid())
+                pass.swapChain = Graphics::Target().swapChain;
             e.cl.BeginRenderPass(pass);
             e.open = true;
             ApplyViewport(e);

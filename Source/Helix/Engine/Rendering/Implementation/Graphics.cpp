@@ -1,5 +1,6 @@
 #include <Helix/Engine/Canvas/CanvasRenderer.h>
 #include <Helix/Engine/Material/Material.h>
+#include <Helix/Engine/Screen/Display.h>
 #include <Helix/Engine/Rendering/Graphics.h>
 #include <Helix/Engine/Rendering/Implementation/RenderCore.h>
 #include <Helix/Engine/Rendering/AsyncGPUReadback.h>
@@ -1041,14 +1042,17 @@ namespace helix::engine
 
     namespace
     {
-        void RenderCameras()
+        // One display: its cameras (display 0 also those that draw into textures), then the screen overlay over them.
+        void RenderDisplay(Span<Camera* const> all, i32 display)
         {
             Array<Camera*> cameras;
-            Camera::GetAllCameras(cameras);
+            for (Camera* c : all)
+                if (display == 0 ? (c->targetTexture() || c->targetDisplay() <= 0 || !Displays::Get(c->targetDisplay()).active)
+                                 : (!c->targetTexture() && c->targetDisplay() == display))
+                    cameras.Push(c);
             R().clearFirst = true;
             render::RenderWithPipeline(Span<Camera* const>(cameras.Data(), cameras.Size()), true);
             R().clearFirst = false;
-            // The screen overlay over what the cameras drew.
             Event<CommandBuffer&>& overlay = Graphics::screenOverlayRendering();
             if (!overlay.Empty())
             {
@@ -1058,6 +1062,37 @@ namespace helix::engine
                 overlay.Invoke(cmd);
                 render::ExecuteNow(cmd.List(), false);
             }
+        }
+
+        // Every display (a screenshot: the main one only): the target is the display's swap chain while it draws.
+        void RenderCameras(bool allDisplays = true)
+        {
+            Array<Camera*> cameras;
+            Camera::GetAllCameras(cameras);
+            Displays::SetCurrent(0);
+            RenderDisplay(Span<Camera* const>(cameras.Data(), cameras.Size()), 0);
+            if (!allDisplays)
+                return;
+            RenderTarget main = R().target;
+            const rhi::DeviceCaps& caps = R().device->Caps();
+            for (i32 d = 1; d < Displays::Count(); d++)
+            {
+                const DisplayState& info = Displays::Get(d);
+                if (!info.active || !info.swapChain.IsValid() || info.systemWidth <= 0 || info.systemHeight <= 0)
+                    continue;
+                // The window's back buffer and depth buffer.
+                RenderTarget t;
+                t.colorFormat = caps.swapChainFormat;
+                t.depthFormat = caps.swapChainDepthFormat;
+                t.swapChain = info.swapChain;
+                t.width = u32(info.systemWidth);
+                t.height = u32(info.systemHeight);
+                Graphics::SetTarget(t);
+                Displays::SetCurrent(d);
+                RenderDisplay(Span<Camera* const>(cameras.Data(), cameras.Size()), d);
+            }
+            Graphics::SetTarget(main);
+            Displays::SetCurrent(0);
         }
 
         // Draws the frame again into textures of the target's formats (so the pipelines are shared) and writes a PNG.
@@ -1081,7 +1116,7 @@ namespace helix::engine
                                                  .debugName = "ScreenCaptureDepth"});
             RenderStats stats = s.stats;
             Graphics::SetTarget({color, depth, w, h, colorFormat, saved.depthFormat});
-            RenderCameras();
+            RenderCameras(false);
             image::Image img;
             img.Allocate(w, h, image::ImageFormat::RGBA8);
             bool read = s.device->ReadTexture(color, 0, img.pixels.Data(), img.pixels.Size());

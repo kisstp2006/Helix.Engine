@@ -23,6 +23,7 @@
 #include <Helix/Engine/Rendering/Renderer.h>
 #include <Helix/Engine/Rendering/RenderSettings.h>
 #include <Helix/Engine/Rendering/ScreenCapture.h>
+#include <Helix/Engine/Screen/Display.h>
 #include <Helix/Image/Codecs/Png.h>
 #include <Helix/Engine/Transform/Hierarchy.h>
 #include <Helix/Platform/Window/Window.h>
@@ -2430,6 +2431,87 @@ HX_TEST(Rendering, DirectionalShadowCascadesCullAndDrawTheirCasters)
         Graphics::ReleaseResources();
         device.Destroy(color);
         device.Destroy(depth);
+    });
+}
+
+// Displays: a second display's window (a swap chain of the device) draws its cameras (targetDisplay 1) and the
+// screen overlay with the display current and its swap chain the target; the main display keeps the others.
+HX_TEST(Rendering, DisplaysDrawTheirCamerasAndOverlayIntoTheirSwapChains)
+{
+    if (!platform::Window::IsSupported())
+        return;
+    constexpr u32 size = 16;
+    ForEachDevice([&](rhi::Device& device) {
+        platform::Window* window = platform::Window::Create({.title = "display 1", .width = 200, .height = 150, .visible = false});
+        HX_REQUIRE(window != nullptr);
+        rhi::SwapChainHandle chain = device.CreateSwapChain({.window = window->GetNativeHandle()});
+        if (!chain.IsValid())
+        {
+            std::printf("    %s: no swap chains of other windows, skipped\n", device.Caps().renderer);
+            platform::Window::Destroy(window);
+            return;
+        }
+        TestShaderFolder shaders;
+        rhi::TextureHandle color =
+            device.CreateTexture({.format = rhi::Format::RGBA8Unorm, .width = size, .height = size, .usage = rhi::TextureRenderTarget | rhi::TextureSampled});
+        Graphics::SetDevice(&device);
+        Graphics::SetTarget({color, {}, size, size, rhi::Format::RGBA8Unorm, rhi::Format::Unknown});
+        DisplayState info;
+        info.active = true;
+        info.swapChain = chain;
+        info.systemWidth = info.renderingWidth = 200;
+        info.systemHeight = info.renderingHeight = 150;
+        Displays::Set(1, info);
+        HX_CHECK(Displays::Count() == 2);
+        Camera* main = MakeCamera(Vector3(0, 0, -10), 4);
+        Camera* second = MakeCamera(Vector3(0, 0, -10), 4);
+        second->SetTargetDisplay(1);
+        // A camera of an inactive display draws on the main one.
+        Camera* lost = MakeCamera(Vector3(0, 0, -10), 4);
+        lost->SetTargetDisplay(5);
+        struct Seen
+        {
+            i32 display;
+            bool swapChain;
+            u32 width;
+        };
+        static Array<Seen> seen;
+        seen.Clear();
+        u32 id = Graphics::screenOverlayRendering().Add([](void*, CommandBuffer&) {
+            seen.Push({Displays::Current(), Graphics::Target().swapChain.IsValid(), Graphics::Target().width});
+        });
+        Graphics::RenderFrame();
+        device.Present(chain);
+        HX_REQUIRE(seen.Size() == 2);
+        // The main camera and the lost one on display 0, the second on display 1.
+        HX_CHECK(Graphics::LastStats().cameras == 3);
+        HX_CHECK(seen[0].display == 0 && !seen[0].swapChain && seen[0].width == size);
+        HX_CHECK(seen[1].display == 1 && seen[1].swapChain && seen[1].width == 200);
+        // The main target again after the frame.
+        HX_CHECK(Graphics::Target().color == color && Displays::Current() == 0);
+        // The display under a desktop point.
+        Vector2 local;
+        info.x = 1000;
+        info.y = 500;
+        Displays::Set(1, info);
+        HX_CHECK(Displays::At(Vector2(1010, 520), local) == 1 && local.x == 10 && local.y == 20);
+        // An inactive display draws nothing.
+        info.active = false;
+        Displays::Set(1, info);
+        seen.Clear();
+        Graphics::RenderFrame();
+        HX_CHECK(seen.Size() == 1);
+        Graphics::screenOverlayRendering().Remove(id);
+        Displays::Remove(1);
+        HX_CHECK(Displays::Count() == 1);
+        DestroyImmediate(main->gameObject());
+        DestroyImmediate(second->gameObject());
+        DestroyImmediate(lost->gameObject());
+        Graphics::SetTarget({});
+        device.WaitIdle();
+        device.Destroy(chain);
+        device.Destroy(color);
+        platform::Window::Destroy(window);
     });
 }
 

@@ -22,6 +22,8 @@ namespace helix::engine
         u32 width = 0, height = 0;
         rhi::Format colorFormat = rhi::Format::RGBA8Unorm;
         rhi::Format depthFormat = rhi::Format::Unknown;
+        // The swap chain of a display's window when `color` is not valid (none: the device window's).
+        rhi::SwapChainHandle swapChain{};
     };
 
     enum class ComputeQueueType : i32;

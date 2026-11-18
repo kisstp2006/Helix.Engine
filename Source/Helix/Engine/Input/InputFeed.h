@@ -14,6 +14,8 @@ namespace helix::engine
         platform::Event event;
         // Real time since the start, in seconds, when the host took it.
         f64 time = 0;
+        // The display whose window it came from (0: the main window; Displays).
+        i32 display = 0;
     };
 
     class InputFeed
